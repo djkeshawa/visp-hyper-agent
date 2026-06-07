@@ -30,11 +30,21 @@ export type HandoffProtocol = {
   goal: string;
   phase: SessionRecord["phase"];
   toolProfile: ToolProfile;
+  toolProfileLabel: string;
+  profileInstructions: string[];
   requiredReads: string[];
   workflow: string[];
   hardRules: string[];
+  integrationSeams: IntegrationSeam[];
   nextInstruction: string;
   completionInstruction: string;
+};
+
+export type IntegrationSeam = {
+  id: string;
+  capability: string;
+  status: "typed-seam";
+  notes: string;
 };
 
 export type KitArtifacts = {
@@ -101,4 +111,22 @@ export interface MemoryProvider {
   remember(record: MemoryRecord): Promise<void>;
   storeDecision(decision: DecisionRecord): Promise<void>;
   getProjectProfile(projectPath: string): Promise<ProjectMemoryProfile | null>;
+}
+
+export interface SemanticMemoryProvider extends MemoryProvider {
+  semanticRecall(query: string, options?: RecallOptions): Promise<MemoryResult[]>;
+}
+
+export interface ValidationCommandRunner {
+  detect(projectPath: string): Promise<string[]>;
+  run(projectPath: string, commands: string[]): Promise<Array<{ command: string; exitCode: number; output: string }>>;
+}
+
+export interface BranchSessionLocator {
+  currentBranch(projectPath: string): Promise<string | null>;
+  sessionKey(projectPath: string, branch: string | null): string;
+}
+
+export interface McpBridge {
+  listTools(): Promise<Array<{ name: string; description: string }>>;
 }

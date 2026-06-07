@@ -21,6 +21,9 @@ describe("renderHandoff", () => {
     expect(handoff).toContain("session_id: vh_test");
     expect(handoff).toContain(".visp/hyper/current/context-pack.md");
     expect(handoff).toContain("completion_instruction:");
+    expect(handoff).toContain("tool_profile_label: Codex");
+    expect(handoff).toContain("profile_instructions:");
+    expect(handoff).toContain("integration_seams:");
     expect(handoff).toContain("Do not change public APIs unless the Visp-Kit spec requires it.");
     expect(handoff).toContain("END_VISP_AGENT_HANDOFF");
   });
@@ -53,5 +56,8 @@ describe("renderHandoff", () => {
     expect(protocol.requiredReads).toContain(".visp/hyper/current/agent-instructions.md");
     expect(protocol.workflow).toHaveLength(8);
     expect(protocol.hardRules).toHaveLength(6);
+    expect(protocol.integrationSeams.map((seam) => seam.id)).toEqual(
+      expect.arrayContaining(["llm-memory-provider", "semantic-retrieval", "validation-runner", "branch-sessions", "mcp-bridge"])
+    );
   });
 });
