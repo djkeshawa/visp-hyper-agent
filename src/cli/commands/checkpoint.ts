@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Command } from "commander";
-import { vispPath, writeText } from "../../core/fs-utils.js";
+import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { getActiveSession } from "../../core/session-manager.js";
 import { resolveProjectPath } from "./shared.js";
 
@@ -16,19 +16,28 @@ export function checkpointCommand(): Command {
       if (!session) {
         throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
       }
-      const { stdout } = await execFileAsync("git", ["diff", "--stat"], { cwd: projectPath });
+      const [{ stdout: stat }, { stdout: names }] = await Promise.all([
+        execFileAsync("git", ["diff", "--stat", "HEAD"], { cwd: projectPath }),
+        execFileAsync("git", ["diff", "--name-only", "HEAD"], { cwd: projectPath })
+      ]);
       const content = [
-        `# Checkpoint ${new Date().toISOString()}`,
+        `## Checkpoint ${new Date().toISOString()}`,
         "",
         `Session: ${session.id}`,
         `Goal: ${session.goal}`,
         "",
         "## Git Diff Stat",
         "",
-        stdout.trim() || "_No unstaged diff._",
+        stat.trim() || "_No diff._",
+        "",
+        "## Changed Files",
+        "",
+        ...(names.trim() ? names.trim().split("\n").map((file) => `- ${file}`) : ["_No changed files._"]),
         ""
       ].join("\n");
-      await writeText(vispPath(projectPath, "hyper", "current", "checkpoints.md"), content);
+      const path = vispPath(projectPath, "hyper", "current", "checkpoints.md");
+      const previous = await readTextIfExists(path);
+      await writeText(path, previous ? `${previous.trimEnd()}\n\n${content}` : `# Checkpoints\n\n${content}`);
       console.log("Checkpoint written to .visp/hyper/current/checkpoints.md");
     });
 }

@@ -27,7 +27,11 @@ export function reviewCommand(): Command {
           `changed_files: ${result.changedFiles.length}`,
           `blocked_files: ${result.blockedFiles.length}`,
           `outside_relevant_files: ${result.outsideRelevantFiles.length}`,
+          `dependency_files: ${result.dependencyFiles.length}`,
+          `public_api_files: ${result.publicApiFiles.length}`,
           `has_test_changes: ${result.hasTestChanges}`,
+          `warnings: ${result.warnings.length}`,
+          ...result.warnings.map((warning) => `warning: ${warning}`),
           "report: .visp/hyper/current/review-report.md",
           "END_VISP_REVIEW_RESULT"
         ].join("\n")
