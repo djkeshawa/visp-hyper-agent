@@ -32,23 +32,29 @@ export function renderContextPack(files: ContextFile[], kit: KitArtifacts): stri
     ]),
     "## Visp-Kit Artifacts",
     "",
-    kit.constitution ? "Constitution: present" : "Constitution: missing",
+    ...renderWarnings(kit.warnings),
+    kit.constitution ? `Constitution: present - ${kit.constitution.summary}` : "Constitution: missing",
     `Rules: ${kit.rules.length}`,
+    ...kit.rules.map((file) => `- ${file.path}: ${file.summary}`),
     `Specs: ${kit.specs.length}`,
+    ...kit.specs.map((file) => `- ${file.path}: ${file.summary}`),
     `Plans: ${kit.plans.length}`,
+    ...kit.plans.map((file) => `- ${file.path}: ${file.summary}`),
     `Tasks: ${kit.tasks.length}`,
+    ...kit.tasks.map((file) => `- ${file.path}: ${file.summary}`),
     ""
   ].join("\n");
 }
 
 export function renderMemoryPack(memory: MemoryPack): string {
   if (memory.files.length === 0) {
-    return "# Memory Pack\n\nNo local Visp memory files found yet.\n";
+    return ["# Memory Pack", "", ...renderWarnings(memory.warnings), "No local Visp memory files found yet.", ""].join("\n");
   }
   return [
     "# Memory Pack",
     "",
-    ...memory.files.flatMap((file) => [`## ${file.path}`, "", fenced(file.content), ""])
+    ...renderWarnings(memory.warnings),
+    ...memory.files.flatMap((file) => [`## ${file.path}`, "", `Summary: ${file.summary}`, "", fenced(file.content), ""])
   ].join("\n");
 }
 
@@ -83,3 +89,9 @@ function fenced(content: string): string {
   return ["```", content.trimEnd(), "```"].join("\n");
 }
 
+function renderWarnings(warnings: string[]): string[] {
+  if (warnings.length === 0) {
+    return [];
+  }
+  return ["## Warnings", "", ...warnings.map((warning) => `- ${warning}`), ""];
+}

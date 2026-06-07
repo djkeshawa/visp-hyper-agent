@@ -1,38 +1,55 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import type { KitArtifacts } from "../core/types.js";
+import type { ArtifactFile, KitArtifacts } from "../core/types.js";
 
 export async function readKitArtifacts(projectPath: string): Promise<KitArtifacts> {
+  const warnings: string[] = [];
+  const constitution = await readArtifact(projectPath, ".visp/constitution.md");
+  if (!constitution) {
+    warnings.push("Missing .visp/constitution.md.");
+  }
+
   return {
-    constitution: await readOptional(join(projectPath, ".visp", "constitution.md")),
-    rules: await readMarkdownDir(projectPath, ".visp/rules"),
-    specs: await readMarkdownDir(projectPath, ".visp/specs"),
-    tasks: await readMarkdownDir(projectPath, ".visp/tasks"),
-    plans: await readMarkdownDir(projectPath, ".visp/plans")
+    constitution,
+    rules: await readMarkdownDir(projectPath, ".visp/rules", warnings),
+    specs: await readMarkdownDir(projectPath, ".visp/specs", warnings),
+    tasks: await readMarkdownDir(projectPath, ".visp/tasks", warnings),
+    plans: await readMarkdownDir(projectPath, ".visp/plans", warnings),
+    warnings
   };
 }
 
-async function readOptional(path: string): Promise<string | undefined> {
+async function readArtifact(projectPath: string, path: string): Promise<ArtifactFile | undefined> {
   try {
-    return await readFile(path, "utf8");
+    const content = await readFile(join(projectPath, path), "utf8");
+    return { path, content, summary: summarize(content) };
   } catch {
     return undefined;
   }
 }
 
-async function readMarkdownDir(projectPath: string, dir: string): Promise<Array<{ path: string; content: string }>> {
+async function readMarkdownDir(projectPath: string, dir: string, warnings: string[]): Promise<ArtifactFile[]> {
   const absolute = join(projectPath, dir);
   try {
     const entries = await readdir(absolute, { withFileTypes: true });
     const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md"));
-    const result = [];
+    const result: ArtifactFile[] = [];
     for (const file of files) {
       const path = join(absolute, file.name);
-      result.push({ path: relative(projectPath, path), content: await readFile(path, "utf8") });
+      const content = await readFile(path, "utf8");
+      result.push({ path: relative(projectPath, path), content, summary: summarize(content) });
     }
     return result;
   } catch {
+    warnings.push(`Missing ${dir}.`);
     return [];
   }
 }
 
+function summarize(content: string): string {
+  const firstText = content
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && !line.startsWith("#"));
+  return firstText ? firstText.slice(0, 220) : "No summary content.";
+}

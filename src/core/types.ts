@@ -38,15 +38,23 @@ export type HandoffProtocol = {
 };
 
 export type KitArtifacts = {
-  constitution?: string;
-  rules: Array<{ path: string; content: string }>;
-  specs: Array<{ path: string; content: string }>;
-  tasks: Array<{ path: string; content: string }>;
-  plans: Array<{ path: string; content: string }>;
+  constitution?: ArtifactFile;
+  rules: ArtifactFile[];
+  specs: ArtifactFile[];
+  tasks: ArtifactFile[];
+  plans: ArtifactFile[];
+  warnings: string[];
+};
+
+export type ArtifactFile = {
+  path: string;
+  content: string;
+  summary: string;
 };
 
 export type MemoryPack = {
-  files: Array<{ path: string; content: string }>;
+  files: ArtifactFile[];
+  warnings: string[];
 };
 
 export type ContextFile = {
@@ -54,3 +62,43 @@ export type ContextFile = {
   reason: string;
   content?: string;
 };
+
+export type RecallOptions = {
+  limit?: number;
+  filters?: Record<string, string>;
+};
+
+export type MemoryResult = {
+  path: string;
+  content: string;
+  summary: string;
+};
+
+export type MemoryRecord = {
+  sessionId: string;
+  goal: string;
+  summary: string;
+  timestamp?: string;
+  changedFiles?: string[];
+  reviewSummary?: string;
+  decisions?: string[];
+  followUps?: string[];
+};
+
+export type DecisionRecord = {
+  title: string;
+  decision: string;
+  timestamp?: string;
+};
+
+export type ProjectMemoryProfile = {
+  projectPath: string;
+  summary: string;
+};
+
+export interface MemoryProvider {
+  recall(query: string, options?: RecallOptions): Promise<MemoryResult[]>;
+  remember(record: MemoryRecord): Promise<void>;
+  storeDecision(decision: DecisionRecord): Promise<void>;
+  getProjectProfile(projectPath: string): Promise<ProjectMemoryProfile | null>;
+}
