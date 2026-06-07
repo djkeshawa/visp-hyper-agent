@@ -24,6 +24,19 @@ export type SessionRecord = {
   relevantFiles: string[];
 };
 
+export type HandoffProtocol = {
+  version: "0.1";
+  sessionId: string;
+  goal: string;
+  phase: SessionRecord["phase"];
+  toolProfile: ToolProfile;
+  requiredReads: string[];
+  workflow: string[];
+  hardRules: string[];
+  nextInstruction: string;
+  completionInstruction: string;
+};
+
 export type KitArtifacts = {
   constitution?: string;
   rules: Array<{ path: string; content: string }>;
@@ -41,4 +54,3 @@ export type ContextFile = {
   reason: string;
   content?: string;
 };
-

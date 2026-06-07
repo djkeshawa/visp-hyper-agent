@@ -4,7 +4,7 @@ import { scanRelevantFiles } from "../../context/relevance-scanner.js";
 import { vispPath, writeText } from "../../core/fs-utils.js";
 import { createSession, initializeProject, readConfig } from "../../core/session-manager.js";
 import type { ToolProfile } from "../../core/types.js";
-import { renderHandoff } from "../../handoff/handoff-protocol.js";
+import { buildHandoffProtocol, renderHandoff } from "../../handoff/handoff-protocol.js";
 import { readKitArtifacts } from "../../kit/kit-reader.js";
 import { readMemoryPack } from "../../memory/file-memory-provider.js";
 import {
@@ -43,6 +43,7 @@ export function startCommand(): Command {
         relevantFiles: contextFiles.map((file) => file.path)
       });
       const handoff = renderHandoff(session);
+      const protocol = buildHandoffProtocol(session);
 
       await writeText(vispPath(projectPath, "hyper", "current", "session.md"), renderSession(session));
       await writeText(vispPath(projectPath, "hyper", "current", "context-pack.md"), renderContextPack(contextFiles, kit));
@@ -51,20 +52,10 @@ export function startCommand(): Command {
       await writeText(vispPath(projectPath, "hyper", "current", "agent-instructions.md"), renderAgentInstructions(session));
       await writeText(
         vispPath(projectPath, "hyper", "current", "handoff.json"),
-        `${JSON.stringify({ version: "0.1", session, requiredReads: requiredReads() }, null, 2)}\n`
+        `${JSON.stringify({ ...protocol, session }, null, 2)}\n`
       );
       await writeText(join(projectPath, ".visp", "prompts", "visp-hyper-handoff.prompt.md"), `${handoff}\n`);
 
       console.log(handoff);
     });
-}
-
-function requiredReads(): string[] {
-  return [
-    ".visp/hyper/current/session.md",
-    ".visp/hyper/current/context-pack.md",
-    ".visp/hyper/current/memory-pack.md",
-    ".visp/hyper/current/quality-gates.md",
-    ".visp/hyper/current/agent-instructions.md"
-  ];
 }
