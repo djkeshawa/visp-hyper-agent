@@ -73,6 +73,11 @@ export type ContextFile = {
   content?: string;
 };
 
+export type ContextPackOptions = {
+  source?: string;
+  validationCommands?: string[];
+};
+
 export type RecallOptions = {
   limit?: number;
   filters?: Record<string, string>;

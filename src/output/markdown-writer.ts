@@ -1,4 +1,4 @@
-import type { ContextFile, KitArtifacts, MemoryPack, SessionRecord } from "../core/types.js";
+import type { ContextFile, ContextPackOptions, KitArtifacts, MemoryPack, SessionRecord } from "../core/types.js";
 
 export function renderSession(session: SessionRecord): string {
   return [
@@ -16,10 +16,17 @@ export function renderSession(session: SessionRecord): string {
   ].join("\n");
 }
 
-export function renderContextPack(files: ContextFile[], kit: KitArtifacts): string {
+export function renderContextPack(files: ContextFile[], kit: KitArtifacts, options: ContextPackOptions = {}): string {
+  const source = options.source ? [`- Source: ${options.source}`, ""] : [];
+  const validationCommands =
+    options.validationCommands && options.validationCommands.length > 0
+      ? ["## Validation Commands", "", ...options.validationCommands.map((command) => `- ${command}`), ""]
+      : [];
   return [
     "# Context Pack",
     "",
+    ...source,
+    ...validationCommands,
     "## Selected Files",
     "",
     ...files.flatMap((file) => [
