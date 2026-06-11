@@ -3,7 +3,8 @@ export type ToolProfile = "generic" | "codex" | "claude-code" | "copilot" | "ope
 export type HyperConfig = {
   defaultTool: ToolProfile;
   tokenBudget: number;
-  memoryMode: "file";
+  memoryMode: "file" | "llm-memory";
+  memoryEndpoint: string;
   contextMode: "deterministic";
   blockedPaths: string[];
 };

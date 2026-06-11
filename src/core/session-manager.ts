@@ -8,7 +8,8 @@ import type { HyperConfig, HyperState, SessionRecord, ToolProfile } from "./type
 const configSchema = z.object({
   defaultTool: z.enum(["generic", "codex", "claude-code", "copilot", "opencode"]),
   tokenBudget: z.number().int().positive(),
-  memoryMode: z.literal("file"),
+  memoryMode: z.enum(["file", "llm-memory"]),
+  memoryEndpoint: z.string().default("http://localhost:8000"),
   contextMode: z.literal("deterministic"),
   blockedPaths: z.array(z.string())
 });
