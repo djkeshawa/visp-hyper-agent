@@ -2,17 +2,28 @@
 
 Local-first companion workflow controller for Codex, Claude Code, GitHub Copilot, OpenCode, and similar AI coding tools.
 
-Visp Hyper Agent does not replace coding agents. It prepares compact context, reads Visp-Kit and local Visp-Memory artifacts, prints an LLM-readable handoff protocol, and gives the active coding tool a disciplined session workflow.
+Visp Hyper Agent does not replace coding agents and never calls an LLM itself. It orchestrates disciplined sessions for the coding tool you already use:
+
+- **Structured code flow** — drives the gated [Visp Kit](https://github.com/djkeshawa/visp-kit) workflow through its CLI, adopts task-scoped context packs, and advances only on verified evidence.
+- **Active memory** — recalls and persists project knowledge through [llm-memory](https://github.com/djkeshawa/llm-memory) (optional; file-based memory is the zero-dependency default).
+- **Cost-routed multi-agent setup** — installs a coordinator/scout/implementer subagent fleet with per-role model tiers, and emits evidence-gated model-routing advice that only downgrades tiers when local pass-rate data proves quality holds.
+- **Self-improvement** — harvests reusable skills your agent discovers during sessions and installs them as project skills.
+
+Everything is file-based under the target project's `.visp/` directory. No network calls (except to your own optional llm-memory server), no database, no embeddings, no new runtime dependencies.
 
 ## Commands
 
-- `visp-hyper init` creates `.visp/hyper/config.json`, `.visp/hyper/state.json`, and `.visp/hyper/current/`.
-- `visp-hyper start "<goal>"` starts a guided session, writes current session files, and prints `BEGIN_VISP_AGENT_HANDOFF`.
-- `visp-hyper next` prints the next bounded action block.
-- `visp-hyper status` reports session metadata, generated files, checkpoint/review state, and memory status.
-- `visp-hyper checkpoint` appends git diff stat and changed files to `.visp/hyper/current/checkpoints.md`.
-- `visp-hyper review` writes `.visp/hyper/current/review-report.md` and prints `BEGIN_VISP_REVIEW_RESULT`.
-- `visp-hyper remember` writes `.visp/memory/session-history/<session-id>.md`.
+| Command | What it does |
+|---|---|
+| `visp-hyper init [--tool <tool>] [--force-assets] [--with-hooks]` | Creates `.visp/hyper/` config and state. With `--tool` it also installs native assets for that coding tool (subagent fleet, slash commands, instructions) and, for `claude-code` projects with a real Visp Kit, surfaces or installs the `visp hooks claude` PreToolUse gate. |
+| `visp-hyper run "<goal>" [--tool <tool>]` | The one-command pipeline. In a Visp Kit project: validates policy, evaluates gates, and prints either a per-task handoff + bounded action block, or a `BEGIN_VISP_PIPELINE_BLOCKED` block naming the exact next allowed `visp` command. Kit-less projects get the plain `start` behavior. |
+| `visp-hyper start "<goal>" [--tool <tool>]` | Starts a guided session, writes the session files, and prints `BEGIN_VISP_AGENT_HANDOFF`. Prefers the active Visp Kit task's context pack; falls back to the deterministic relevance scanner. Fuses recalled llm-memory entries into the memory pack when enabled. |
+| `visp-hyper next` | Prints the next bounded action: the current pipeline task's action block (with model-routing advice) when a task DAG is active, otherwise the generic next-step block. |
+| `visp-hyper checkpoint [--task <id>] [--tier <tier>]` | Appends git diff evidence to `checkpoints.md`. With `--task`: runs Visp Kit verify + review through the bridge, records the attempt in telemetry, and advances the pipeline only when both pass. Failures escalate model routing and quarantine the task class. |
+| `visp-hyper review` | Writes `review-report.md` and prints `BEGIN_VISP_REVIEW_RESULT` (deterministic path-based warnings from `git diff`). |
+| `visp-hyper remember [--summary <s>] [--decision <d>...] [--follow-up <f>...] [--used-skill <name>...] [--input-tokens <n>] [--output-tokens <n>] [--model <m>]` | Persists the session: always writes `.visp/memory/session-history/`; additionally writes to llm-memory (session record, decisions, follow-ups) when enabled, records token usage in telemetry and forwards it to `visp budget`, harvests pending skill proposals, and tracks skill usage. |
+| `visp-hyper report [--json]` | The cost/accuracy evidence view: first-attempt verify+review pass rates per model tier and per task class, token totals, active routing quarantines, recent routing decisions, and skill usage with prune flags. |
+| `visp-hyper status` | Session metadata, generated files, checkpoint/review state, and memory status. |
 
 ## Install Locally
 
@@ -30,66 +41,99 @@ node dist/index.js --help
 Use a local build inside a project:
 
 ```bash
-node /path/to/visp-hyper-agent/dist/index.js --project /path/to/project init
-node /path/to/visp-hyper-agent/dist/index.js --project /path/to/project start "implement offline note sync" --tool codex
+node /path/to/visp-hyper-agent/dist/index.js --project /path/to/project init --tool claude-code
+node /path/to/visp-hyper-agent/dist/index.js --project /path/to/project run "implement offline note sync"
 ```
 
-## Example Codex Workflow
+## Example Claude Code Workflow
 
-From inside a target repository:
+Set up once:
 
 ```bash
-visp-hyper start "implement offline note sync" --tool codex
+visp-hyper init --tool claude-code
 ```
 
-The command writes:
+This installs into the project:
 
 ```text
-.visp/hyper/current/session.md
-.visp/hyper/current/context-pack.md
-.visp/hyper/current/memory-pack.md
-.visp/hyper/current/quality-gates.md
-.visp/hyper/current/agent-instructions.md
-.visp/hyper/current/handoff.json
+.claude/agents/coordinator.md     # routes work, validates results (model: inherit)
+.claude/agents/scout.md           # scanning + mechanical work (model: sonnet)
+.claude/agents/implementer.md     # real logic (model: opus)
+.claude/commands/hyper-run.md     # /hyper-run, /hyper-next, /hyper-checkpoint,
+.claude/commands/hyper-*.md       # /hyper-review, /hyper-remember
 ```
 
-It also prints a handoff block shaped like:
+Then, inside a Claude Code session:
 
 ```text
-BEGIN_VISP_AGENT_HANDOFF
-version: 0.1
-session_id: vh_20260607_abcd1234
-goal: implement offline note sync
-phase: implementation
-tool_profile: codex
-tool_profile_label: Codex
+/hyper-run implement offline note sync
+# → handoff + task action block (allowed/forbidden files, acceptance
+#   criteria, validation commands) + model_routing advice
 
-required_reads:
-  - .visp/hyper/current/session.md
-  - .visp/hyper/current/context-pack.md
-  - .visp/hyper/current/memory-pack.md
-  - .visp/hyper/current/quality-gates.md
-  - .visp/hyper/current/agent-instructions.md
+/hyper-checkpoint T001
+# → runs visp verify + review; advances only on PASSED
 
-workflow:
-  1. Read the required files.
-  2. Inspect only the relevant files listed in the context pack.
-  3. Create a concise implementation plan.
-  4. Implement the smallest safe change.
-  5. Add or update tests where appropriate.
-  6. Run validation commands.
-  7. Run `visp-hyper review`.
-  8. Run `visp-hyper remember`.
-END_VISP_AGENT_HANDOFF
+/hyper-remember done: implemented note sync --input-tokens 18000 --output-tokens 4200
+# → session memory, token telemetry, budget round-trip, skill harvest
 ```
 
-After implementation:
+The same flow works tool-agnostically: `--tool codex` writes `AGENTS.visp-hyper.md` + `.agents/skills/`, `--tool copilot` writes `.github/instructions/`.
+
+## Output Blocks
+
+All orchestration output is deterministic, delimited text designed for LLM consumption:
+
+- `BEGIN_VISP_AGENT_HANDOFF` — session contract: required reads, workflow, hard rules, installed project skills, and the skill-proposal protocol.
+- `BEGIN_VISP_TASK_ACTION` — one bounded task: goal, allowed/forbidden files, acceptance criteria, validation commands, done criteria.
+- `BEGIN_VISP_PIPELINE_BLOCKED` — a gate refused: failed rules and the exact next allowed `visp` command. Unparseable gate results fail closed.
+- `BEGIN_VISP_CHECKPOINT_RESULT` — verify/review outcomes and the next task (or `pipeline_complete`).
+- `BEGIN_VISP_MODEL_ROUTING` — advisory tier suggestion with its evidence (samples, pass rate).
+- `VISP_HYPER_REPORT` — the aggregate cost/accuracy report.
+
+## Adaptive Model Routing (quality-first)
+
+Routing advice is computed deterministically from local telemetry — visp-hyper never selects or calls a model:
+
+- **Baseline**: low-risk tasks suggest the cheap tier (`scout`); everything else suggests the strong tier (`implementer`).
+- **Downgrades must be earned**: a task class is suggested for the cheap tier only after ≥ 3 first-attempt records at ≥ 90% verify+review pass rate on that tier.
+- **Quality recovers instantly**: any checkpoint failure escalates the suggestion to the strong tier and quarantines the task class from downgrades for 3 sessions.
+
+`visp-hyper report` shows the pass-rate evidence behind every decision, so cost cuts that hurt accuracy are visible and reversible.
+
+## Active Memory (optional)
 
 ```bash
-visp-hyper checkpoint
-visp-hyper review
-visp-hyper remember --summary "Implemented offline note sync."
+pipx install llm-memory
+llm-memory serve              # default http://localhost:8000
 ```
+
+Enable in `.visp/hyper/config.json`:
+
+```json
+{ "memoryMode": "llm-memory", "memoryEndpoint": "http://localhost:8000" }
+```
+
+- `start`/`run` recall memories relevant to the goal and render them in `memory-pack.md` with source and relevance-score tags, capped so memory never crowds out task context.
+- `remember` writes the session record, decisions (episodic), and follow-ups (intent) back; installed skills mirror as semantic patterns.
+- Auth: set `VISP_HYPER_MEMORY_API_KEY` (sent as `X-API-KEY`); keys never live in config files.
+- The server being down is never an error: commands warn and fall back to file memory.
+
+## Skill Harvesting
+
+When your coding agent notices a reusable procedure, it writes a proposal file (the handoff documents the format):
+
+```text
+.visp/hyper/skill-proposals/incoming/restart-stack.md
+---
+name: restart-stack
+description: Restart the dev stack cleanly after schema changes.
+when_to_use: After any database migration.
+evidence: Needed twice this session.
+---
+1. Stop the dev server. 2. pnpm db:reset && pnpm db:migrate. 3. ...
+```
+
+`remember`/`checkpoint` validate, dedupe, and (in the default `skillMode: "auto"`) install it as a namespaced project skill — e.g. `.claude/skills/hyper-restart-stack/SKILL.md` — registered in `.visp/hyper/skills.json`. Set `skillMode: "review"` to stage proposals for human approval instead. Future handoffs advertise installed skills; `report` flags skills unused for 5+ sessions as prune candidates. Existing files are never overwritten.
 
 ## File Layout
 
@@ -98,66 +142,59 @@ Runtime files:
 ```text
 .visp/
   hyper/
-    config.json
-    state.json
+    config.json          # defaultTool, tokenBudget, memoryMode, memoryEndpoint,
+                         # skillMode, blockedPaths
+    state.json           # sessions + pipeline state (task DAG progress)
+    telemetry.json       # checkpoint attempts + token usage
+    routing.json         # quarantines + routing decisions
+    skills.json          # installed-skill registry
+    skill-proposals/     # incoming/ staged/ rejected/
     current/
-      session.md
-      context-pack.md
-      memory-pack.md
-      quality-gates.md
-      agent-instructions.md
-      handoff.json
-      checkpoints.md
-      review-report.md
+      session.md  context-pack.md  memory-pack.md  quality-gates.md
+      agent-instructions.md  handoff.json  checkpoints.md  review-report.md
   memory/
-    project-summary.md
-    architecture-decisions.md
-    known-risks.md
+    project-summary.md  architecture-decisions.md  known-risks.md
     session-history/
 ```
 
 Source modules:
 
-- `src/cli/commands/` contains command behavior.
-- `src/core/` contains config, state, and shared types.
-- `src/context/` contains deterministic context selection.
-- `src/kit/` reads Visp-Kit artifacts.
-- `src/memory/` provides file-backed memory and future provider seams.
-- `src/handoff/` renders the Agent Handoff Protocol.
-- `src/quality/` analyzes git diffs for review warnings.
+- `src/cli/commands/` — command behavior (`run` and `start` are the orchestrators).
+- `src/kit/` — Visp Kit integration: artifact reader plus the typed `visp --json` command bridge with graceful fallback when the binary or kit is absent.
+- `src/pipeline/` — pure task-DAG state machine (topological ordering, evidence-gated advancement, action blocks).
+- `src/context/` — deterministic relevance scanner (the kit-less context fallback).
+- `src/memory/` — file memory, the llm-memory HTTP provider, and the health-checked provider factory.
+- `src/routing/`, `src/telemetry/` — quality-first routing engine and its evidence stores.
+- `src/skills/` — skill proposal parsing, registry, and installer.
+- `src/install/` — tool asset installer over the versioned `templates/` directory.
+- `src/quality/` — git-diff review warnings and the allowlisted validation-command runner.
+- `src/handoff/`, `src/output/` — protocol and markdown rendering.
 
 ## Tool Profiles
 
-Supported profiles:
+Supported profiles: `generic`, `codex`, `claude-code`, `copilot`, `opencode`.
 
-- `generic`
-- `codex`
-- `claude-code`
-- `copilot`
-- `opencode`
-
-`--tool` changes handoff metadata and profile wording while preserving the shared protocol structure. Unknown values are rejected by the CLI.
+`--tool` changes handoff metadata, profile wording, and asset install destinations while preserving the shared protocol structure. Unknown values are rejected by the CLI. Per-tool model assignments live in `templates/<tool>/model-map.json` — new models are a data update, not a code change.
 
 ## Current Limits
 
-- Local-first and file-based only.
-- No external LLM API calls.
-- No database, embeddings, semantic reranking, or MCP runtime dependency.
+- Local-first and file-based; the only network surface is your own llm-memory endpoint, and only when enabled.
+- No external LLM API calls — all orchestration, routing, and harvesting is deterministic; agents author content, hyper validates and routes it.
 - Review checks are deterministic path-based warnings, not full static analysis.
-- Visp-Kit artifacts are consumed from `.visp/`; this tool does not generate Visp-Kit specs or plans.
+- Visp-Kit artifacts are consumed via its CLI and files; this tool does not generate kit specs or plans.
+- Routing directives are advisory text; the coding tool owns actual model selection.
 
-## Phase 2 Roadmap
+## Roadmap
 
-- Add an `LlmMemoryProvider` adapter once the local-first `llm-memory` API is stable.
-- Add ArcadeDB-backed recall and semantic search behind the typed memory seams.
-- Add validation command detection/execution adapters.
-- Add branch-aware session tracking.
-- Add MCP server mode for compatible coding tools.
+- MCP server mode (`McpBridge` seam is typed and ready; slash commands cover the UX today).
+- ArcadeDB-backed semantic recall behind the `SemanticMemoryProvider` seam.
+- Cross-project telemetry and skill sharing.
+- npm publication.
 
 ## Development
 
 ```bash
+pnpm check     # typecheck + test + build
 pnpm test
-pnpm typecheck
-pnpm build
+pnpm exec vitest run tests/<file>.test.ts
 ```
