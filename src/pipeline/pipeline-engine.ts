@@ -1,18 +1,20 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { kitTaskGraphSchema, type KitTask, type KitTaskGraph } from "../kit/kit-schemas.js";
+import { discoverPlanTaskGraph } from "../plan/plan-readers.js";
 import type { PipelineState } from "../core/types.js";
 
 const COMPLETED_STATUSES = new Set(["verified", "done"]);
 
 /**
- * Locate and parse a feature's `task-graph.json`. Never throws: a missing
- * directory, missing file, unreadable file, or invalid JSON all resolve to
- * `null`. When multiple feature directories exist, the one matching
+ * Locate and parse a feature's `.visp` `task-graph.json`. Never throws: a
+ * missing directory, missing file, unreadable file, or invalid JSON all resolve
+ * to `null`. When multiple feature directories exist, the one matching
  * `featureDirName` is preferred, otherwise the last directory in sorted order
- * (i.e. the highest feature number) is used.
+ * (i.e. the highest feature number) is used. This is the visp-kit path only —
+ * the loose plan-file fallback lives in {@link loadTaskGraphDetailed}.
  */
-export async function loadTaskGraph(
+async function loadVispKitTaskGraph(
   projectPath: string,
   featureDirName?: string
 ): Promise<KitTaskGraph | null> {
@@ -60,6 +62,44 @@ export async function loadTaskGraph(
 
   const result = kitTaskGraphSchema.safeParse(data);
   return result.success ? result.data : null;
+}
+
+/**
+ * Detailed task-graph resolution. The visp-kit scan runs first and unchanged;
+ * only when it yields `null` does the loose plan-file fallback
+ * ({@link discoverPlanTaskGraph}) run. `source` is `"visp-kit"` for the kit
+ * path, the plan reader's source string for a fallback, or `null` when nothing
+ * matched. Never throws.
+ */
+export async function loadTaskGraphDetailed(
+  projectPath: string,
+  featureDirName?: string
+): Promise<{ graph: KitTaskGraph | null; source: string | null; warnings: string[] }> {
+  const kitGraph = await loadVispKitTaskGraph(projectPath, featureDirName);
+  if (kitGraph) {
+    return { graph: kitGraph, source: "visp-kit", warnings: [] };
+  }
+
+  try {
+    return await discoverPlanTaskGraph(projectPath);
+  } catch {
+    return { graph: null, source: null, warnings: [] };
+  }
+}
+
+/**
+ * Locate and parse a task graph, preferring the visp-kit `task-graph.json` and
+ * falling back to loose plan files (`PLAN.md`/`TODO.md`/`tasks.md`, Spec Kit,
+ * OpenSpec) when no kit graph exists. Never throws; returns `null` when nothing
+ * parseable is found. Signature preserved for existing callers — use
+ * {@link loadTaskGraphDetailed} when the source/warnings are needed.
+ */
+export async function loadTaskGraph(
+  projectPath: string,
+  featureDirName?: string
+): Promise<KitTaskGraph | null> {
+  const { graph } = await loadTaskGraphDetailed(projectPath, featureDirName);
+  return graph;
 }
 
 /**
