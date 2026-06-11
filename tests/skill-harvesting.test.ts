@@ -1,12 +1,14 @@
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { runCli } from "../src/cli/index.js";
 import { defaultConfig } from "../src/core/defaults.js";
-import { readConfig } from "../src/core/session-manager.js";
+import { initializeProject, readConfig } from "../src/core/session-manager.js";
 import {
   INCOMING_DIR,
   REJECTED_DIR,
+  STAGED_DIR,
   moveToRejected,
   parseProposal,
   scanIncoming
@@ -21,6 +23,7 @@ import {
   writeSkillRegistry
 } from "../src/skills/skill-registry.js";
 import type { SkillRegistry } from "../src/skills/skill-registry.js";
+import { startMockMemoryServer, type MockMemoryServer } from "./helpers/mock-memory-server.js";
 
 async function makeProject(): Promise<string> {
   return mkdtemp(join(tmpdir(), "visp-skill-"));
@@ -334,5 +337,261 @@ describe("skillMode config lockstep", () => {
 
   it("defaults to skillMode auto", () => {
     expect(defaultConfig.skillMode).toBe("auto");
+  });
+});
+
+let server: MockMemoryServer | undefined;
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  if (server) {
+    await server.close();
+    server = undefined;
+  }
+});
+
+const baseConfig = {
+  defaultTool: "generic",
+  tokenBudget: 12000,
+  contextMode: "deterministic",
+  blockedPaths: [".git"]
+};
+
+async function createProject(): Promise<string> {
+  const projectPath = await mkdtemp(join(tmpdir(), "visp-skill-int-"));
+  await writeFile(join(projectPath, "README.md"), "# Demo\n", "utf8");
+  await writeFile(join(projectPath, "package.json"), "{\"name\":\"demo\"}\n", "utf8");
+  await initializeProject(projectPath);
+  return projectPath;
+}
+
+async function writeConfig(projectPath: string, config: Record<string, unknown>): Promise<void> {
+  await initializeProject(projectPath);
+  await writeFile(
+    join(projectPath, ".visp", "hyper", "config.json"),
+    `${JSON.stringify(config, null, 2)}\n`,
+    "utf8"
+  );
+}
+
+async function dropProposal(projectPath: string, fileName: string, content: string): Promise<void> {
+  const incoming = join(projectPath, INCOMING_DIR);
+  await mkdir(incoming, { recursive: true });
+  await writeFile(join(incoming, fileName), content, "utf8");
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function captureLogs(): string[] {
+  const logs: string[] = [];
+  const collect = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(" "));
+  };
+  vi.spyOn(console, "log").mockImplementation(collect);
+  vi.spyOn(console, "warn").mockImplementation(collect);
+  return logs;
+}
+
+describe("skill harvesting integration", () => {
+  it("AC003a: auto mode installs a proposal, removes the incoming file, and registers it", async () => {
+    const projectPath = await createProject();
+    await writeConfig(projectPath, { ...baseConfig, memoryMode: "file", skillMode: "auto" });
+    captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "ship it", "--tool", "claude-code"]);
+
+    await dropProposal(projectPath, "deploy-dance.md", validProposalFile());
+
+    const logs = captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "remember", "--summary", "done"]);
+
+    expect(await exists(join(projectPath, ".claude", "skills", "hyper-deploy-dance", "SKILL.md"))).toBe(true);
+    expect(await exists(join(projectPath, INCOMING_DIR, "deploy-dance.md"))).toBe(false);
+
+    const { registry } = await readSkillRegistry(projectPath);
+    expect(registry.skills.map((s) => s.name)).toContain("deploy-dance");
+    expect(logs.some((l) => l.includes("skill installed: deploy-dance -> .claude/skills/hyper-deploy-dance/SKILL.md"))).toBe(
+      true
+    );
+  });
+
+  it("AC003b: review mode stages the proposal and does not install it", async () => {
+    const projectPath = await createProject();
+    await writeConfig(projectPath, { ...baseConfig, memoryMode: "file", skillMode: "review" });
+    captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "ship it", "--tool", "claude-code"]);
+
+    await dropProposal(projectPath, "deploy-dance.md", validProposalFile());
+
+    const logs = captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "remember", "--summary", "done"]);
+
+    expect(await exists(join(projectPath, STAGED_DIR, "deploy-dance.md"))).toBe(true);
+    expect(await exists(join(projectPath, ".claude", "skills", "hyper-deploy-dance", "SKILL.md"))).toBe(false);
+    const { registry } = await readSkillRegistry(projectPath);
+    expect(registry.skills).toHaveLength(0);
+    expect(logs.some((l) => l.includes("skill staged for review: deploy-dance"))).toBe(true);
+  });
+
+  it("AC003c: an invalid proposal is rejected with an error comment", async () => {
+    const projectPath = await createProject();
+    await writeConfig(projectPath, { ...baseConfig, memoryMode: "file", skillMode: "auto" });
+    captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "ship it", "--tool", "claude-code"]);
+
+    await dropProposal(projectPath, "bad.md", "no frontmatter here");
+
+    const logs = captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "remember", "--summary", "done"]);
+
+    const rejected = join(projectPath, REJECTED_DIR, "bad.md");
+    expect(await exists(rejected)).toBe(true);
+    const content = await readFile(rejected, "utf8");
+    expect(content).toContain("<!-- rejected: missing frontmatter fence -->");
+    expect(logs.some((l) => l.includes("skill rejected: bad.md (missing frontmatter fence)"))).toBe(true);
+  });
+
+  it("AC004a: a subsequent start prints the installed skill in project_skills", async () => {
+    const projectPath = await createProject();
+    await writeConfig(projectPath, { ...baseConfig, memoryMode: "file", skillMode: "auto" });
+    captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "ship it", "--tool", "claude-code"]);
+    await dropProposal(projectPath, "deploy-dance.md", validProposalFile());
+    await runCli(["node", "visp-hyper", "--project", projectPath, "remember", "--summary", "done"]);
+
+    const logs = captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "again", "--tool", "claude-code"]);
+    const text = logs.join("\n");
+    expect(text).toContain("project_skills:");
+    expect(text).toContain("hyper-deploy-dance");
+    expect(text).toContain("skill_protocol:");
+  });
+
+  it("AC004b: --used-skill records usage and warns on unknown names", async () => {
+    const projectPath = await createProject();
+    await writeConfig(projectPath, { ...baseConfig, memoryMode: "file", skillMode: "auto" });
+    captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "ship it", "--tool", "claude-code"]);
+    await dropProposal(projectPath, "deploy-dance.md", validProposalFile());
+    await runCli(["node", "visp-hyper", "--project", projectPath, "remember", "--summary", "done"]);
+
+    const logs = captureLogs();
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "remember",
+      "--summary",
+      "again",
+      "--used-skill",
+      "deploy-dance",
+      "--used-skill",
+      "missing-skill"
+    ]);
+
+    const { registry } = await readSkillRegistry(projectPath);
+    expect(registry.skills.find((s) => s.name === "deploy-dance")?.usedCount).toBe(1);
+    expect(logs.some((l) => l.includes("warning: unknown skill: missing-skill"))).toBe(true);
+  });
+
+  it("AC005: report flags a stale skill as a prune candidate", async () => {
+    const projectPath = await createProject();
+
+    const registry: SkillRegistry = {
+      skills: [
+        {
+          name: "deploy-dance",
+          description: "Deploy the stack.",
+          whenToUse: "When deploying.",
+          originSessionId: "vh_seed",
+          installedAtSessionCount: 1,
+          destinations: [".claude/skills/hyper-deploy-dance/SKILL.md"],
+          usedCount: 0,
+          lastUsedAt: null,
+          lastUsedSessionCount: null
+        }
+      ]
+    };
+    await writeSkillRegistry(projectPath, registry);
+
+    const sessions: Record<string, unknown> = {};
+    for (let i = 0; i < 7; i += 1) {
+      sessions[`vh_${i}`] = {
+        id: `vh_${i}`,
+        goal: "g",
+        tool: "generic",
+        projectPath,
+        createdAt: "2026-06-11T00:00:00.000Z",
+        updatedAt: "2026-06-11T00:00:00.000Z",
+        phase: "implementation",
+        relevantFiles: []
+      };
+    }
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "state.json"),
+      `${JSON.stringify({ activeSessionId: null, sessions }, null, 2)}\n`,
+      "utf8"
+    );
+
+    const logs = captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "report"]);
+    const text = logs.join("\n");
+    expect(text).toContain("hyper-deploy-dance: used=0 last_used=never [PRUNE CANDIDATE]");
+
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", projectPath, "report", "--json"]);
+    const parsed = JSON.parse(logs.join("\n"));
+    const skill = parsed.skills.find((s: { name: string }) => s.name === "deploy-dance");
+    expect(skill.pruneCandidate).toBe(true);
+  });
+
+  it("AC006: installed skills mirror to the memory server as semantic patterns", async () => {
+    const projectPath = await createProject();
+    server = await startMockMemoryServer({
+      "GET /healthz": { json: { status: "ok" } },
+      "POST /recall": { json: [] },
+      "POST /memories": { json: { id: "saved", content: "x", layer: "semantic", category: "pattern" } }
+    });
+    await writeConfig(projectPath, { ...baseConfig, memoryMode: "llm-memory", memoryEndpoint: server.url, skillMode: "auto" });
+    captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "ship it", "--tool", "claude-code"]);
+
+    await dropProposal(projectPath, "deploy-dance.md", validProposalFile());
+    await runCli(["node", "visp-hyper", "--project", projectPath, "remember", "--summary", "done"]);
+
+    const pattern = server.requests.find(
+      (r) => r.path === "/memories" && (r.body as { category?: string }).category === "pattern"
+    );
+    expect(pattern?.method).toBe("POST");
+    expect(pattern?.body).toMatchObject({ layer: "semantic", category: "pattern" });
+    expect((pattern?.body as { content: string }).content).toContain("hyper-deploy-dance");
+  });
+
+  it("AC006: a closed memory endpoint still installs the skill and exits zero", async () => {
+    const closed = await startMockMemoryServer({});
+    const url = closed.url;
+    await closed.close();
+
+    const projectPath = await createProject();
+    await writeConfig(projectPath, { ...baseConfig, memoryMode: "file", skillMode: "auto" });
+    captureLogs();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "ship it", "--tool", "claude-code"]);
+    await writeConfig(projectPath, { ...baseConfig, memoryMode: "llm-memory", memoryEndpoint: url, skillMode: "auto" });
+
+    await dropProposal(projectPath, "deploy-dance.md", validProposalFile());
+
+    captureLogs();
+    await expect(
+      runCli(["node", "visp-hyper", "--project", projectPath, "remember", "--summary", "done"])
+    ).resolves.toBeUndefined();
+
+    expect(await exists(join(projectPath, ".claude", "skills", "hyper-deploy-dance", "SKILL.md"))).toBe(true);
   });
 });

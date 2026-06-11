@@ -1,8 +1,11 @@
 import { Command } from "commander";
 import { readState } from "../../core/session-manager.js";
 import { readRoutingState, type RoutingDecision } from "../../routing/routing-state.js";
+import { readSkillRegistry } from "../../skills/skill-registry.js";
 import { readTelemetry, type TelemetryAttempt } from "../../telemetry/telemetry-store.js";
 import { resolveProjectPath } from "./shared.js";
+
+const PRUNE_THRESHOLD = 5;
 
 interface TierBreakdown {
   tier: string;
@@ -31,6 +34,14 @@ interface ReportAggregate {
   };
   quarantines: Array<{ taskClass: string; untilSessionCount: number }>;
   recentDecisions: RoutingDecision[];
+  skills: SkillReport[];
+}
+
+interface SkillReport {
+  name: string;
+  usedCount: number;
+  lastUsedAt: string | null;
+  pruneCandidate: boolean;
 }
 
 const RECENT_DECISION_LIMIT = 10;
@@ -77,6 +88,17 @@ async function buildReport(projectPath: string): Promise<ReportAggregate> {
 
   const recentDecisions = routing.decisions.slice(-RECENT_DECISION_LIMIT);
 
+  const { registry } = await readSkillRegistry(projectPath);
+  const skills = registry.skills.map<SkillReport>((skill) => {
+    const reference = skill.lastUsedSessionCount ?? skill.installedAtSessionCount;
+    return {
+      name: skill.name,
+      usedCount: skill.usedCount,
+      lastUsedAt: skill.lastUsedAt,
+      pruneCandidate: sessionCount - reference >= PRUNE_THRESHOLD
+    };
+  });
+
   return {
     totals: {
       sessions: sessionCount,
@@ -96,7 +118,8 @@ async function buildReport(projectPath: string): Promise<ReportAggregate> {
     })),
     tokens,
     quarantines,
-    recentDecisions
+    recentDecisions,
+    skills
   };
 }
 
@@ -136,7 +159,7 @@ function formatRate(rate: number | null): string {
 }
 
 function renderReport(aggregate: ReportAggregate): string {
-  const { totals, perTier, perClass, tokens, quarantines, recentDecisions } = aggregate;
+  const { totals, perTier, perClass, tokens, quarantines, recentDecisions, skills } = aggregate;
   const lines: string[] = [];
   lines.push("VISP_HYPER_REPORT");
   lines.push(`sessions: ${totals.sessions}    tasks: ${totals.tasks}    attempts: ${totals.attempts}`);
@@ -169,6 +192,17 @@ function renderReport(aggregate: ReportAggregate): string {
   } else {
     for (const decision of recentDecisions) {
       lines.push(`  - ${decision.taskId} [${decision.taskClass}] -> ${decision.tier}: ${decision.reason}`);
+    }
+  }
+
+  lines.push("skills:");
+  if (skills.length === 0) {
+    lines.push("  - none");
+  } else {
+    for (const skill of skills) {
+      const lastUsed = skill.lastUsedAt ?? "never";
+      const prune = skill.pruneCandidate ? " [PRUNE CANDIDATE]" : "";
+      lines.push(`  - hyper-${skill.name}: used=${skill.usedCount} last_used=${lastUsed}${prune}`);
     }
   }
 

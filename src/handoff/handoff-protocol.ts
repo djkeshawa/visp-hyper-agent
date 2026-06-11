@@ -103,9 +103,19 @@ export function buildHandoffProtocol(session: SessionRecord): HandoffProtocol {
   };
 }
 
-export function renderHandoff(session: SessionRecord): string {
+export interface RenderHandoffOptions {
+  skills?: Array<{ name: string; whenToUse: string }>;
+}
+
+const skillProtocol = [
+  "skill_protocol:",
+  "  To propose a reusable skill, write a markdown file to .visp/hyper/skill-proposals/incoming/<kebab-name>.md",
+  "  with frontmatter (name, description, when_to_use, evidence) and the skill steps as the body."
+];
+
+export function renderHandoff(session: SessionRecord, options?: RenderHandoffOptions): string {
   const handoff = buildHandoffProtocol(session);
-  return [
+  const lines = [
     "BEGIN_VISP_AGENT_HANDOFF",
     `version: ${handoff.version}`,
     `session_id: ${handoff.sessionId}`,
@@ -133,7 +143,22 @@ export function renderHandoff(session: SessionRecord): string {
     `  ${handoff.nextInstruction}`,
     "",
     "completion_instruction:",
-    `  ${handoff.completionInstruction}`,
-    "END_VISP_AGENT_HANDOFF"
-  ].join("\n");
+    `  ${handoff.completionInstruction}`
+  ];
+
+  // Only run/start pass `options`; the default (no options) output stays
+  // byte-identical so existing handoff contracts are preserved.
+  if (options) {
+    const skills = options.skills ?? [];
+    if (skills.length > 0) {
+      lines.push("", "project_skills:");
+      for (const skill of skills) {
+        lines.push(`  - hyper-${skill.name}: ${skill.whenToUse}`);
+      }
+    }
+    lines.push("", ...skillProtocol);
+  }
+
+  lines.push("END_VISP_AGENT_HANDOFF");
+  return lines.join("\n");
 }

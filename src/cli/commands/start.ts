@@ -13,6 +13,7 @@ import type { KitContextPack } from "../../kit/kit-schemas.js";
 import { readMemoryPack } from "../../memory/file-memory-provider.js";
 import { LlmMemoryProvider } from "../../memory/llm-memory-provider.js";
 import { selectMemoryProvider } from "../../memory/provider-factory.js";
+import { readSkillRegistry } from "../../skills/skill-registry.js";
 import {
   type RecalledMemory,
   renderAgentInstructions,
@@ -78,7 +79,10 @@ export async function executeStart(
     tool,
     relevantFiles: contextFiles.map((file) => file.path)
   });
-  const handoff = renderHandoff(session);
+  const { registry } = await readSkillRegistry(projectPath);
+  const handoff = renderHandoff(session, {
+    skills: registry.skills.map((skill) => ({ name: skill.name, whenToUse: skill.whenToUse }))
+  });
   const protocol = buildHandoffProtocol(session);
 
   await writeText(vispPath(projectPath, "hyper", "current", "session.md"), renderSession(session));

@@ -1,14 +1,22 @@
 import { execFile } from "node:child_process";
-import { join } from "node:path";
+import { rm } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { Command } from "commander";
 import { readTextIfExists } from "../../core/fs-utils.js";
-import { getActiveSession, readConfig, updateActiveSession } from "../../core/session-manager.js";
-import type { MemoryRecord, SessionRecord } from "../../core/types.js";
+import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
+import type { HyperConfig, MemoryRecord, SessionRecord } from "../../core/types.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { writeSessionMemory } from "../../memory/file-memory-provider.js";
 import { LlmMemoryProvider } from "../../memory/llm-memory-provider.js";
 import { selectMemoryProvider } from "../../memory/provider-factory.js";
+import {
+  moveToRejected,
+  moveToStaged,
+  scanIncoming,
+  type SkillProposal
+} from "../../skills/skill-proposals.js";
+import { installSkill, isDuplicate, readSkillRegistry, recordUsage } from "../../skills/skill-registry.js";
 import { appendUsage } from "../../telemetry/telemetry-store.js";
 import { resolveProjectPath } from "./shared.js";
 
@@ -23,6 +31,7 @@ export function rememberCommand(): Command {
     .option("--input-tokens <n>", "Input token count for this session, recorded to telemetry and forwarded to the kit budget.")
     .option("--output-tokens <n>", "Output token count for this session, recorded to telemetry and forwarded to the kit budget.")
     .option("--model <name>", "Model name associated with the recorded token usage.")
+    .option("--used-skill <name...>", "Record usage of an installed skill by name (repeatable).")
     .action(async function (
       this: Command,
       options: {
@@ -32,6 +41,7 @@ export function rememberCommand(): Command {
         inputTokens?: string;
         outputTokens?: string;
         model?: string;
+        usedSkill?: string[];
       }
     ) {
       const projectPath = resolveProjectPath(this);
@@ -50,11 +60,112 @@ export function rememberCommand(): Command {
         followUps: options.followUp
       };
       const path = await writeSessionMemory({ projectPath, ...record });
-      await writeBackRemoteMemory(projectPath, record);
+      const config = await readConfig(projectPath);
+      const harvest = await harvestSkillProposals(projectPath, config, session);
+      for (const line of harvest.lines) {
+        console.log(line);
+      }
+      await writeBackRemoteMemory(projectPath, record, harvest.installed);
+      await recordSkillUsage(projectPath, options.usedSkill);
       await recordTokenUsage(projectPath, session, options);
       await updateActiveSession(projectPath, (current) => ({ ...current, phase: "remembered" }));
       console.log(`Memory written to ${path}`);
     });
+}
+
+/**
+ * Process agent-dropped skill proposals: reject invalid files, skip duplicates,
+ * and either stage (review mode) or install (auto mode) new proposals. Returns
+ * the report lines to print plus the proposals that were actually installed this
+ * run (for memory mirroring). All failures degrade to a warning line so the host
+ * command never breaks.
+ */
+export async function harvestSkillProposals(
+  projectPath: string,
+  config: HyperConfig,
+  session: SessionRecord
+): Promise<{ lines: string[]; installed: SkillProposal[] }> {
+  const lines: string[] = [];
+  const installed: SkillProposal[] = [];
+  try {
+    const { valid, invalid } = await scanIncoming(projectPath);
+
+    for (const entry of invalid) {
+      await moveToRejected(projectPath, entry.sourcePath, entry.error);
+      lines.push(`skill rejected: ${basename(entry.sourcePath)} (${entry.error})`);
+    }
+
+    if (valid.length === 0) {
+      return { lines, installed };
+    }
+
+    const { registry } = await readSkillRegistry(projectPath);
+    const state = await readState(projectPath);
+    const sessionCount = Object.keys(state.sessions).length;
+
+    for (const proposal of valid) {
+      if (isDuplicate(registry, proposal)) {
+        await rm(proposal.sourcePath, { force: true });
+        lines.push(`skill skipped (duplicate): ${proposal.name}`);
+        continue;
+      }
+
+      if (config.skillMode === "review") {
+        await moveToStaged(projectPath, proposal.sourcePath);
+        lines.push(`skill staged for review: ${proposal.name}`);
+        continue;
+      }
+
+      const result = await installSkill(projectPath, proposal, {
+        tool: session.tool,
+        sessionId: session.id,
+        sessionCount
+      });
+      if (result.installed) {
+        await rm(proposal.sourcePath, { force: true });
+        registry.skills.push({
+          name: proposal.name,
+          description: proposal.description,
+          whenToUse: proposal.whenToUse,
+          originSessionId: session.id,
+          installedAtSessionCount: sessionCount,
+          destinations: [result.destination],
+          usedCount: 0,
+          lastUsedAt: null,
+          lastUsedSessionCount: null
+        });
+        installed.push(proposal);
+        lines.push(`skill installed: ${proposal.name} -> ${result.destination}`);
+      } else if (result.warning) {
+        lines.push(`warning: ${result.warning}`);
+      }
+    }
+  } catch (error) {
+    lines.push(`warning: skill harvesting failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return { lines, installed };
+}
+
+/**
+ * Record usages for skills named via `--used-skill`. Unknown names degrade to a
+ * warning line; the command still exits zero.
+ */
+async function recordSkillUsage(projectPath: string, names: string[] | undefined): Promise<void> {
+  if (!names || names.length === 0) {
+    return;
+  }
+  const state = await readState(projectPath);
+  const sessionCount = Object.keys(state.sessions).length;
+  for (const name of names) {
+    try {
+      const recorded = await recordUsage(projectPath, name, { sessionCount });
+      if (!recorded) {
+        console.log(`warning: unknown skill: ${name}`);
+      }
+    } catch (error) {
+      console.log(`warning: skill usage was not recorded for ${name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 }
 
 /**
@@ -136,7 +247,11 @@ async function recordTokenUsage(
  * llm-memory mode is active and healthy. Remote failure or fallback is non-fatal:
  * the file write already succeeded, so we only surface warnings and exit zero.
  */
-async function writeBackRemoteMemory(projectPath: string, record: MemoryRecord): Promise<void> {
+async function writeBackRemoteMemory(
+  projectPath: string,
+  record: MemoryRecord,
+  installedSkills: SkillProposal[]
+): Promise<void> {
   const config = await readConfig(projectPath);
   const selection = await selectMemoryProvider({ config, projectPath });
   for (const warning of selection.warnings) {
@@ -153,6 +268,11 @@ async function writeBackRemoteMemory(projectPath: string, record: MemoryRecord):
     }
     for (const followUp of record.followUps ?? []) {
       await provider.storeFollowUp(followUp);
+    }
+    for (const skill of installedSkills) {
+      await provider.storePattern(
+        `Skill available: hyper-${skill.name} — ${skill.description} (when: ${skill.whenToUse})`
+      );
     }
     for (const warning of provider.warnings) {
       console.warn(warning);

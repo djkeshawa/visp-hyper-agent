@@ -115,6 +115,16 @@ export class LlmMemoryProvider implements SemanticMemoryProvider {
     });
   }
 
+  async storePattern(content: string): Promise<void> {
+    await this.post("/memories", {
+      content,
+      layer: "semantic",
+      category: "pattern",
+      repo_id: this.repoId,
+      source: "visp-hyper"
+    });
+  }
+
   async getProjectProfile(projectPath: string): Promise<ProjectMemoryProfile | null> {
     const url = `${this.endpoint}/memories?repo_id=${encodeURIComponent(this.repoId)}&limit=20`;
     const parsed = await this.request(url, { method: "GET" }, memoryArraySchema);

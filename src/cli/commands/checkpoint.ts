@@ -2,8 +2,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Command, Option } from "commander";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
-import { getActiveSession, readState, updateActiveSession } from "../../core/session-manager.js";
+import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
 import { KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import { harvestSkillProposals } from "./remember.js";
 import { advance, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
 import {
   computeSuggestedTier,
@@ -151,6 +152,12 @@ export function checkpointCommand(): Command {
             // Advisory only; never fail the checkpoint because routing could not be computed.
           }
         }
+      }
+
+      const config = await readConfig(projectPath);
+      const harvest = await harvestSkillProposals(projectPath, config, session);
+      for (const line of harvest.lines) {
+        console.log(line);
       }
     });
 }
