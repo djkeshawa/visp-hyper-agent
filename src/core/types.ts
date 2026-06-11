@@ -7,6 +7,7 @@ export type HyperConfig = {
   memoryEndpoint: string;
   contextMode: "deterministic";
   blockedPaths: string[];
+  skillMode: "auto" | "review";
 };
 
 export type HyperState = {

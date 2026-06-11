@@ -6,6 +6,7 @@ export const defaultConfig: HyperConfig = {
   memoryMode: "file",
   memoryEndpoint: "http://localhost:8000",
   contextMode: "deterministic",
-  blockedPaths: [".env", ".env.*", "node_modules", "dist", "build", ".git"]
+  blockedPaths: [".env", ".env.*", "node_modules", "dist", "build", ".git"],
+  skillMode: "auto"
 };
 

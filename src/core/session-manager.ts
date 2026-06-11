@@ -11,7 +11,8 @@ const configSchema = z.object({
   memoryMode: z.enum(["file", "llm-memory"]),
   memoryEndpoint: z.string().default("http://localhost:8000"),
   contextMode: z.literal("deterministic"),
-  blockedPaths: z.array(z.string())
+  blockedPaths: z.array(z.string()),
+  skillMode: z.enum(["auto", "review"]).default("auto")
 });
 
 const pipelineStepRecordSchema = z.object({
