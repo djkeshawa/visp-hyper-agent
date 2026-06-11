@@ -1,140 +1,120 @@
-# Visp Hyper Agent — Roadmap v2 (post-M6)
+# Visp Hyper Agent — Roadmap v2 (post-M6, debate-refined)
 
 ## Context
 
-M1–M6 of the original vision are shipped: kit bridge, llm-memory provider, pipeline engine,
-tool asset installer, telemetry + quality-first routing, and skill harvesting (163 tests,
-features 002–007 built through the gated workflow itself).
+M1–M6 of the original vision are shipped (163 tests, features 002–007 built through the
+gated workflow itself). This roadmap was first drafted from a competitive analysis
+(June 2026), then **stress-tested by an adversarial two-agent debate** (champion vs.
+adversary, two rounds). The two sides converged; this document is the synthesis.
 
-The competitive analysis (June 2026) found a crowded field — GitHub Spec Kit, OpenSpec,
-BMAD, Kiro on the workflow side; Mem0/OpenMemory, Letta, Supermemory on memory — but
-three genuinely differentiated assets in this stack:
+### What the debate settled
 
-1. **Mechanical enforcement** — deterministic gates + evidence-gated task advancement,
-   where every competitor is advisory-only.
-2. **Workflow-integrated memory** — recall and distillation that fire automatically at
-   pipeline moments (task scope, checkpoint failure, before-change), not on agent whim.
-3. **Evidence-gated model routing** — local pass-rate telemetry deciding when a cheap
-   tier has *earned* a task class; nobody else does this.
+**The moat is real but much narrower than v2 originally claimed.** Not three moats —
+one: **session-time, cross-tool, fail-closed gating.**
+- It is *structurally* hard to absorb: no single vendor will ship neutral enforcement
+  that blocks its own agent across competitors' tools, and git pre-commit/CI gates sit
+  below the tool layer entirely. Platforms ship hook *primitives* (which lower our build
+  cost); they don't ship adversarial *policy*.
+- It is distinct from GitHub branch protection (post-hoc) — the niche is enforcement
+  *before tokens are burned*, mid-session.
 
-v2 strategy: **double down on the three moats, open everything else.** Stop competing on
-spec formats and memory storage; become the enforcement + intelligence layer that works
-on top of whatever artifacts and memory store the user already has.
+**Honest downgrades from the original framing:**
+- "Moat" → *incentive-blocked territory*: a window, not a wall. Platform absorption of
+  these ideas is the **best realistic outcome** for a solo project, not the threat.
+- Workflow-integrated memory: the *design* is right (deterministic firing points beat
+  recall-on-demand), but hooks + Mem0 can approximate it; it is not a business by
+  itself. Keep the design, drop it as a pillar.
+- Evidence-gated routing: the asymmetric quality-first *rule* (downgrades earned at
+  ≥90% first-attempt pass over ≥3 samples; failures escalate instantly + quarantine) is
+  genuinely novel — but it's an **idea best monetized as a publication**, not a
+  defensible telemetry product (cold start, n=1 data, advisory-only).
+- The three-repo install (TS CLI + TS kit + Python server) is an adoption killer.
+  Quick-mode ceremony as an afterthought indicts the strict workflow's cost.
 
-Honest framing of the two design beliefs this roadmap revisits:
-
-- *"A separate kit gives a more enforced workflow"* — true, but the enforcement lives in
-  the gate engine + hooks (~20% of visp-kit), not in owning the spec format (~80%,
-  undifferentiated vs GitHub/AWS distribution). Keep the engine, open the format. Also:
-  mechanical enforcement currently reaches only Claude Code (PreToolUse); git pre-commit
-  and CI gates are the genuinely platform-agnostic enforcement surfaces and become
-  first-class in v2.
-- *"Platform-agnostic memory matters because not all tools have it"* — the user-need is
-  real (memory is moat data; tool lock-in is a legitimate fear) but the *category* is
-  already served by MCP-based incumbents. The defensible asset is workflow-integrated
-  recall/distillation, so the memory backend becomes swappable while the integration
-  intelligence stays ours.
-
----
-
-## Track A — Adoption blockers first
-
-### A1. Risk-proportional ceremony (`visp-hyper quick`)
-The #1 reason a real user would turn this off: strict-mode artifact authoring costs as
-much as implementation for small changes (measured while dogfooding features 002–007).
-- New fast path: `visp-hyper quick "<small change>"` — auto-generated single-task graph,
-  clarification defaults accepted, spec/plan skipped, but **checkpoint evidence and scope
-  gates still enforced**. Maps to visp-kit's `relaxed` strictness; `run` keeps strict.
-- Policy-driven escalation: task risk (files touched, dependency changes, blocked-path
-  proximity) can force a quick task up into the full workflow.
-- Success metric: a one-file fix goes idea → verified commit in under 2 minutes of
-  overhead while still being mechanically scope-checked.
-
-### A2. Ship it
-- npm publish (`npx visp-hyper init --tool claude-code` quickstart), versioned with
-  visp-kit compatibility ranges.
-- Docs site from existing README/CLAUDE.md content + a 5-minute demo repo/video showing
-  the blocked-gate → next-command → checkpoint loop.
-- Windows path/exec audit (everything is execFile + node:path already; verify).
-
-## Track B — Enforcement everywhere (moat #1)
-
-### B1. Cross-platform mechanical gates
-- `init --tool <any>` offers visp-kit's **git pre-commit** scope hook and **CI gate**
-  (`visp hooks git` / `visp hooks ci`) for every tool, not just claude-code — the
-  pre-commit hook blocks out-of-scope changes for Codex/Copilot/anything.
-- `visp-hyper doctor`: one command validating the whole enforcement chain — visp binary,
-  kit state, hooks installed, llm-memory health, tool assets fresh, telemetry/routing
-  stores valid.
-
-### B2. Session resume protocol
-`visp-hyper resume` — re-print the current task's handoff + action block with a delta
-since last checkpoint (changed files, remaining acceptance criteria). Cheap re-grounding
-after context-window resets; chronic pain in long agent sessions, and a natural fit for
-the deterministic-state design.
-
-## Track C — Open the walled garden (interop)
-
-### C1. Spec-format adapters
-- `KitSource` abstraction over today's visp-kit reader: adapters that read **GitHub
-  Spec Kit** and **OpenSpec** artifacts into the same task-graph/context shapes the
-  pipeline engine consumes. Gates degrade gracefully where a format lacks equivalents
-  (no policy engine → hyper's own scope checks + git hook still apply).
-- Positioning shift: "the evidence-gate and routing layer for spec-driven development"
-  — works with the SDD tool you already use; visp-kit remains the reference (and
-  strictest) backend.
-
-### C2. Memory backend adapters
-- `Mem0Provider` (OpenMemory MCP or REST) implementing the existing `MemoryProvider`/
-  `SemanticMemoryProvider` seams; llm-memory stays the reference implementation.
-- The integration intelligence (task-scoped recall, before-change warnings, failure →
-  gotcha distillation, skill mirroring) is backend-independent — that is the product.
-
-### C3. MCP server mode
-- `visp-hyper serve --mcp` exposing hyper_run/next/checkpoint/review/remember/report via
-  the typed `McpBridge` seam (official MCP TS SDK as optional/lazy dependency). Unlocks
-  Cursor, Windsurf, and anything MCP-capable without slash-command support.
-
-## Track D — Make routing actually fire (moat #3's cold-start fix)
-
-### D1. Cross-project telemetry
-Per-project evidence (≥3 samples per task class) means most projects never accumulate
-enough data to downgrade — the headline cost feature rarely fires. Fix:
-- Opt-in global store (`~/.visp-hyper/telemetry.json`) aggregating attempts across
-  projects, keyed by task class + tier; project-local evidence overrides global.
-- Shipped priors: defaults derived from dogfooding data so routing gives sane advice
-  from session one.
-
-### D2. Publish the routing results
-Run a controlled comparison (same task set, cheap tier with/without the harness; track
-first-attempt pass rate + tokens) and write it up. The quality-first routing loop is the
-most publishable idea in the stack — it can travel further than the codebase and is the
-best marketing asset available.
-
-## Track E — Hardening
-
-- Contract tests against a pinned real visp-kit version in CI (the shim missed three
-  real CLI-flag bugs; live-binary tests are the proven catch).
-- Telemetry/registry pruning (size caps, archival) for long-lived projects.
-- Failure-pattern memory: verify/review failure signatures stored as `antipattern`
-  memories and surfaced in before-change warnings (closes the loop designed in M5).
-- Skill quality: usage-weighted ordering in handoffs; `visp-hyper skills prune` applying
-  the report's prune flags with confirmation.
+**Success metric (realistic, solo OSS):** meaningful downloads + one circulating
+writeup within two months — or a cheap, documented "no" that ends the bet honestly.
+Reputation, leverage, and ideas absorbed upstream count as wins.
 
 ---
 
-## Sequencing
+## The plan
 
-| Phase | Items | Rationale |
+### Month 1 — The Wedge (v0.2): one package, one pitch, zero config
+
+Extract the fail-closed gate engine into a single `npx`-installable entry — no Python,
+no mandatory visp-kit, file-memory default. One pitch: *"your agent's work is
+mechanically scope-checked and only advances on verified evidence."* The demoable
+"it actually said no" moment is the product.
+
+Contents (consolidates A1/B1/C1/C3 from the pre-debate draft):
+1. **Evidence-gated checkpoint loop** — the existing pipeline engine + checkpoint
+   verify/review advancement, runnable without visp-kit.
+2. **Quick mode as the DEFAULT ceremony level** — auto single-task graph, scope +
+   evidence gates still enforced; strict visp-kit workflow becomes the opt-in
+   "reference backend" for power users.
+3. **Loose plan-file readers** instead of formal adapters — plain markdown task lists,
+   GitHub Spec Kit, and OpenSpec artifacts read into the same task-graph shape
+   (graceful degradation where a format lacks gates; hyper's own scope checks + git
+   hook still apply).
+4. **Enforcement surfaces first-class for every tool**: Claude Code PreToolUse hooks,
+   **git pre-commit scope gate, CI gate** — the absorption-proof, tool-agnostic layer.
+5. **MCP server mode** (pulled forward from v0.4) so Cursor/Windsurf/anything work on
+   day one alongside slash commands.
+6. 5-minute demo repo + video showing: blocked gate → exact next command → checkpoint
+   pass → advance.
+
+### Month 2 — The Evidence (v0.3): publish or perish, dated
+
+7. **The routing study (D2), now a dated deliverable**: same task set, cheap tier
+   with/without the harness; first-attempt verify pass rate + token cost. Publish the
+   writeup **even if negative** — a negative result kills the thesis cheaply and is
+   still circulating content. This item pays off in every branch.
+8. **Shipped priors, not infrastructure (D1-lite)**: routing defaults derived from the
+   study baked into the wedge as advisory tiers. No global telemetry store.
+
+### Months 3–6 — Traction-gated only
+
+Proceed on items below **only in response to inbound demand/issues**; otherwise stop
+and re-plan from what the downloads and writeup reception say.
+9. `visp-hyper resume` — delta re-grounding after context resets (cheap, fits the
+   deterministic state design).
+10. `visp-hyper doctor` — one-command validation of the enforcement chain.
+11. Hardening: live-binary contract tests against pinned visp-kit in CI, telemetry/
+    registry pruning, Windows audit.
+12. Memory backend adapter (Mem0/OpenMemory) — **only if inbound demand names it**;
+    the deterministic firing points (task-scoped recall, before-change warnings,
+    failure → gotcha distillation) remain the differentiated layer and are
+    backend-independent by design.
+
+## Killed / deferred (with reasons)
+
+| Item | Verdict | Why |
 |---|---|---|
-| v0.2 | A1, A2, B1 | Remove the adoption blockers; make enforcement the cross-platform story |
-| v0.3 | C2, B2, D1 | Swappable memory + resume + routing that actually fires |
-| v0.4 | C1, C3 | Open the spec format; reach non-slash-command tools |
-| ongoing | D2, E | Evidence publication and hardening |
+| Formal spec-format adapter framework (old C1) | Replaced | Loose plan-file readers in the wedge deliver the value at a fraction of the maintenance surface |
+| Memory backend adapters now (old C2) | Deferred | Integrating with competitors before users exist; demand-gated (item 12) |
+| Cross-project global telemetry store (old D1) | Killed | Infrastructure for users who don't exist; shipped priors suffice |
+| Subagent fleet templates as a pillar | Demoted | Claude Code ships subagents natively; ours remain bundled config, not product |
+| llm-memory as the promoted path | Demoted | File memory is the blessed default; llm-memory stays the reference SemanticMemoryProvider for power users |
+| Strict workflow as the entry point | Inverted | Quick mode is the front door; strict mode is the power-user backend |
 
-## Non-goals (explicit)
+## Non-goals (unchanged)
 
-- Competing with Mem0/Letta on general-purpose memory storage.
-- Competing with Spec Kit/OpenSpec on spec authoring UX or artifact richness.
-- Any LLM calls from visp-hyper; all orchestration stays deterministic.
-- Automatic model switching — directives remain advisory; tools own model selection.
+- Competing with Mem0/Letta on memory storage, or Spec Kit/OpenSpec on spec authoring.
+- Any LLM calls from visp-hyper; orchestration stays deterministic.
+- Automatic model switching — directives remain advisory.
+
+---
+
+## Appendix: debate record (condensed)
+
+- **Champion round 1**: moats survive absorption structurally (cross-tool enforcement,
+  state-machine-owned memory firing, vendor-incentive-misaligned routing); but OpenSpec
+  adapter must come earlier, D2 must be dated, three-repo install unaddressed.
+- **Adversary round 1**: features-not-moats for a solo dev (no distribution/community/
+  data); adoption math fatal; extract one wedge (standalone checkpoint loop), publish
+  evidence month 2, traction-gate everything else; absorption is the best outcome.
+- **Round 2 convergence**: both sides independently specified nearly identical plans —
+  the wedge package (quick-default, plan-file readers, git/CI + MCP first-class),
+  dated D2 with shipped priors, the same kill list, visp-kit as opt-in strict backend.
+  Residual disagreement (memory state-machine exclusivity vs. hook-approximability)
+  resolved by demand-gating the memory track.
