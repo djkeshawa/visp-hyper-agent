@@ -39,6 +39,7 @@ export function repoIdForProject(projectPath: string): string {
 interface LlmMemoryInput {
   endpoint: string;
   projectPath: string;
+  repoId?: string;
   timeoutMs?: number;
   apiKey?: string;
 }
@@ -53,7 +54,7 @@ export class LlmMemoryProvider implements SemanticMemoryProvider {
 
   constructor(input: LlmMemoryInput) {
     this.endpoint = (input.endpoint || DEFAULT_ENDPOINT).replace(/\/+$/u, "");
-    this.repoId = repoIdForProject(input.projectPath);
+    this.repoId = input.repoId && input.repoId.length > 0 ? input.repoId : repoIdForProject(input.projectPath);
     this.timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.apiKey = input.apiKey ?? process.env.VISP_HYPER_MEMORY_API_KEY;
   }

@@ -7,6 +7,7 @@ export type HyperConfig = {
   tokenBudget: number;
   memoryMode: "file" | "llm-memory";
   memoryEndpoint: string;
+  memoryRepoId?: string;
   contextMode: "deterministic";
   blockedPaths: string[];
   skillMode: "auto" | "review";

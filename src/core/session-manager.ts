@@ -11,6 +11,7 @@ const configSchema = z.object({
   tokenBudget: z.number().int().positive(),
   memoryMode: z.enum(["file", "llm-memory"]),
   memoryEndpoint: z.string().default("http://localhost:8000"),
+  memoryRepoId: z.string().optional(),
   contextMode: z.literal("deterministic"),
   blockedPaths: z.array(z.string()),
   skillMode: z.enum(["auto", "review"]).default("auto")

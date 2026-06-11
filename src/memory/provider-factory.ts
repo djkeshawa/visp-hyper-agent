@@ -44,6 +44,7 @@ export async function selectMemoryProvider(input: {
   const provider = new LlmMemoryProvider({
     endpoint,
     projectPath: input.projectPath,
+    repoId: input.config.memoryRepoId,
     timeoutMs: input.timeoutMs
   });
   return { provider, mode: "llm-memory", warnings: [] };
