@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { defaultConfig } from "./defaults.js";
 import { ensureDir, readTextIfExists, vispPath, writeText } from "./fs-utils.js";
+import { kitTaskSchema } from "../kit/kit-schemas.js";
 import type { HyperConfig, HyperState, SessionRecord, ToolProfile } from "./types.js";
 
 const configSchema = z.object({
@@ -26,7 +27,9 @@ const pipelineStateSchema = z.object({
   taskIds: z.array(z.string()),
   currentTaskId: z.string().nullable(),
   completed: z.array(z.string()),
-  stepHistory: z.array(pipelineStepRecordSchema)
+  stepHistory: z.array(pipelineStepRecordSchema),
+  // Optional so legacy state without synthetic graphs still parses.
+  syntheticTasks: z.array(kitTaskSchema).optional()
 });
 
 const stateSchema = z.object({

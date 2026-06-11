@@ -41,6 +41,8 @@ async function createProject(): Promise<string> {
 async function writeTaskGraph(projectPath: string): Promise<void> {
   const featureDir = join(projectPath, ".visp", "features", FEATURE_DIR);
   await mkdir(join(featureDir, "context"), { recursive: true });
+  await mkdir(join(projectPath, ".visp"), { recursive: true });
+  await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
   await writeFile(
     join(featureDir, "task-graph.json"),
     JSON.stringify({

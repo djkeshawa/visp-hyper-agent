@@ -28,6 +28,7 @@ async function createProject(): Promise<string> {
 async function writeContextPack(projectPath: string): Promise<void> {
   const contextDir = join(projectPath, ".visp", "features", "001-x", "context");
   await mkdir(contextDir, { recursive: true });
+  await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
   await writeFile(
     join(contextDir, "T009.context.json"),
     JSON.stringify({

@@ -55,7 +55,12 @@ export function checkpointCommand(): Command {
         return;
       }
 
-      const graph = await loadTaskGraph(projectPath);
+      // Disk graph first; fall back to a session's synthetic graph (e.g. a `quick`
+      // session) which exists nowhere on disk.
+      const syntheticTasks = session.pipeline?.syntheticTasks;
+      const graph =
+        (await loadTaskGraph(projectPath)) ??
+        (syntheticTasks && syntheticTasks.length > 0 ? { tasks: syntheticTasks } : null);
       if (!graph) {
         console.log(
           [

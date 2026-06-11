@@ -159,6 +159,7 @@ describe("checkpoint --task local evidence integration", () => {
   async function writeTaskGraph(projectPath: string, validationCommands: string[]): Promise<void> {
     const featureDir = join(projectPath, ".visp", "features", FEATURE_DIR);
     await mkdir(featureDir, { recursive: true });
+    await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
     await writeFile(
       join(featureDir, "task-graph.json"),
       JSON.stringify({

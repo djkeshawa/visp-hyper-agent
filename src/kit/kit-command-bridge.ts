@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ZodType, ZodTypeDef } from "zod";
@@ -50,6 +50,14 @@ export async function detectVisp(
   const binary = options.binary ?? DEFAULT_BINARY;
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const warnings: string[] = [];
+
+  // `visp status` reports initialized=true for ANY .visp/ directory — including
+  // the .visp/hyper/ tree visp-hyper's own init creates. Require a kit-owned
+  // artifact on disk before trusting the probe at all.
+  if (!(await hasKitArtifacts(projectPath))) {
+    const reason = "no visp kit artifacts found (.visp/policy.json or .visp/project.json).";
+    return { available: false, reason, warnings: [reason] };
+  }
 
   const result = await runCommand(binary, ["status", "--json"], projectPath, timeout, warnings);
   if (!result) {
@@ -255,6 +263,18 @@ export class KitCommandBridge {
     }
     return paths;
   }
+}
+
+async function hasKitArtifacts(projectPath: string): Promise<boolean> {
+  for (const artifact of ["policy.json", "project.json"]) {
+    try {
+      await stat(join(projectPath, ".visp", artifact));
+      return true;
+    } catch {
+      // keep probing
+    }
+  }
+  return false;
 }
 
 function withTask(args: string[], taskId?: string): string[] {

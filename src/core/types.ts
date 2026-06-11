@@ -1,3 +1,5 @@
+import type { KitTask } from "../kit/kit-schemas.js";
+
 export type ToolProfile = "generic" | "codex" | "claude-code" | "copilot" | "opencode";
 
 export type HyperConfig = {
@@ -27,6 +29,12 @@ export type PipelineState = {
   currentTaskId: string | null;
   completed: string[];
   stepHistory: PipelineStepRecord[];
+  /**
+   * Synthetic task definitions for pipelines that exist nowhere on disk (e.g. the
+   * one-task graph fabricated by `visp-hyper quick`). When present, `checkpoint`
+   * resolves the task graph from these entries instead of `loadTaskGraph`.
+   */
+  syntheticTasks?: KitTask[];
 };
 
 export type SessionRecord = {

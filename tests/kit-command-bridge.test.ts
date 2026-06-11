@@ -57,6 +57,21 @@ describe("detectVisp", () => {
     }
   });
 
+  it("AC002d: returns unavailable when only visp-hyper's own .visp/hyper exists (no kit artifacts)", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-nokit-"));
+    await mkdir(join(projectPath, ".visp", "hyper"), { recursive: true });
+    // Shim would say initialized=true, but without policy.json/project.json the
+    // probe must not even be trusted.
+    const shim = await createVispShim({ status: { stdout: initializedStatus } });
+
+    const result = await detectVisp(projectPath, { binary: shim.binary });
+
+    expect(result.available).toBe(false);
+    if (!result.available) {
+      expect(result.reason).toMatch(/no visp kit artifacts/i);
+    }
+  });
+
   it("AC002c: returns unavailable when the kit is not initialized", async () => {
     const shim = await createVispShim({
       status: { stdout: { success: true, initialized: false } }
