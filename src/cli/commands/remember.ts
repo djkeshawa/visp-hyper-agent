@@ -147,7 +147,14 @@ async function writeBackRemoteMemory(projectPath: string, record: MemoryRecord):
   }
   await selection.provider.remember(record);
   if (selection.provider instanceof LlmMemoryProvider) {
-    for (const warning of selection.provider.warnings) {
+    const provider = selection.provider;
+    for (const decision of record.decisions ?? []) {
+      await provider.storeDecision({ title: "Session decision", decision });
+    }
+    for (const followUp of record.followUps ?? []) {
+      await provider.storeFollowUp(followUp);
+    }
+    for (const warning of provider.warnings) {
       console.warn(warning);
     }
   }

@@ -3,6 +3,7 @@ import { checkpointCommand } from "./commands/checkpoint.js";
 import { initCommand } from "./commands/init.js";
 import { nextCommand } from "./commands/next.js";
 import { rememberCommand } from "./commands/remember.js";
+import { reportCommand } from "./commands/report.js";
 import { reviewCommand } from "./commands/review.js";
 import { runCommand } from "./commands/run.js";
 import { startCommand } from "./commands/start.js";
@@ -25,6 +26,7 @@ export async function runCli(argv: string[]): Promise<void> {
   program.addCommand(checkpointCommand());
   program.addCommand(reviewCommand());
   program.addCommand(rememberCommand());
+  program.addCommand(reportCommand());
 
   await program.parseAsync(argv);
 }
