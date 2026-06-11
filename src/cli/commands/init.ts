@@ -63,6 +63,7 @@ export function initCommand(): Command {
       printReport(tool, report);
 
       if (tool !== "claude-code") {
+        console.log("hint: run `visp-hyper hooks git` to block out-of-scope commits mechanically.");
         return;
       }
 
