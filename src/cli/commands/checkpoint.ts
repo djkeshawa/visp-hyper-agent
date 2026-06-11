@@ -5,9 +5,13 @@ import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { getActiveSession, updateActiveSession } from "../../core/session-manager.js";
 import { KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { advance, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
+import { appendAttempt } from "../../telemetry/telemetry-store.js";
 import { resolveProjectPath } from "./shared.js";
 
 const execFileAsync = promisify(execFile);
+
+// Placeholder routing tier; deterministic routing lands in the next task.
+const DEFAULT_TIER = "implementer";
 
 export function checkpointCommand(): Command {
   return new Command("checkpoint")
@@ -62,6 +66,20 @@ export function checkpointCommand(): Command {
       const verifyPassed = verify?.success === true;
       const reviewPassed = review?.success === true;
       const passed = verifyPassed && reviewPassed;
+
+      const task = currentTask(graph, session.pipeline!);
+      try {
+        await appendAttempt(projectPath, {
+          taskId,
+          taskClass: task?.riskLevel ?? "unknown",
+          tier: DEFAULT_TIER,
+          verifyPassed,
+          reviewPassed,
+          sessionId: session.id
+        });
+      } catch (error) {
+        console.log(`warning: telemetry attempt was not recorded: ${error instanceof Error ? error.message : String(error)}`);
+      }
 
       const nextState = advance(session.pipeline!, graph, { verifyPassed, reviewPassed }, new Date().toISOString());
       await updateActiveSession(projectPath, (current) => ({ ...current, pipeline: nextState }));
