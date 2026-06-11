@@ -183,6 +183,23 @@ export class KitCommandBridge {
     return this.invoke(["next"], kitNextSchema);
   }
 
+  /**
+   * Install the kit's Claude Code PreToolUse hook via `visp hooks claude`.
+   * Returns the parsed `{ success }` flag, or null on spawn/parse failure.
+   */
+  async hooksClaude(): Promise<{ success: boolean } | null> {
+    const result = await this.run(["hooks", "claude"]);
+    if (!result) {
+      return null;
+    }
+    const parsed = parseUnknownJson(result.stdout);
+    if (parsed === undefined || typeof parsed !== "object" || parsed === null) {
+      this.warnings.push("visp hooks claude output could not be parsed as JSON.");
+      return null;
+    }
+    return { success: (parsed as Record<string, unknown>).success === true };
+  }
+
   private async invoke<T>(
     args: string[],
     schema: OutputSchema<T>,
