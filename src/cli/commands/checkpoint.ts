@@ -2,22 +2,30 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Command, Option } from "commander";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
-import { getActiveSession, updateActiveSession } from "../../core/session-manager.js";
+import { getActiveSession, readState, updateActiveSession } from "../../core/session-manager.js";
 import { KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { advance, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
-import { appendAttempt } from "../../telemetry/telemetry-store.js";
+import {
+  computeSuggestedTier,
+  escalate,
+  renderModelRouting
+} from "../../routing/routing-engine.js";
+import { readRoutingState, writeRoutingState } from "../../routing/routing-state.js";
+import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
 import { resolveProjectPath } from "./shared.js";
 
 const execFileAsync = promisify(execFile);
 
-// Placeholder routing tier; deterministic routing lands in the next task.
+// Default tier recorded in telemetry when the orchestrator does not report
+// which tier actually executed the task via `--tier`.
 const DEFAULT_TIER = "implementer";
 
 export function checkpointCommand(): Command {
   return new Command("checkpoint")
     .description("Capture current progress and git diff summary.")
     .addOption(new Option("--task <task-id>", "Run pipeline verify/review for the active task and advance the pipeline."))
-    .action(async function (this: Command, options: { task?: string }) {
+    .addOption(new Option("--tier <tier>", "Model tier that actually executed the task (recorded in telemetry)."))
+    .action(async function (this: Command, options: { task?: string; tier?: string }) {
       const projectPath = resolveProjectPath(this);
       const session = await getActiveSession(projectPath);
       if (!session) {
@@ -68,11 +76,12 @@ export function checkpointCommand(): Command {
       const passed = verifyPassed && reviewPassed;
 
       const task = currentTask(graph, session.pipeline!);
+      const taskClass = task?.riskLevel ?? "unknown";
       try {
         await appendAttempt(projectPath, {
           taskId,
-          taskClass: task?.riskLevel ?? "unknown",
-          tier: DEFAULT_TIER,
+          taskClass,
+          tier: options.tier ?? DEFAULT_TIER,
           verifyPassed,
           reviewPassed,
           sessionId: session.id
@@ -83,6 +92,25 @@ export function checkpointCommand(): Command {
 
       const nextState = advance(session.pipeline!, graph, { verifyPassed, reviewPassed }, new Date().toISOString());
       await updateActiveSession(projectPath, (current) => ({ ...current, pipeline: nextState }));
+
+      // Quality recovers unconditionally: a checkpoint failure quarantines the
+      // task class so future routing forces the strongest tier until it expires.
+      if (!passed) {
+        try {
+          const { state } = await readRoutingState(projectPath);
+          const hyperState = await readState(projectPath);
+          const escalated = escalate({
+            state,
+            taskId,
+            taskClass,
+            sessionCount: Object.keys(hyperState.sessions).length,
+            now: new Date().toISOString()
+          });
+          await writeRoutingState(projectPath, escalated);
+        } catch (error) {
+          console.log(`warning: routing escalation was not recorded: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
 
       const lines = [
         "BEGIN_VISP_CHECKPOINT_RESULT",
@@ -102,6 +130,28 @@ export function checkpointCommand(): Command {
       }
       lines.push("END_VISP_CHECKPOINT_RESULT");
       console.log(lines.join("\n"));
+
+      // On a pass with a next task, advise the routing tier for that task.
+      if (passed && nextState.currentTaskId) {
+        const nextTask = graph.tasks.find((entry) => entry.id === nextState.currentTaskId);
+        if (nextTask) {
+          try {
+            const { data: telemetry } = await readTelemetry(projectPath);
+            const { state: routingState } = await readRoutingState(projectPath);
+            const hyperState = await readState(projectPath);
+            const suggestion = computeSuggestedTier({
+              task: nextTask,
+              attempts: telemetry.attempts,
+              routingState,
+              sessionCount: Object.keys(hyperState.sessions).length
+            });
+            console.log("");
+            console.log(renderModelRouting(suggestion));
+          } catch {
+            // Advisory only; never fail the checkpoint because routing could not be computed.
+          }
+        }
+      }
     });
 }
 

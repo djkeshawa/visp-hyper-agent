@@ -1,9 +1,10 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Command, Option } from "commander";
-import { updateActiveSession } from "../../core/session-manager.js";
+import { readState, updateActiveSession } from "../../core/session-manager.js";
 import type { ToolProfile } from "../../core/types.js";
 import type { KitGateResult, KitStatus } from "../../kit/kit-schemas.js";
+import type { KitTask } from "../../kit/kit-schemas.js";
 import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
 import {
   buildActionBlock,
@@ -11,6 +12,9 @@ import {
   initialPipelineState,
   loadTaskGraph
 } from "../../pipeline/pipeline-engine.js";
+import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
+import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
+import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { executeStart } from "./start.js";
 import { resolveProjectPath } from "./shared.js";
 
@@ -102,7 +106,40 @@ export function runCommand(): Command {
       console.log(handoff);
       console.log("");
       console.log(buildActionBlock(task, { contextPackPath, sessionId: session.id }));
+      await printAndRecordRouting(projectPath, task);
     });
+}
+
+/**
+ * Compute the advisory model-routing suggestion for `task`, print it after the
+ * action block, and persist the decision. Best-effort: a routing failure must
+ * never break the run command, so errors are swallowed.
+ */
+async function printAndRecordRouting(projectPath: string, task: KitTask): Promise<void> {
+  try {
+    const [{ data: telemetry }, { state: routingState }, hyperState] = await Promise.all([
+      readTelemetry(projectPath),
+      readRoutingState(projectPath),
+      readState(projectPath)
+    ]);
+    const suggestion = computeSuggestedTier({
+      task,
+      attempts: telemetry.attempts,
+      routingState,
+      sessionCount: Object.keys(hyperState.sessions).length
+    });
+    console.log("");
+    console.log(renderModelRouting(suggestion));
+    await recordRoutingDecision(projectPath, {
+      taskId: suggestion.taskId,
+      taskClass: suggestion.taskClass,
+      tier: suggestion.suggestedTier,
+      reason: suggestion.reason,
+      at: new Date().toISOString()
+    });
+  } catch {
+    // Advisory only; never fail the run because routing could not be computed.
+  }
 }
 
 function deriveFeatureDirName(status: KitStatus): string | undefined {

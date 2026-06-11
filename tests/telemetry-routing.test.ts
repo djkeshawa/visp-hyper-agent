@@ -6,6 +6,14 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { appendAttempt, readTelemetry } from "../src/telemetry/telemetry-store.js";
+import type { TelemetryAttempt } from "../src/telemetry/telemetry-store.js";
+import {
+  CHEAP_TIER,
+  STRONGEST_TIER,
+  computeSuggestedTier,
+  escalate
+} from "../src/routing/routing-engine.js";
+import type { RoutingState } from "../src/routing/routing-state.js";
 import { createVispShim, type ShimSpec } from "./helpers/visp-shim.js";
 
 const execFileAsync = promisify(execFile);
@@ -285,5 +293,253 @@ describe("telemetry store and budget round-trip", () => {
     const telemetry = await readTelemetryFile(projectPath);
     expect(telemetry.usage).toHaveLength(1);
     expect(telemetry.usage[0].inputTokens).toBe(500);
+  });
+});
+
+function emptyRoutingState(): RoutingState {
+  return { quarantines: [], decisions: [] };
+}
+
+function scoutAttempt(overrides: Partial<TelemetryAttempt> = {}): TelemetryAttempt {
+  return {
+    taskId: "T001",
+    taskClass: "medium",
+    tier: CHEAP_TIER,
+    attempt: 1,
+    verifyPassed: true,
+    reviewPassed: true,
+    firstAttempt: true,
+    sessionId: "vh_test",
+    at: new Date().toISOString(),
+    ...overrides
+  };
+}
+
+describe("routing engine (pure)", () => {
+  it("AC003a: no evidence + medium risk → implementer with insufficient-evidence reason", () => {
+    const suggestion = computeSuggestedTier({
+      task: { id: "T001", riskLevel: "medium" },
+      attempts: [],
+      routingState: emptyRoutingState(),
+      sessionCount: 0
+    });
+    expect(suggestion.suggestedTier).toBe(STRONGEST_TIER);
+    expect(suggestion.reason).toContain("insufficient evidence");
+    expect(suggestion.evidence.samples).toBe(0);
+  });
+
+  it("AC003b: low risk → scout baseline", () => {
+    const suggestion = computeSuggestedTier({
+      task: { id: "T001", riskLevel: "low" },
+      attempts: [scoutAttempt({ taskClass: "low" })],
+      routingState: emptyRoutingState(),
+      sessionCount: 0
+    });
+    expect(suggestion.suggestedTier).toBe(CHEAP_TIER);
+    expect(suggestion.reason).toBe("baseline: low risk");
+  });
+
+  it("AC003c: 3 passing scout first-attempts → scout downgrade with evidence reason", () => {
+    const attempts = [scoutAttempt(), scoutAttempt(), scoutAttempt()];
+    const suggestion = computeSuggestedTier({
+      task: { id: "T001", riskLevel: "medium" },
+      attempts,
+      routingState: emptyRoutingState(),
+      sessionCount: 0
+    });
+    expect(suggestion.suggestedTier).toBe(CHEAP_TIER);
+    expect(suggestion.reason).toContain("3 samples");
+    expect(suggestion.evidence.passRate).toBe(1);
+  });
+
+  it("AC003c: 2 samples → no downgrade (insufficient evidence)", () => {
+    const attempts = [scoutAttempt(), scoutAttempt()];
+    const suggestion = computeSuggestedTier({
+      task: { id: "T001", riskLevel: "medium" },
+      attempts,
+      routingState: emptyRoutingState(),
+      sessionCount: 0
+    });
+    expect(suggestion.suggestedTier).toBe(STRONGEST_TIER);
+    expect(suggestion.reason).toContain("insufficient evidence");
+    expect(suggestion.reason).toContain("2/3");
+  });
+
+  it("AC003c: 3 samples at 66% pass → no downgrade (below 90%)", () => {
+    const attempts = [
+      scoutAttempt(),
+      scoutAttempt(),
+      scoutAttempt({ verifyPassed: false })
+    ];
+    const suggestion = computeSuggestedTier({
+      task: { id: "T001", riskLevel: "medium" },
+      attempts,
+      routingState: emptyRoutingState(),
+      sessionCount: 0
+    });
+    expect(suggestion.suggestedTier).toBe(STRONGEST_TIER);
+    expect(suggestion.reason).toContain("below 90%");
+  });
+
+  it("AC004a: escalate adds quarantine sessionCount+3 and a decision", () => {
+    const next = escalate({
+      state: emptyRoutingState(),
+      taskId: "T001",
+      taskClass: "medium",
+      sessionCount: 5,
+      now: "2026-06-11T00:00:00.000Z"
+    });
+    expect(next.quarantines).toEqual([{ taskClass: "medium", untilSessionCount: 8 }]);
+    expect(next.decisions).toHaveLength(1);
+    expect(next.decisions[0]?.tier).toBe(STRONGEST_TIER);
+    expect(next.decisions[0]?.reason).toBe("checkpoint failure escalation");
+  });
+
+  it("AC004a: quality-first invariant: quarantine blocks downgrade despite perfect evidence", () => {
+    const attempts = [scoutAttempt(), scoutAttempt(), scoutAttempt(), scoutAttempt(), scoutAttempt()];
+    const routingState: RoutingState = {
+      quarantines: [{ taskClass: "medium", untilSessionCount: 8 }],
+      decisions: []
+    };
+    const suggestion = computeSuggestedTier({
+      task: { id: "T001", riskLevel: "medium" },
+      attempts,
+      routingState,
+      sessionCount: 5
+    });
+    // Perfect evidence exists, but an active quarantine forces the strongest tier.
+    expect(suggestion.evidence.passRate).toBe(1);
+    expect(suggestion.suggestedTier).toBe(STRONGEST_TIER);
+    expect(suggestion.reason).toContain("quarantined until session 8");
+  });
+
+  it("AC004b: expired quarantine re-enables evidence-based downgrade", () => {
+    const attempts = [scoutAttempt(), scoutAttempt(), scoutAttempt()];
+    const routingState: RoutingState = {
+      quarantines: [{ taskClass: "medium", untilSessionCount: 8 }],
+      decisions: []
+    };
+    const suggestion = computeSuggestedTier({
+      task: { id: "T001", riskLevel: "medium" },
+      attempts,
+      routingState,
+      sessionCount: 8
+    });
+    expect(suggestion.suggestedTier).toBe(CHEAP_TIER);
+    expect(suggestion.reason).toContain("samples");
+  });
+});
+
+describe("routing CLI integration", () => {
+  let logs: string[];
+
+  beforeEach(() => {
+    logs = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(" "));
+    });
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(" "));
+    });
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    vi.restoreAllMocks();
+  });
+
+  async function readRoutingFile(projectPath: string): Promise<any> {
+    return JSON.parse(await readFile(join(projectPath, ".visp", "hyper", "routing.json"), "utf8"));
+  }
+
+  it("AC005a: run prints a model_routing block with a suggested tier", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_MODEL_ROUTING");
+    expect(output).toContain("suggested_tier:");
+    // T001 is high risk → strongest tier with no evidence.
+    expect(output).toContain(`suggested_tier: ${STRONGEST_TIER}`);
+  });
+
+  it("AC005b: checkpoint failure quarantines class; later next shows implementer + quarantine reason", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        verify: { stdout: { success: false } },
+        review: { stdout: { success: true } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const routing = await readRoutingFile(projectPath);
+    expect(routing.quarantines).toHaveLength(1);
+    expect(routing.quarantines[0].taskClass).toBe("high");
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_MODEL_ROUTING");
+    expect(output).toContain(`suggested_tier: ${STRONGEST_TIER}`);
+    expect(output).toContain("quarantined until session");
+  });
+
+  it("checkpoint --tier scout records tier scout in telemetry", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "checkpoint",
+      "--task",
+      "T001",
+      "--tier",
+      "scout"
+    ]);
+
+    const telemetry = await readTelemetryFile(projectPath);
+    expect(telemetry.attempts).toHaveLength(1);
+    expect(telemetry.attempts[0].tier).toBe("scout");
   });
 });
