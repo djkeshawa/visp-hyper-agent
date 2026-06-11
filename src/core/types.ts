@@ -14,6 +14,20 @@ export type HyperState = {
   sessions: Record<string, SessionRecord>;
 };
 
+export type PipelineStepRecord = {
+  taskId: string;
+  action: "started" | "checkpoint-passed" | "checkpoint-failed";
+  at: string;
+  detail?: string;
+};
+
+export type PipelineState = {
+  taskIds: string[];
+  currentTaskId: string | null;
+  completed: string[];
+  stepHistory: PipelineStepRecord[];
+};
+
 export type SessionRecord = {
   id: string;
   goal: string;
@@ -23,6 +37,7 @@ export type SessionRecord = {
   updatedAt: string;
   phase: "initialized" | "implementation" | "review" | "remembered";
   relevantFiles: string[];
+  pipeline?: PipelineState;
 };
 
 export type HandoffProtocol = {

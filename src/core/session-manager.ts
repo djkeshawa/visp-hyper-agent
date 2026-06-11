@@ -14,6 +14,20 @@ const configSchema = z.object({
   blockedPaths: z.array(z.string())
 });
 
+const pipelineStepRecordSchema = z.object({
+  taskId: z.string(),
+  action: z.enum(["started", "checkpoint-passed", "checkpoint-failed"]),
+  at: z.string(),
+  detail: z.string().optional()
+});
+
+const pipelineStateSchema = z.object({
+  taskIds: z.array(z.string()),
+  currentTaskId: z.string().nullable(),
+  completed: z.array(z.string()),
+  stepHistory: z.array(pipelineStepRecordSchema)
+});
+
 const stateSchema = z.object({
   activeSessionId: z.string().nullable(),
   sessions: z.record(
@@ -25,7 +39,8 @@ const stateSchema = z.object({
       createdAt: z.string(),
       updatedAt: z.string(),
       phase: z.enum(["initialized", "implementation", "review", "remembered"]),
-      relevantFiles: z.array(z.string())
+      relevantFiles: z.array(z.string()),
+      pipeline: pipelineStateSchema.optional()
     })
   )
 });

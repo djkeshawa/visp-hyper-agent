@@ -103,3 +103,29 @@ export const kitNextSchema = z.object({
   allowed: z.boolean().optional()
 });
 export type KitNext = z.infer<typeof kitNextSchema>;
+
+// Partial mirror of a feature's `task-graph.json`. Only the fields the pipeline
+// engine consumes are described; unknown extras are tolerated (no `.strict()`).
+export const kitTaskSchema = z.object({
+  id: z.string(),
+  title: z.string().optional(),
+  description: z.string().optional(),
+  requirementIds: z.array(z.string()).optional(),
+  acceptanceCriterionIds: z.array(z.string()).optional(),
+  dependsOn: z.array(z.string()).default([]),
+  allowedFiles: z.array(z.string()).optional(),
+  expectedFiles: z.array(z.string()).optional(),
+  forbiddenFiles: z.array(z.string()).optional(),
+  validationCommands: z.array(z.string()).optional(),
+  status: z.string().optional(),
+  parallelizable: z.boolean().optional(),
+  riskLevel: z.string().optional()
+});
+export type KitTask = z.infer<typeof kitTaskSchema>;
+
+export const kitTaskGraphSchema = z.object({
+  featureId: z.string().optional(),
+  featureSlug: z.string().optional(),
+  tasks: z.array(kitTaskSchema)
+});
+export type KitTaskGraph = z.infer<typeof kitTaskGraphSchema>;
