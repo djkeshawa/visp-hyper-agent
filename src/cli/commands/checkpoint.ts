@@ -3,7 +3,8 @@ import { promisify } from "node:util";
 import { Command, Option } from "commander";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
-import { KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import { collectLocalEvidence } from "../../quality/local-evidence.js";
 import { harvestSkillProposals } from "./remember.js";
 import { advance, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
 import {
@@ -67,17 +68,42 @@ export function checkpointCommand(): Command {
         return;
       }
 
-      const bridge = new KitCommandBridge({ projectPath });
-      const verify = await bridge.verify(taskId);
-      const review = await bridge.review(taskId);
-      printWarnings(bridge.warnings);
-
-      const verifyPassed = verify?.success === true;
-      const reviewPassed = review?.success === true;
-      const passed = verifyPassed && reviewPassed;
-
       const task = currentTask(graph, session.pipeline!);
       const taskClass = task?.riskLevel ?? "unknown";
+
+      const kit = await detectVisp(projectPath);
+      let verifyPassed: boolean;
+      let reviewPassed: boolean;
+      let evidenceSource: "kit" | "local";
+      let localFindings: string[] = [];
+
+      if (kit.available) {
+        const bridge = new KitCommandBridge({ projectPath });
+        const verify = await bridge.verify(taskId);
+        const review = await bridge.review(taskId);
+        printWarnings(bridge.warnings);
+        verifyPassed = verify?.success === true;
+        reviewPassed = review?.success === true;
+        evidenceSource = "kit";
+      } else {
+        const config = await readConfig(projectPath);
+        const evidence = await collectLocalEvidence({
+          projectPath,
+          task: {
+            id: taskId,
+            allowedFiles: task?.allowedFiles,
+            validationCommands: task?.validationCommands
+          },
+          blockedPaths: config.blockedPaths
+        });
+        verifyPassed = evidence.verifyPassed;
+        reviewPassed = evidence.reviewPassed;
+        localFindings = evidence.findings;
+        evidenceSource = "local";
+        printWarnings([...kit.warnings, ...evidence.warnings]);
+      }
+
+      const passed = verifyPassed && reviewPassed;
       try {
         await appendAttempt(projectPath, {
           taskId,
@@ -91,7 +117,12 @@ export function checkpointCommand(): Command {
         console.log(`warning: telemetry attempt was not recorded: ${error instanceof Error ? error.message : String(error)}`);
       }
 
-      const nextState = advance(session.pipeline!, graph, { verifyPassed, reviewPassed }, new Date().toISOString());
+      const nextState = advance(
+        session.pipeline!,
+        graph,
+        { verifyPassed, reviewPassed, detail: `${evidenceSource}-evidence` },
+        new Date().toISOString()
+      );
       await updateActiveSession(projectPath, (current) => ({ ...current, pipeline: nextState }));
 
       // Quality recovers unconditionally: a checkpoint failure quarantines the
@@ -118,8 +149,15 @@ export function checkpointCommand(): Command {
         `task: ${taskId}`,
         `verify: ${verifyPassed ? "PASSED" : "FAILED"}`,
         `review: ${reviewPassed ? "PASSED" : "FAILED"}`,
-        `status: ${passed ? "PASSED" : "FAILED"}`
+        `evidence_source: ${evidenceSource}`
       ];
+      if (localFindings.length > 0) {
+        lines.push("findings:");
+        for (const finding of localFindings) {
+          lines.push(` - ${finding}`);
+        }
+      }
+      lines.push(`status: ${passed ? "PASSED" : "FAILED"}`);
       if (passed) {
         if (nextState.currentTaskId) {
           lines.push(`next_task: ${nextState.currentTaskId}`);
