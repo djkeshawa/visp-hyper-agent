@@ -3,8 +3,11 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { Command } from "commander";
 import { readTextIfExists } from "../../core/fs-utils.js";
-import { getActiveSession, updateActiveSession } from "../../core/session-manager.js";
+import { getActiveSession, readConfig, updateActiveSession } from "../../core/session-manager.js";
+import type { MemoryRecord } from "../../core/types.js";
 import { writeSessionMemory } from "../../memory/file-memory-provider.js";
+import { LlmMemoryProvider } from "../../memory/llm-memory-provider.js";
+import { selectMemoryProvider } from "../../memory/provider-factory.js";
 import { resolveProjectPath } from "./shared.js";
 
 const execFileAsync = promisify(execFile);
@@ -22,8 +25,7 @@ export function rememberCommand(): Command {
         throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
       }
       const reviewSummary = await readTextIfExists(join(projectPath, ".visp", "hyper", "current", "review-report.md"));
-      const path = await writeSessionMemory({
-        projectPath,
+      const record = {
         sessionId: session.id,
         goal: session.goal,
         summary: options.summary,
@@ -31,10 +33,34 @@ export function rememberCommand(): Command {
         reviewSummary: reviewSummary ? summarizeReview(reviewSummary) : undefined,
         decisions: options.decision,
         followUps: options.followUp
-      });
+      };
+      const path = await writeSessionMemory({ projectPath, ...record });
+      await writeBackRemoteMemory(projectPath, record);
       await updateActiveSession(projectPath, (current) => ({ ...current, phase: "remembered" }));
       console.log(`Memory written to ${path}`);
     });
+}
+
+/**
+ * Mirror the just-written session memory to the configured remote provider when
+ * llm-memory mode is active and healthy. Remote failure or fallback is non-fatal:
+ * the file write already succeeded, so we only surface warnings and exit zero.
+ */
+async function writeBackRemoteMemory(projectPath: string, record: MemoryRecord): Promise<void> {
+  const config = await readConfig(projectPath);
+  const selection = await selectMemoryProvider({ config, projectPath });
+  for (const warning of selection.warnings) {
+    console.warn(warning);
+  }
+  if (!selection.provider) {
+    return;
+  }
+  await selection.provider.remember(record);
+  if (selection.provider instanceof LlmMemoryProvider) {
+    for (const warning of selection.provider.warnings) {
+      console.warn(warning);
+    }
+  }
 }
 
 async function changedFiles(projectPath: string): Promise<string[]> {

@@ -11,7 +11,10 @@ import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
 import { readKitArtifacts } from "../../kit/kit-reader.js";
 import type { KitContextPack } from "../../kit/kit-schemas.js";
 import { readMemoryPack } from "../../memory/file-memory-provider.js";
+import { LlmMemoryProvider } from "../../memory/llm-memory-provider.js";
+import { selectMemoryProvider } from "../../memory/provider-factory.js";
 import {
+  type RecalledMemory,
   renderAgentInstructions,
   renderContextPack,
   renderMemoryPack,
@@ -35,6 +38,7 @@ export function startCommand(): Command {
       const tool = options.tool ?? config.defaultTool;
       const kit = await readKitArtifacts(projectPath);
       const memory = await readMemoryPack(projectPath);
+      const memoryFusion = await fuseRecalledMemory(projectPath, config, goal);
       const adoption = await adoptKitContextPack(projectPath, config);
       const contextFiles =
         adoption?.files ??
@@ -61,7 +65,10 @@ export function startCommand(): Command {
         vispPath(projectPath, "hyper", "current", "context-pack.md"),
         renderContextPack(contextFiles, contextKit, contextOptions)
       );
-      await writeText(vispPath(projectPath, "hyper", "current", "memory-pack.md"), renderMemoryPack(memory));
+      await writeText(
+        vispPath(projectPath, "hyper", "current", "memory-pack.md"),
+        renderMemoryPack(memory, { recalled: memoryFusion.recalled, recalledWarnings: memoryFusion.warnings })
+      );
       await writeText(vispPath(projectPath, "hyper", "current", "quality-gates.md"), renderQualityGates(config.blockedPaths));
       await writeText(vispPath(projectPath, "hyper", "current", "agent-instructions.md"), renderAgentInstructions(session));
       await writeText(
@@ -75,6 +82,36 @@ export function startCommand(): Command {
 }
 
 const maxContentLength = 12_000;
+
+const recallLimit = 10;
+
+type MemoryFusion = {
+  recalled?: RecalledMemory[];
+  warnings: string[];
+};
+
+/**
+ * In llm-memory mode with a healthy server, recall memories relevant to the goal
+ * so they can be fused into the memory pack. File mode (or a fallback) contributes
+ * no recalled entries; fallback warnings are surfaced so the user sees the degradation.
+ */
+async function fuseRecalledMemory(projectPath: string, config: HyperConfig, goal: string): Promise<MemoryFusion> {
+  const selection = await selectMemoryProvider({ config, projectPath });
+  if (!(selection.provider instanceof LlmMemoryProvider)) {
+    return { warnings: selection.warnings };
+  }
+  const detailed = await selection.provider.recallDetailed(goal, { limit: recallLimit });
+  const recalled: RecalledMemory[] = detailed.map((entry) => ({
+    summary: entry.result.summary,
+    content: entry.result.content,
+    category: entry.category,
+    score: entry.score
+  }));
+  return {
+    recalled: recalled.length > 0 ? recalled : undefined,
+    warnings: [...selection.warnings, ...selection.provider.warnings]
+  };
+}
 
 type KitAdoption = {
   files: ContextFile[];

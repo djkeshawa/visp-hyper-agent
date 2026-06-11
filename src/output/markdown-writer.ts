@@ -53,16 +53,65 @@ export function renderContextPack(files: ContextFile[], kit: KitArtifacts, optio
   ].join("\n");
 }
 
-export function renderMemoryPack(memory: MemoryPack): string {
+export type RecalledMemory = {
+  summary: string;
+  content: string;
+  category: string;
+  score: number | null;
+};
+
+export type RenderMemoryPackOptions = {
+  recalled?: RecalledMemory[];
+  recalledWarnings?: string[];
+};
+
+const recalledContentBudget = 12_000;
+
+export function renderMemoryPack(memory: MemoryPack, options: RenderMemoryPackOptions = {}): string {
+  const recalled = renderRecalledSection(options.recalled);
+  const warnings = renderWarnings([...memory.warnings, ...(options.recalledWarnings ?? [])]);
   if (memory.files.length === 0) {
-    return ["# Memory Pack", "", ...renderWarnings(memory.warnings), "No local Visp memory files found yet.", ""].join("\n");
+    return ["# Memory Pack", "", ...warnings, "No local Visp memory files found yet.", "", ...recalled].join("\n");
   }
   return [
     "# Memory Pack",
     "",
-    ...renderWarnings(memory.warnings),
-    ...memory.files.flatMap((file) => [`## ${file.path}`, "", `Summary: ${file.summary}`, "", fenced(file.content), ""])
+    ...warnings,
+    ...memory.files.flatMap((file) => [`## ${file.path}`, "", `Summary: ${file.summary}`, "", fenced(file.content), ""]),
+    ...recalled
   ].join("\n");
+}
+
+function renderRecalledSection(recalled: RecalledMemory[] | undefined): string[] {
+  if (!recalled || recalled.length === 0) {
+    return [];
+  }
+  const lines: string[] = ["## Recalled Memories (llm-memory)", ""];
+  let used = 0;
+  let omitted = 0;
+  for (const entry of recalled) {
+    if (omitted > 0 || used + entry.content.length > recalledContentBudget) {
+      omitted += 1;
+      continue;
+    }
+    used += entry.content.length;
+    lines.push(
+      `### ${entry.summary}`,
+      "",
+      `- Source: llm-memory (${entry.category || "uncategorized"}, score ${formatScore(entry.score)})`,
+      "",
+      fenced(entry.content),
+      ""
+    );
+  }
+  if (omitted > 0) {
+    lines.push(`- [${omitted} more memories omitted by size cap]`, "");
+  }
+  return lines;
+}
+
+function formatScore(score: number | null): string {
+  return score === null ? "n/a" : score.toFixed(2);
 }
 
 export function renderQualityGates(blockedPaths: string[]): string {
