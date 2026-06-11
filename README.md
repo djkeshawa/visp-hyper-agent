@@ -11,6 +11,8 @@ Visp Hyper Agent does not replace coding agents and never calls an LLM itself. I
 
 Everything is file-based under the target project's `.visp/` directory. No network calls (except to your own optional llm-memory server), no database, no embeddings, no new runtime dependencies.
 
+**New here? Follow the [five-minute quickstart](examples/quickstart.md) to see a commit get blocked and a task verified.**
+
 ## Commands
 
 | Command | What it does |

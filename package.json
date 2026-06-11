@@ -1,9 +1,25 @@
 {
   "name": "visp-hyper-agent",
-  "version": "0.1.0",
-  "description": "Local-first companion workflow controller for existing AI coding tools.",
+  "version": "0.2.0",
+  "description": "Evidence-gated workflow controller for AI coding tools: scope-guarded commits, verified task advancement, active memory, and model routing — deterministic, local-first, no LLM calls.",
   "type": "module",
   "license": "Apache-2.0",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "claude-code",
+    "codex",
+    "copilot",
+    "mcp",
+    "spec-driven",
+    "workflow",
+    "git-hooks",
+    "llm-memory"
+  ],
+  "homepage": "https://github.com/djkeshawa/visp-hyper-agent#readme",
+  "bugs": {
+    "url": "https://github.com/djkeshawa/visp-hyper-agent/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/djkeshawa/visp-hyper-agent.git"

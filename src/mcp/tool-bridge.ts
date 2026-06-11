@@ -3,7 +3,7 @@ import type { McpBridge } from "../core/types.js";
 import type { McpContext, McpToolDef } from "./mcp-server.js";
 
 /** Server version advertised over `initialize`; matches package.json. */
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.2.0";
 
 type ToolArgs = Record<string, unknown>;
 
