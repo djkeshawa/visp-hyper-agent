@@ -4,7 +4,7 @@ import { Command, Option } from "commander";
 import { scanRelevantFiles } from "../../context/relevance-scanner.js";
 import { vispPath, writeText } from "../../core/fs-utils.js";
 import { createSession, initializeProject, readConfig } from "../../core/session-manager.js";
-import type { ContextFile, ContextPackOptions, HyperConfig, ToolProfile } from "../../core/types.js";
+import type { ContextFile, ContextPackOptions, HyperConfig, SessionRecord, ToolProfile } from "../../core/types.js";
 import { buildHandoffProtocol, renderHandoff } from "../../handoff/handoff-protocol.js";
 import { isBlockedPath } from "../../governance/blocked-files.js";
 import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
@@ -33,52 +33,72 @@ export function startCommand(): Command {
     )
     .action(async function (this: Command, goal: string, options: { tool?: ToolProfile }) {
       const projectPath = resolveProjectPath(this);
-      await initializeProject(projectPath);
-      const config = await readConfig(projectPath);
-      const tool = options.tool ?? config.defaultTool;
-      const kit = await readKitArtifacts(projectPath);
-      const memory = await readMemoryPack(projectPath);
-      const memoryFusion = await fuseRecalledMemory(projectPath, config, goal);
-      const adoption = await adoptKitContextPack(projectPath, config);
-      const contextFiles =
-        adoption?.files ??
-        (await scanRelevantFiles({
-          projectPath,
-          goal,
-          blockedPaths: config.blockedPaths
-        }));
-      const contextOptions: ContextPackOptions = adoption
-        ? { source: adoption.source, validationCommands: adoption.validationCommands }
-        : {};
-      const contextKit = adoption ? { ...kit, warnings: [...kit.warnings, ...adoption.warnings] } : kit;
-      const session = await createSession({
-        projectPath,
-        goal,
-        tool,
-        relevantFiles: contextFiles.map((file) => file.path)
-      });
-      const handoff = renderHandoff(session);
-      const protocol = buildHandoffProtocol(session);
-
-      await writeText(vispPath(projectPath, "hyper", "current", "session.md"), renderSession(session));
-      await writeText(
-        vispPath(projectPath, "hyper", "current", "context-pack.md"),
-        renderContextPack(contextFiles, contextKit, contextOptions)
-      );
-      await writeText(
-        vispPath(projectPath, "hyper", "current", "memory-pack.md"),
-        renderMemoryPack(memory, { recalled: memoryFusion.recalled, recalledWarnings: memoryFusion.warnings })
-      );
-      await writeText(vispPath(projectPath, "hyper", "current", "quality-gates.md"), renderQualityGates(config.blockedPaths));
-      await writeText(vispPath(projectPath, "hyper", "current", "agent-instructions.md"), renderAgentInstructions(session));
-      await writeText(
-        vispPath(projectPath, "hyper", "current", "handoff.json"),
-        `${JSON.stringify({ ...protocol, session }, null, 2)}\n`
-      );
-      await writeText(join(projectPath, ".visp", "prompts", "visp-hyper-handoff.prompt.md"), `${handoff}\n`);
-
+      const { handoff } = await executeStart(projectPath, goal, options);
       console.log(handoff);
     });
+}
+
+export type StartResult = {
+  session: SessionRecord;
+  handoff: string;
+};
+
+/**
+ * Run the full start pipeline (session creation, kit context adoption, memory
+ * fusion, and all `.visp/hyper/current/` writes) and return the created session
+ * plus the rendered handoff block. Shared by both `start` and `run` so there is
+ * a single implementation; callers are responsible for printing the handoff.
+ */
+export async function executeStart(
+  projectPath: string,
+  goal: string,
+  options: { tool?: ToolProfile }
+): Promise<StartResult> {
+  await initializeProject(projectPath);
+  const config = await readConfig(projectPath);
+  const tool = options.tool ?? config.defaultTool;
+  const kit = await readKitArtifacts(projectPath);
+  const memory = await readMemoryPack(projectPath);
+  const memoryFusion = await fuseRecalledMemory(projectPath, config, goal);
+  const adoption = await adoptKitContextPack(projectPath, config);
+  const contextFiles =
+    adoption?.files ??
+    (await scanRelevantFiles({
+      projectPath,
+      goal,
+      blockedPaths: config.blockedPaths
+    }));
+  const contextOptions: ContextPackOptions = adoption
+    ? { source: adoption.source, validationCommands: adoption.validationCommands }
+    : {};
+  const contextKit = adoption ? { ...kit, warnings: [...kit.warnings, ...adoption.warnings] } : kit;
+  const session = await createSession({
+    projectPath,
+    goal,
+    tool,
+    relevantFiles: contextFiles.map((file) => file.path)
+  });
+  const handoff = renderHandoff(session);
+  const protocol = buildHandoffProtocol(session);
+
+  await writeText(vispPath(projectPath, "hyper", "current", "session.md"), renderSession(session));
+  await writeText(
+    vispPath(projectPath, "hyper", "current", "context-pack.md"),
+    renderContextPack(contextFiles, contextKit, contextOptions)
+  );
+  await writeText(
+    vispPath(projectPath, "hyper", "current", "memory-pack.md"),
+    renderMemoryPack(memory, { recalled: memoryFusion.recalled, recalledWarnings: memoryFusion.warnings })
+  );
+  await writeText(vispPath(projectPath, "hyper", "current", "quality-gates.md"), renderQualityGates(config.blockedPaths));
+  await writeText(vispPath(projectPath, "hyper", "current", "agent-instructions.md"), renderAgentInstructions(session));
+  await writeText(
+    vispPath(projectPath, "hyper", "current", "handoff.json"),
+    `${JSON.stringify({ ...protocol, session }, null, 2)}\n`
+  );
+  await writeText(join(projectPath, ".visp", "prompts", "visp-hyper-handoff.prompt.md"), `${handoff}\n`);
+
+  return { session, handoff };
 }
 
 const maxContentLength = 12_000;

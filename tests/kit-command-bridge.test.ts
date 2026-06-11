@@ -115,6 +115,25 @@ describe("KitCommandBridge", () => {
     expect(result?.allowed).toBe(false);
     expect(result?.failedRules[0]?.ruleId).toBe("VSP006");
     expect(bridge.warnings).toEqual([]);
+
+    // The real CLI takes the task as a flag; a positional id is parsed as a path.
+    const argv = JSON.parse((await readFile(shim.argvLogPath, "utf8")).trim()) as string[];
+    expect(argv).toEqual(["gate", "implement", "--task", "T001", "--json"]);
+  });
+
+  it("AC003: verify/review/reconcile pass the task id as a --task flag", async () => {
+    const shim = await createVispShim({
+      verify: { stdout: { success: true } },
+      review: { stdout: { success: true } }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    await bridge.verify("T009");
+    await bridge.review("T009");
+
+    const lines = (await readFile(shim.argvLogPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
+    expect(lines[0]).toEqual(["verify", "--task", "T009", "--json"]);
+    expect(lines[1]).toEqual(["review", "--task", "T009", "--json"]);
   });
 
   it("AC005: unparseable output yields null plus a warning, no exception", async () => {

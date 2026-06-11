@@ -108,7 +108,7 @@ export class KitCommandBridge {
   }
 
   async gate(stage: string, taskId?: string): Promise<KitGateResult | null> {
-    const args = taskId ? ["gate", stage, taskId] : ["gate", stage];
+    const args = taskId ? ["gate", stage, "--task", taskId] : ["gate", stage];
     // Gates legitimately exit non-zero when blocked; treat a parseable body as success.
     return this.invoke(args, kitGateResultSchema, { allowNonZeroExit: true });
   }
@@ -241,7 +241,8 @@ export class KitCommandBridge {
 }
 
 function withTask(args: string[], taskId?: string): string[] {
-  return taskId ? [...args, taskId] : args;
+  // The real CLI takes the task as a flag; a positional id is parsed as a path.
+  return taskId ? [...args, "--task", taskId] : args;
 }
 
 /**

@@ -4,6 +4,7 @@ import { initCommand } from "./commands/init.js";
 import { nextCommand } from "./commands/next.js";
 import { rememberCommand } from "./commands/remember.js";
 import { reviewCommand } from "./commands/review.js";
+import { runCommand } from "./commands/run.js";
 import { startCommand } from "./commands/start.js";
 import { statusCommand } from "./commands/status.js";
 
@@ -18,6 +19,7 @@ export async function runCli(argv: string[]): Promise<void> {
   program.addOption(new Option("--project <path>", "Target project path.").default(process.cwd()));
   program.addCommand(initCommand());
   program.addCommand(startCommand());
+  program.addCommand(runCommand());
   program.addCommand(nextCommand());
   program.addCommand(statusCommand());
   program.addCommand(checkpointCommand());
