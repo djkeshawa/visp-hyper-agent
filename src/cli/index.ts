@@ -9,6 +9,7 @@ import { rememberCommand } from "./commands/remember.js";
 import { reportCommand } from "./commands/report.js";
 import { reviewCommand } from "./commands/review.js";
 import { runCommand } from "./commands/run.js";
+import { serveCommand } from "./commands/serve.js";
 import { startCommand } from "./commands/start.js";
 import { statusCommand } from "./commands/status.js";
 
@@ -33,6 +34,7 @@ export async function runCli(argv: string[]): Promise<void> {
   program.addCommand(reviewCommand());
   program.addCommand(rememberCommand());
   program.addCommand(reportCommand());
+  program.addCommand(serveCommand());
 
   await program.parseAsync(argv);
 }
