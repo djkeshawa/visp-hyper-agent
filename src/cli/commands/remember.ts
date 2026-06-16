@@ -59,7 +59,17 @@ export function rememberCommand(): Command {
         decisions: options.decision,
         followUps: options.followUp
       };
-      const path = await writeSessionMemory({ projectPath, ...record });
+      // The local memory write is best-effort: a permission/disk failure must
+      // degrade to a warning, not crash the command (DEGRADE NEVER CRASH). The
+      // downstream steps and the remote mirror remain useful even if it fails.
+      let path: string | null = null;
+      try {
+        path = await writeSessionMemory({ projectPath, ...record });
+      } catch (error) {
+        console.warn(
+          `warning: local session memory could not be written: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
       const config = await readConfig(projectPath);
       const harvest = await harvestSkillProposals(projectPath, config, session);
       for (const line of harvest.lines) {
@@ -69,7 +79,11 @@ export function rememberCommand(): Command {
       await recordSkillUsage(projectPath, options.usedSkill);
       await recordTokenUsage(projectPath, session, options);
       await updateActiveSession(projectPath, (current) => ({ ...current, phase: "remembered" }));
-      console.log(`Memory written to ${path}`);
+      if (path) {
+        console.log(`Memory written to ${path}`);
+      } else {
+        console.log("Memory not persisted locally (see warning above); session marked remembered.");
+      }
     });
 }
 

@@ -151,4 +151,66 @@ describe("init --tool asset installation and hook wiring", () => {
     expect(silentOutput).not.toContain("hooks:");
     expect(silentOutput).not.toContain("hint:");
   });
+
+  it("AC006: warns (does not install or throw) when --with-hooks hook output is unparseable", async () => {
+    const initializedSpec = {
+      status: { stdout: { success: true, initialized: true } }
+    };
+
+    const garbageProject = await createProject();
+    await writeKitArtifacts(garbageProject);
+    // `hooks` emits a STRING → non-JSON → hooksClaude() parses to null → warn branch.
+    const garbageShim = await createVispShim({
+      ...initializedSpec,
+      hooks: { stdout: "<<garbage>>" }
+    });
+    prependToPath(dirname(garbageShim.binary));
+
+    await expect(
+      runCli([
+        "node",
+        "visp-hyper",
+        "--project",
+        garbageProject,
+        "init",
+        "--tool",
+        "claude-code",
+        "--with-hooks"
+      ])
+    ).resolves.toBeUndefined();
+
+    const output = logs.join("\n");
+    expect(output).toContain("warning: visp hooks claude failed; run it manually.");
+    expect(output).not.toContain("hooks: installed");
+  });
+
+  it("AC006: warns when --with-hooks hook output reports success:false", async () => {
+    const initializedSpec = {
+      status: { stdout: { success: true, initialized: true } }
+    };
+
+    const failProject = await createProject();
+    await writeKitArtifacts(failProject);
+    // `hooks` returns valid JSON with success:false → hooksClaude() returns {success:false} → warn branch.
+    const failShim = await createVispShim({
+      ...initializedSpec,
+      hooks: { stdout: { success: false } }
+    });
+    prependToPath(dirname(failShim.binary));
+
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      failProject,
+      "init",
+      "--tool",
+      "claude-code",
+      "--with-hooks"
+    ]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("warning: visp hooks claude failed; run it manually.");
+    expect(output).not.toContain("hooks: installed");
+  });
 });

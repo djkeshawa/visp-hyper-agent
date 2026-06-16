@@ -246,6 +246,23 @@ describe("selectMemoryProvider (AC004)", () => {
     expect(selection.mode).toBe("file");
     expect(selection.warnings.length).toBe(1);
   });
+
+  it("falls back to file with a warning when healthz returns 200 but non-JSON body", async () => {
+    server = await startMockMemoryServer({
+      "GET /healthz": { status: 200, raw: "not json" }
+    });
+    const selection = await selectMemoryProvider({
+      config: { ...defaultConfig, memoryMode: "llm-memory", memoryEndpoint: server.url },
+      projectPath
+    });
+    expect(selection.provider).toBeNull();
+    expect(selection.mode).toBe("file");
+    expect(selection.warnings.length).toBe(1);
+    expect(selection.warnings[0]).toMatch(/falling back to file memory/);
+
+    const probe = server.requests.find((r) => r.path === "/healthz");
+    expect(probe?.method).toBe("GET");
+  });
 });
 
 describe("config extension (AC005)", () => {

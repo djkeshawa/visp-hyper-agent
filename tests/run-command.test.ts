@@ -225,6 +225,69 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect(output).toContain("read .visp/hyper/current/agent-instructions.md");
   });
 
+  it("POLICY_BLOCKED: failing policy validate stops before any handoff or kit artifacts", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const before = await listFeatureFiles(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: {
+          stdout: { success: false, errors: ["Policy file references missing rule R-XYZ-001"] }
+        },
+        // These would let the run proceed; they must never be reached.
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_POLICY_BLOCKED");
+    expect(output).toContain("Policy file references missing rule R-XYZ-001");
+    // The run returns early: no handoff, no task action, no pipeline-blocked block.
+    expect(output).not.toContain("BEGIN_VISP_AGENT_HANDOFF");
+    expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect(output).not.toContain("BEGIN_VISP_PIPELINE_BLOCKED");
+
+    // No kit artifacts authored when policy is blocked.
+    const after = await listFeatureFiles(projectPath);
+    expect(after).toEqual(before);
+  });
+
+  it("FAIL_CLOSED: unparseable implement gate output yields PIPELINE_BLOCKED, not an allowed action", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        // Non-JSON gate body (a STRING) is unparseable => implementGate is null.
+        gate: { stdout: "not json at all — the gate crashed mid-output" },
+        next: { stdout: { success: true, nextCommand: "visp tasks" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    // Fail closed: unknown gate state is treated as blocked, never as permission.
+    expect(output).toContain("BEGIN_VISP_PIPELINE_BLOCKED");
+    expect(output).toContain("task: T001");
+    // An allowed gate would have printed the task action; it must not appear.
+    expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+
+    // Pipeline is still initialized (we reached the gate), but the run is blocked.
+    const pipeline = activePipeline(await readState(projectPath));
+    expect(pipeline.currentTaskId).toBe("T001");
+  });
+
   it("AC008: checkpoint --task advances on success and stays/fails on failure", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);

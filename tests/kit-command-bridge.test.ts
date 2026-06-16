@@ -161,6 +161,48 @@ describe("KitCommandBridge", () => {
     expect(bridge.warnings.length).toBeGreaterThan(0);
   });
 
+  it("AC005: gateImplement fails closed on non-JSON gate output (returns null + schema-parse warning)", async () => {
+    // Invariant: "unparseable gate results fail closed". A gate is the security
+    // boundary, so unparseable output must NOT be treated as allowed.
+    const shim = await createVispShim({ gate: { stdout: "<<not json>>" } });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    const result = await bridge.gateImplement("T001");
+
+    expect(result).toBeNull();
+    expect(
+      bridge.warnings.some((warning) =>
+        warning.includes("could not be parsed against the expected schema")
+      )
+    ).toBe(true);
+  });
+
+  it("AC005: gateImplement fails closed on valid JSON with the wrong shape (schema mismatch)", async () => {
+    // `allowed` must be a boolean; the string "yes" violates the schema, so the
+    // gate must fail closed (null) rather than coercing a truthy value to allowed.
+    const shim = await createVispShim({ gate: { stdout: { allowed: "yes" } } });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    const result = await bridge.gateImplement("T001");
+
+    expect(result).toBeNull();
+  });
+
+  it("AC005: gateImplement returns the parsed result for a well-formed allowed gate body", async () => {
+    // Sanity: proves the negative cases above are meaningful — a valid body parses
+    // through to a non-null result with allowed === true.
+    const shim = await createVispShim({
+      gate: { stdout: { success: true, stage: "implement", allowed: true } }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    const result = await bridge.gateImplement("T001");
+
+    expect(result).not.toBeNull();
+    expect(result?.allowed).toBe(true);
+    expect(bridge.warnings).toEqual([]);
+  });
+
   it("AC003: recordBudget sends the visp budget flags", async () => {
     const shim = await createVispShim({ budget: { stdout: { success: true } } });
     const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
