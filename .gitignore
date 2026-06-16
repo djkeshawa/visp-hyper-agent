@@ -6,3 +6,5 @@ coverage/
 .env.*
 .~lock.*#
 .llm-memory/
+.claude/
+Visp-Hyper-Agent-Comprehensive-Implementation-Plan.docx
