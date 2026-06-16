@@ -117,7 +117,7 @@ describe("report command (AC006)", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "report"]);
     const text = logs.join("\n");
 
-    expect(text).toContain("VISP_HYPER_REPORT");
+    expect(text).toContain("BEGIN_VISP_HYPER_REPORT");
     expect(text).toContain("END_VISP_HYPER_REPORT");
     expect(text).toContain("sessions: 3");
     // 4 distinct first-attempt records: T001, T002, T003(first fail), T004, T005 pass → 4/5 first-attempts pass.
@@ -160,7 +160,7 @@ describe("report command (AC006)", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "report"]);
     const text = logs.join("\n");
 
-    expect(text).toContain("VISP_HYPER_REPORT");
+    expect(text).toContain("BEGIN_VISP_HYPER_REPORT");
     expect(text).toContain("sessions: 0    tasks: 0    attempts: 0");
     expect(text).toContain("first_attempt_pass_rate: n/a");
     expect(text).toContain("tokens: input=0 output=0");

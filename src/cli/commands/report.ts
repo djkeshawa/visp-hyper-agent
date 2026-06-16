@@ -161,7 +161,7 @@ function formatRate(rate: number | null): string {
 function renderReport(aggregate: ReportAggregate): string {
   const { totals, perTier, perClass, tokens, quarantines, recentDecisions, skills } = aggregate;
   const lines: string[] = [];
-  lines.push("VISP_HYPER_REPORT");
+  lines.push("BEGIN_VISP_HYPER_REPORT");
   lines.push(`sessions: ${totals.sessions}    tasks: ${totals.tasks}    attempts: ${totals.attempts}`);
   lines.push(`first_attempt_pass_rate: ${formatRate(totals.firstAttemptPassRate)}`);
   lines.push(`tokens: input=${tokens.inputTokens} output=${tokens.outputTokens}`);

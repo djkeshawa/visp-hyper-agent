@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
+import { parseJsonStore } from "../core/json-store.js";
 
 export const routingQuarantineSchema = z.object({
   taskClass: z.string(),
@@ -40,29 +41,14 @@ export async function readRoutingState(
   projectPath: string
 ): Promise<{ state: RoutingState; warnings: string[] }> {
   const raw = await readTextIfExists(routingPath(projectPath));
-  if (raw === undefined) {
-    return { state: emptyState(), warnings: [] };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return {
-      state: emptyState(),
-      warnings: ["routing.json could not be parsed as JSON; starting from an empty state."]
-    };
-  }
-
-  const result = routingStateSchema.safeParse(parsed);
-  if (!result.success) {
-    return {
-      state: emptyState(),
-      warnings: ["routing.json did not match the expected schema; starting from an empty state."]
-    };
-  }
-
-  return { state: result.data, warnings: [] };
+  const { value, warnings } = parseJsonStore(
+    raw,
+    routingStateSchema,
+    emptyState,
+    "routing.json",
+    "an empty state"
+  );
+  return { state: value, warnings };
 }
 
 export async function writeRoutingState(projectPath: string, state: RoutingState): Promise<void> {

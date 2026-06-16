@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
+import { parseJsonStore } from "../core/json-store.js";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
 import type { SkillProposal } from "./skill-proposals.js";
@@ -40,29 +41,14 @@ export async function readSkillRegistry(
   projectPath: string
 ): Promise<{ registry: SkillRegistry; warnings: string[] }> {
   const raw = await readTextIfExists(registryPath(projectPath));
-  if (raw === undefined) {
-    return { registry: emptyRegistry(), warnings: [] };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return {
-      registry: emptyRegistry(),
-      warnings: ["skills.json could not be parsed as JSON; starting from an empty registry."]
-    };
-  }
-
-  const result = skillRegistrySchema.safeParse(parsed);
-  if (!result.success) {
-    return {
-      registry: emptyRegistry(),
-      warnings: ["skills.json did not match the expected schema; starting from an empty registry."]
-    };
-  }
-
-  return { registry: result.data, warnings: [] };
+  const { value, warnings } = parseJsonStore(
+    raw,
+    skillRegistrySchema,
+    emptyRegistry,
+    "skills.json",
+    "an empty registry"
+  );
+  return { registry: value, warnings };
 }
 
 export async function writeSkillRegistry(

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
+import { parseJsonStore } from "../core/json-store.js";
 
 export const telemetryAttemptSchema = z.object({
   taskId: z.string(),
@@ -43,29 +44,14 @@ export async function readTelemetry(
   projectPath: string
 ): Promise<{ data: TelemetryFile; warnings: string[] }> {
   const raw = await readTextIfExists(telemetryPath(projectPath));
-  if (raw === undefined) {
-    return { data: { attempts: [], usage: [] }, warnings: [] };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return {
-      data: { attempts: [], usage: [] },
-      warnings: ["telemetry.json could not be parsed as JSON; starting from an empty store."]
-    };
-  }
-
-  const result = telemetryFileSchema.safeParse(parsed);
-  if (!result.success) {
-    return {
-      data: { attempts: [], usage: [] },
-      warnings: ["telemetry.json did not match the expected schema; starting from an empty store."]
-    };
-  }
-
-  return { data: result.data, warnings: [] };
+  const { value, warnings } = parseJsonStore(
+    raw,
+    telemetryFileSchema,
+    () => ({ attempts: [], usage: [] }),
+    "telemetry.json",
+    "an empty store"
+  );
+  return { data: value, warnings };
 }
 
 async function writeTelemetry(projectPath: string, data: TelemetryFile): Promise<void> {

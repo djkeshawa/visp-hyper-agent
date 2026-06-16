@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { defaultConfig } from "./defaults.js";
 import { ensureDir, readTextIfExists, vispPath, writeText } from "./fs-utils.js";
+import { parseJsonStore } from "./json-store.js";
 import { kitTaskSchema } from "../kit/kit-schemas.js";
 import type { HyperConfig, HyperState, SessionRecord, ToolProfile } from "./types.js";
 
@@ -66,16 +67,51 @@ export async function initializeProject(projectPath: string, force = false): Pro
   }
 }
 
+function emptyState(): HyperState {
+  return { activeSessionId: null, sessions: {} };
+}
+
+/**
+ * Read the hyper config. DEGRADE, NEVER CRASH: a corrupt or schema-invalid
+ * `config.json` falls back to the built-in defaults plus a stderr warning
+ * rather than throwing — every command reads this with no surrounding
+ * try-catch, so a throw here would take down the whole CLI.
+ */
 export async function readConfig(projectPath: string): Promise<HyperConfig> {
   await initializeProject(projectPath);
   const raw = await readTextIfExists(vispPath(projectPath, "hyper", "config.json"));
-  return configSchema.parse(JSON.parse(raw ?? "{}"));
+  const { value, warnings } = parseJsonStore(
+    raw,
+    configSchema,
+    () => defaultConfig,
+    "config.json",
+    "the default configuration"
+  );
+  for (const warning of warnings) {
+    console.warn(`warning: ${warning}`);
+  }
+  return value;
 }
 
+/**
+ * Read the hyper session state. DEGRADE, NEVER CRASH: a corrupt or
+ * schema-invalid `state.json` falls back to an empty session state plus a
+ * stderr warning rather than throwing.
+ */
 export async function readState(projectPath: string): Promise<HyperState> {
   await initializeProject(projectPath);
   const raw = await readTextIfExists(vispPath(projectPath, "hyper", "state.json"));
-  return stateSchema.parse(JSON.parse(raw ?? "{}"));
+  const { value, warnings } = parseJsonStore(
+    raw,
+    stateSchema,
+    emptyState,
+    "state.json",
+    "an empty session state"
+  );
+  for (const warning of warnings) {
+    console.warn(`warning: ${warning}`);
+  }
+  return value;
 }
 
 export async function writeState(projectPath: string, state: HyperState): Promise<void> {
