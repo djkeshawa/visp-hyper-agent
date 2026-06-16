@@ -1,4 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
+import { fileExists } from "../core/fs-utils.js";
 import { join } from "node:path";
 import type { KitTask, KitTaskGraph } from "../kit/kit-schemas.js";
 
@@ -110,11 +111,10 @@ function parseIdedChecklist(content: string, idPrefix: string): KitTask[] {
     }
     const explicitId = idMatch[1]!;
     const title = (task.title ?? "").replace(SPEC_KIT_ID, "").trim();
-    const dependsOn =
-      index === 0
-        ? []
-        : // Re-link the dependency to the previous task's (possibly explicit) id.
-          task.dependsOn;
+    // Dependencies are left as-is here (only the first task is forced to none);
+    // the actual re-linking to each prior task's explicit id happens later in
+    // relinkDependencies().
+    const dependsOn = index === 0 ? [] : task.dependsOn;
     return { ...task, id: explicitId, title, dependsOn };
   });
 }
@@ -128,15 +128,6 @@ function relinkDependencies(tasks: KitTask[]): KitTask[] {
     ...task,
     dependsOn: index === 0 ? [] : [tasks[index - 1]!.id]
   }));
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await readFile(path, "utf8");
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function tryReadFile(path: string): Promise<string | null> {

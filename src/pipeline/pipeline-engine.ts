@@ -211,7 +211,6 @@ export function advance(
   if (!passed) {
     return {
       ...state,
-      taskIds: [...state.taskIds],
       completed: [...state.completed],
       stepHistory: [
         ...state.stepHistory,
@@ -227,7 +226,6 @@ export function advance(
 
   return {
     ...state,
-    taskIds: [...state.taskIds],
     currentTaskId: nextTaskId,
     completed,
     stepHistory: [

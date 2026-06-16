@@ -1,9 +1,26 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 export async function ensureDir(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
+}
+
+/**
+ * Existence probe that distinguishes "absent" from "inaccessible": returns
+ * false only on ENOENT and re-throws any other error (permission, I/O, ENOTDIR)
+ * so a real problem is never silently reported as "missing".
+ */
+export async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 export async function readTextIfExists(path: string): Promise<string | undefined> {

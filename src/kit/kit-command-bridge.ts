@@ -265,7 +265,12 @@ export class KitCommandBridge {
   }
 }
 
-async function hasKitArtifacts(projectPath: string): Promise<boolean> {
+/**
+ * True when the target project carries a kit-owned artifact on disk. `visp
+ * status` reports initialized=true for ANY .visp/ directory (including the
+ * .visp/hyper tree visp-hyper creates), so this is the real-kit signal.
+ */
+export async function hasKitArtifacts(projectPath: string): Promise<boolean> {
   for (const artifact of ["policy.json", "project.json"]) {
     try {
       await stat(join(projectPath, ".visp", artifact));

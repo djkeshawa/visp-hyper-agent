@@ -31,6 +31,19 @@ export async function selectMemoryProvider(input: {
   }
 
   const endpoint = (input.config.memoryEndpoint || "http://localhost:8000").replace(/\/+$/u, "");
+
+  // init validates the endpoint, but config.json can be hand-edited; re-check
+  // the scheme before we ever fetch it so a bad value degrades to file memory
+  // rather than throwing or reaching an unexpected host.
+  const endpointError = httpEndpointError(endpoint);
+  if (endpointError) {
+    return {
+      provider: null,
+      mode: "file",
+      warnings: [`llm-memory endpoint ${endpoint} is invalid: ${endpointError}; falling back to file memory`]
+    };
+  }
+
   const timeout = input.timeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
   const probe = await probeHealth(endpoint, timeout);
   if (!probe.ok) {
@@ -48,6 +61,19 @@ export async function selectMemoryProvider(input: {
     timeoutMs: input.timeoutMs
   });
   return { provider, mode: "llm-memory", warnings: [] };
+}
+
+function httpEndpointError(endpoint: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return "not a valid URL";
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return `unsupported protocol "${url.protocol}"`;
+  }
+  return null;
 }
 
 async function probeHealth(

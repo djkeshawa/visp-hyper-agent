@@ -1,8 +1,7 @@
 import { z } from "zod";
-import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
+import { fileExists, readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
 import { parseJsonStore } from "../core/json-store.js";
 import { join } from "node:path";
-import { stat } from "node:fs/promises";
 import type { SkillProposal } from "./skill-proposals.js";
 
 export const skillEntrySchema = z.object({
@@ -108,17 +107,6 @@ function renderSkill(proposal: SkillProposal): string {
   ].join("\n");
 }
 
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
 
 /**
  * Install a skill to its tool-specific destination and register it. If the

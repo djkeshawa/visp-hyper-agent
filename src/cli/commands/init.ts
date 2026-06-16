@@ -1,12 +1,10 @@
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
 import { Command, Option } from "commander";
 import { resolveProjectPath } from "./shared.js";
 import { initializeProject, readConfig } from "../../core/session-manager.js";
 import { vispPath, writeText } from "../../core/fs-utils.js";
 import { repoIdForProject } from "../../memory/llm-memory-provider.js";
 import { installAssets, type ToolName } from "../../install/tool-asset-installer.js";
-import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
+import { KitCommandBridge, detectVisp, hasKitArtifacts } from "../../kit/kit-command-bridge.js";
 
 interface InitOptions {
   force?: boolean;
@@ -155,14 +153,3 @@ async function wireHooks(projectPath: string, withHooks: boolean): Promise<void>
   }
 }
 
-async function hasKitArtifacts(projectPath: string): Promise<boolean> {
-  for (const artifact of ["policy.json", "project.json"]) {
-    try {
-      await stat(join(projectPath, ".visp", artifact));
-      return true;
-    } catch {
-      // keep probing
-    }
-  }
-  return false;
-}

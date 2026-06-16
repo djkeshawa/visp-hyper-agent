@@ -14,7 +14,7 @@ import {
 } from "../../routing/routing-engine.js";
 import { readRoutingState, writeRoutingState } from "../../routing/routing-state.js";
 import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
-import { resolveProjectPath } from "./shared.js";
+import { printWarnings, resolveProjectPath } from "./shared.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -228,11 +228,4 @@ async function writeCheckpointMarkdown(projectPath: string, sessionId: string, g
   const path = vispPath(projectPath, "hyper", "current", "checkpoints.md");
   const previous = await readTextIfExists(path);
   await writeText(path, previous ? `${previous.trimEnd()}\n\n${content}` : `# Checkpoints\n\n${content}`);
-}
-
-function printWarnings(warnings: string[]): void {
-  for (const warning of warnings) {
-    console.log(`warning: ${warning}`);
-  }
-  warnings.length = 0;
 }

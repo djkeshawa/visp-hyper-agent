@@ -1,5 +1,3 @@
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
 import { Command } from "commander";
 import { getActiveSession, readState } from "../../core/session-manager.js";
 import type { SessionRecord } from "../../core/types.js";
@@ -8,7 +6,7 @@ import { buildActionBlock, currentTask, loadTaskGraph } from "../../pipeline/pip
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
-import { resolveProjectPath } from "./shared.js";
+import { contextPackPathIfExists, resolveProjectPath } from "./shared.js";
 
 export function nextCommand(): Command {
   return new Command("next")
@@ -93,24 +91,3 @@ async function printAndRecordRouting(projectPath: string, task: KitTask): Promis
   }
 }
 
-async function contextPackPathIfExists(projectPath: string, taskId: string): Promise<string | undefined> {
-  const featureRoot = join(projectPath, ".visp", "features");
-  let dirNames: string[];
-  try {
-    const { readdir } = await import("node:fs/promises");
-    const entries = await readdir(featureRoot, { withFileTypes: true });
-    dirNames = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
-  } catch {
-    return undefined;
-  }
-  for (const dirName of dirNames) {
-    const relative = join(".visp", "features", dirName, "context", `${taskId}.context.json`);
-    try {
-      await stat(join(projectPath, relative));
-      return relative;
-    } catch {
-      // try next feature directory
-    }
-  }
-  return undefined;
-}

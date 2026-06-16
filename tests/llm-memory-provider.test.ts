@@ -263,6 +263,28 @@ describe("selectMemoryProvider (AC004)", () => {
     const probe = server.requests.find((r) => r.path === "/healthz");
     expect(probe?.method).toBe("GET");
   });
+
+  it("falls back to file without probing when the endpoint has a non-http(s) scheme", async () => {
+    const selection = await selectMemoryProvider({
+      config: { ...defaultConfig, memoryMode: "llm-memory", memoryEndpoint: "ftp://memory.invalid:21" },
+      projectPath
+    });
+    expect(selection.provider).toBeNull();
+    expect(selection.mode).toBe("file");
+    expect(selection.warnings.length).toBe(1);
+    expect(selection.warnings[0]).toMatch(/unsupported protocol/);
+    expect(selection.warnings[0]).toMatch(/falling back to file memory/);
+  });
+
+  it("falls back to file when the endpoint is not a valid URL", async () => {
+    const selection = await selectMemoryProvider({
+      config: { ...defaultConfig, memoryMode: "llm-memory", memoryEndpoint: "not a url" },
+      projectPath
+    });
+    expect(selection.provider).toBeNull();
+    expect(selection.mode).toBe("file");
+    expect(selection.warnings[0]).toMatch(/not a valid URL/);
+  });
 });
 
 describe("config extension (AC005)", () => {

@@ -107,13 +107,17 @@ function ciSubcommand(): Command {
  * when the CLI is not globally installed.
  */
 function gitHookContent(): string {
+  // Single-quote the baked-in path so a directory containing $(...) or backticks
+  // cannot be command-substituted by the shell; embedded single quotes are
+  // escaped the POSIX way ('\'').
+  const distPath = distIndexPath().replace(/'/gu, "'\\''");
   return `#!/bin/sh
 ${GIT_HOOK_MARKER}
 # Blocks commits with files outside the active visp-hyper task scope.
 if command -v visp-hyper >/dev/null 2>&1; then
   exec visp-hyper guard --staged
 fi
-exec node "${distIndexPath()}" guard --staged
+exec node '${distPath}' guard --staged
 `;
 }
 

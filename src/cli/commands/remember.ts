@@ -137,6 +137,10 @@ export async function harvestSkillProposals(
       });
       if (result.installed) {
         await rm(proposal.sourcePath, { force: true });
+        // installSkill already persisted this entry to disk (it re-reads the
+        // registry fresh, appends, and writes). This push only keeps the
+        // in-memory `registry` current so isDuplicate() sees skills installed
+        // earlier in THIS same batch; it is intentionally not written back.
         registry.skills.push({
           name: proposal.name,
           description: proposal.description,

@@ -1,5 +1,3 @@
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
 import { Command, Option } from "commander";
 import { readState, updateActiveSession } from "../../core/session-manager.js";
 import type { ToolProfile } from "../../core/types.js";
@@ -16,7 +14,7 @@ import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { executeStart } from "./start.js";
-import { resolveProjectPath } from "./shared.js";
+import { contextPackPathIfExists, printWarnings, resolveProjectPath } from "./shared.js";
 
 export function runCommand(): Command {
   return new Command("run")
@@ -99,9 +97,7 @@ export function runCommand(): Command {
         return;
       }
 
-      const contextPackPath = featureDirName
-        ? await contextPackPathIfExists(projectPath, featureDirName, task.id)
-        : undefined;
+      const contextPackPath = await contextPackPathIfExists(projectPath, task.id);
 
       console.log(handoff);
       console.log("");
@@ -148,27 +144,6 @@ function deriveFeatureDirName(status: KitStatus): string | undefined {
     return undefined;
   }
   return feature.slug ? `${feature.id}-${feature.slug}` : feature.id;
-}
-
-async function contextPackPathIfExists(
-  projectPath: string,
-  featureDirName: string,
-  taskId: string
-): Promise<string | undefined> {
-  const relative = join(".visp", "features", featureDirName, "context", `${taskId}.context.json`);
-  try {
-    await stat(join(projectPath, relative));
-    return relative;
-  } catch {
-    return undefined;
-  }
-}
-
-function printWarnings(warnings: string[]): void {
-  for (const warning of warnings) {
-    console.log(`warning: ${warning}`);
-  }
-  warnings.length = 0;
 }
 
 function renderPolicyBlocked(errors: string[]): string {
