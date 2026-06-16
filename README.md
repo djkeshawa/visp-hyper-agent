@@ -1,8 +1,8 @@
 # visp-hyper-agent
 
-Local-first companion workflow controller for Codex, Claude Code, GitHub Copilot, OpenCode, and similar AI coding tools.
+Local-first workflow controller for Codex, Claude Code, GitHub Copilot, OpenCode, and similar AI coding tools.
 
-Visp Hyper Agent does not replace coding agents and never calls an LLM itself. It orchestrates disciplined sessions for the coding tool you already use:
+Visp Hyper Agent does not replace coding agents and never calls an LLM itself. It prepares task-scoped handoffs, enforces Visp Kit gates, records checkpoint evidence, and stores session memory for the coding tool you already use:
 
 - **Structured code flow** — drives the gated [Visp Kit](https://github.com/djkeshawa/visp-kit) workflow through its CLI, adopts task-scoped context packs, and advances only on verified evidence.
 - **Active memory** — recalls and persists project knowledge through [llm-memory](https://github.com/djkeshawa/llm-memory) (optional; file-based memory is the zero-dependency default).
@@ -12,6 +12,36 @@ Visp Hyper Agent does not replace coding agents and never calls an LLM itself. I
 Everything is file-based under the target project's `.visp/` directory. No network calls (except to your own optional llm-memory server), no database, no embeddings, no new runtime dependencies.
 
 **New here? Follow the [five-minute quickstart](examples/quickstart.md) to see a commit get blocked and a task verified.**
+
+## Install
+
+Prerequisites:
+
+- Node.js 24+
+- A project using Git
+- Visp Kit for strict gated workflows
+
+Install the CLI from npm:
+
+```bash
+npm install -g visp-hyper-agent
+visp-hyper --help
+```
+
+Or run it without a global install:
+
+```bash
+npx --package visp-hyper-agent visp-hyper --help
+```
+
+Use it inside a project:
+
+```bash
+visp-hyper init --tool codex
+visp-hyper run "implement offline note sync"
+visp-hyper checkpoint --task T001
+visp-hyper remember --summary "Implemented offline note sync"
+```
 
 ## Commands
 
@@ -27,7 +57,7 @@ Everything is file-based under the target project's `.visp/` directory. No netwo
 | `visp-hyper report [--json]` | The cost/accuracy evidence view: first-attempt verify+review pass rates per model tier and per task class, token totals, active routing quarantines, recent routing decisions, and skill usage with prune flags. |
 | `visp-hyper status` | Session metadata, generated files, checkpoint/review state, and memory status. |
 
-## Install Locally
+## Develop Locally
 
 Prerequisites:
 
@@ -191,7 +221,6 @@ Supported profiles: `generic`, `codex`, `claude-code`, `copilot`, `opencode`.
 - MCP server mode (`McpBridge` seam is typed and ready; slash commands cover the UX today).
 - ArcadeDB-backed semantic recall behind the `SemanticMemoryProvider` seam.
 - Cross-project telemetry and skill sharing.
-- npm publication.
 
 ## Development
 
