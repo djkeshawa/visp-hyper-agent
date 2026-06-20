@@ -263,14 +263,17 @@ describe("tool bridge execution", () => {
     expect(await fileExists(join(projectPath, ".visp"))).toBe(false);
   });
 
-  it("AC006: the bridge advertises the seven hyper tools", async () => {
+  it("AC006: the bridge advertises the hyper tools", async () => {
     const tools = await createMcpBridge().listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
       "hyper_quick",
       "hyper_run",
       "hyper_next",
+      "hyper_status",
+      "hyper_doctor",
       "hyper_checkpoint",
       "hyper_guard",
+      "hyper_review",
       "hyper_remember",
       "hyper_report"
     ]);

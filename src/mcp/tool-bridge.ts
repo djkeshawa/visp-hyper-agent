@@ -1,9 +1,10 @@
 import { runCli } from "../cli/index.js";
 import type { McpBridge } from "../core/types.js";
+import { packageVersion } from "../core/package-version.js";
 import type { McpContext, McpToolDef } from "./mcp-server.js";
 
 /** Server version advertised over `initialize`; matches package.json. */
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = packageVersion();
 
 type ToolArgs = Record<string, unknown>;
 
@@ -100,6 +101,25 @@ const TOOL_SPECS: ToolSpec[] = [
     toArgv: () => ["next"]
   },
   {
+    name: "hyper_status",
+    description: "Show the active Visp Hyper session status and generated artifact state.",
+    inputSchema: { type: "object", properties: {} },
+    validate: () => null,
+    toArgv: () => ["status"]
+  },
+  {
+    name: "hyper_doctor",
+    description: "Run the read-only Hyper + Kit integration health check.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        json: { type: "boolean" }
+      }
+    },
+    validate: (args) => optional(args, "json", (v) => typeof v === "boolean", "a boolean"),
+    toArgv: (args) => (args.json === false ? ["doctor"] : ["doctor", "--json"])
+  },
+  {
     name: "hyper_checkpoint",
     description: "Run verify+review evidence; only proceed when status PASSED.",
     inputSchema: {
@@ -141,6 +161,13 @@ const TOOL_SPECS: ToolSpec[] = [
       }
       return ["guard", "--staged"];
     }
+  },
+  {
+    name: "hyper_review",
+    description: "Write a deterministic local diff review report.",
+    inputSchema: { type: "object", properties: {} },
+    validate: () => null,
+    toArgv: () => ["review"]
   },
   {
     name: "hyper_remember",

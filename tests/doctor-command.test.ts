@@ -69,6 +69,29 @@ describe("doctor command", () => {
           activeTask: { id: "T001", title: "Demo task", status: "ready" }
         }
       },
+      integration: {
+        stdout: {
+          success: true,
+          contractVersion: "1.0",
+          kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
+          targetPath: projectPath,
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
+          activeTask: { id: "T001", title: "Demo task", status: "ready" },
+          commands: {},
+          artifacts: {
+            kitSignals: [".visp/policy.json", ".visp/project.json"],
+            projectStatus: ".visp/status.json",
+            projectProfile: ".visp/project.json",
+            featureRoot: ".visp/features",
+            featureDir: ".visp/features/001-demo",
+            taskGraph: ".visp/features/001-demo/task-graph.json",
+            contextPack: ".visp/features/001-demo/context/T001.context.json",
+            contextPrompt: ".visp/features/001-demo/context/T001.prompt.md"
+          },
+          warnings: []
+        }
+      },
       policy: { stdout: { success: true, errors: [] } },
       gate: { stdout: { success: true, stage: "next", allowed: true, failedRules: [] } }
     });
@@ -81,7 +104,10 @@ describe("doctor command", () => {
       checks: Array<{ id: string; status: string; detail: string }>;
     };
     expect(summary.success).toBe(true);
+    expect(summary.checks.find((check) => check.id === "hyper-version")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "mcp")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-binary")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-policy")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-context-pack")?.detail).toContain("T001");
     expect(summary.checks.find((check) => check.id === "git-hook")?.status).toBe("pass");

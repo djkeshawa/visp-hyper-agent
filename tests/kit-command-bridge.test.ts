@@ -249,6 +249,42 @@ describe("KitCommandBridge", () => {
     expect(lines[1]).toEqual(["budget", "--task", "T002", "--record-usage-unavailable", "--json"]);
   });
 
+  it("parses the visp integration contract when supported", async () => {
+    const shim = await createVispShim({
+      integration: {
+        stdout: {
+          success: true,
+          contractVersion: "1.0",
+          kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
+          targetPath: "/repo",
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
+          activeTask: { id: "T001", title: "Demo", status: "ready" },
+          commands: { status: ["status", "--json"] },
+          artifacts: {
+            kitSignals: [".visp/policy.json", ".visp/project.json"],
+            projectStatus: ".visp/status.json",
+            projectProfile: ".visp/project.json",
+            featureRoot: ".visp/features",
+            featureDir: ".visp/features/001-demo",
+            taskGraph: ".visp/features/001-demo/task-graph.json",
+            contextPack: ".visp/features/001-demo/context/T001.context.json",
+            contextPrompt: ".visp/features/001-demo/context/T001.prompt.md"
+          },
+          warnings: []
+        }
+      }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    const contract = await bridge.integrationContract();
+
+    expect(contract?.contractVersion).toBe("1.0");
+    expect(contract?.kit.version).toBe("0.1.2");
+    const argv = JSON.parse((await readFile(shim.argvLogPath, "utf8")).trim()) as string[];
+    expect(argv).toEqual(["integration", "contract", "--json"]);
+  });
+
   it("AC003: readContextPack reads and parses a fixture context pack file", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "visp-ctx-"));
     const contextDir = join(projectPath, ".visp", "features", "001-x", "context");
@@ -275,6 +311,52 @@ describe("KitCommandBridge", () => {
 
     expect(pack?.taskId).toBe("T001");
     expect(pack?.includedFiles?.[0]?.path).toBe("src/kit/kit-schemas.ts");
+    expect(bridge.warnings).toEqual([]);
+  });
+
+  it("readContextPack prefers the integration contract path when present", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-ctx-contract-"));
+    const contextDir = join(projectPath, ".visp", "contract-context");
+    await mkdir(contextDir, { recursive: true });
+    await writeFile(
+      join(contextDir, "T777.context.json"),
+      JSON.stringify({
+        taskId: "T777",
+        includedFiles: [{ path: "src/from-contract.ts", reason: "contract path" }]
+      }),
+      "utf8"
+    );
+    const shim = await createVispShim({
+      status: { stdout: { success: true, initialized: true } },
+      integration: {
+        stdout: {
+          success: true,
+          contractVersion: "1.0",
+          kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
+          targetPath: projectPath,
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
+          activeTask: { id: "T777", title: "Demo", status: "ready" },
+          commands: {},
+          artifacts: {
+            kitSignals: [".visp/policy.json", ".visp/project.json"],
+            projectStatus: ".visp/status.json",
+            projectProfile: ".visp/project.json",
+            featureRoot: ".visp/features",
+            featureDir: ".visp/features/001-demo",
+            taskGraph: ".visp/features/001-demo/task-graph.json",
+            contextPack: ".visp/contract-context/T777.context.json",
+            contextPrompt: ".visp/contract-context/T777.prompt.md"
+          },
+          warnings: []
+        }
+      }
+    });
+    const bridge = new KitCommandBridge({ projectPath, binary: shim.binary });
+
+    const pack = await bridge.readContextPack("T777");
+
+    expect(pack?.includedFiles?.[0]?.path).toBe("src/from-contract.ts");
     expect(bridge.warnings).toEqual([]);
   });
 });

@@ -104,6 +104,48 @@ export const kitNextSchema = z.object({
 });
 export type KitNext = z.infer<typeof kitNextSchema>;
 
+const kitIntegrationContractFeatureSchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  key: z.string(),
+  path: z.string()
+});
+
+const kitIntegrationContractTaskSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.string()
+});
+
+export const kitIntegrationContractSchema = z
+  .object({
+    success: z.boolean(),
+    contractVersion: z.string(),
+    kit: z.object({
+      packageName: z.string(),
+      cliName: z.string(),
+      version: z.string()
+    }),
+    targetPath: z.string(),
+    initialized: z.boolean(),
+    activeFeature: kitIntegrationContractFeatureSchema.nullable(),
+    activeTask: kitIntegrationContractTaskSchema.nullable(),
+    commands: z.record(z.array(z.string())),
+    artifacts: z.object({
+      kitSignals: z.array(z.string()),
+      projectStatus: z.string(),
+      projectProfile: z.string(),
+      featureRoot: z.string(),
+      featureDir: z.string(),
+      taskGraph: z.string(),
+      contextPack: z.string(),
+      contextPrompt: z.string()
+    }),
+    warnings: z.array(z.string()).optional()
+  })
+  .passthrough();
+export type KitIntegrationContract = z.infer<typeof kitIntegrationContractSchema>;
+
 // Partial mirror of a feature's `task-graph.json`. Only the fields the pipeline
 // engine consumes are described; unknown extras are tolerated (no `.strict()`).
 export const kitTaskSchema = z.object({

@@ -58,6 +58,23 @@ visp-hyper remember --summary "Implemented offline note sync"
 | `visp-hyper status` | Session metadata, generated files, checkpoint/review state, and memory status. |
 | `visp-hyper doctor [--json]` | Read-only compatibility check for the Hyper + Visp Kit chain: Hyper state, Kit artifacts, `visp --json` parsing, policy validation, next gate, active task context pack, and the git scope hook. |
 
+## MCP Server
+
+`visp-hyper serve --mcp` exposes the same orchestration surface over stdio JSON-RPC for MCP-capable tools.
+
+Tools:
+
+- `hyper_quick`
+- `hyper_run`
+- `hyper_next`
+- `hyper_status`
+- `hyper_doctor`
+- `hyper_checkpoint`
+- `hyper_guard`
+- `hyper_review`
+- `hyper_remember`
+- `hyper_report`
+
 ## Develop Locally
 
 Prerequisites:
@@ -219,7 +236,7 @@ Supported profiles: `generic`, `codex`, `claude-code`, `copilot`, `opencode`.
 
 ## Roadmap
 
-- MCP server mode (`McpBridge` seam is typed and ready; slash commands cover the UX today).
+- Richer MCP resources and prompts for tool-native context browsing.
 - ArcadeDB-backed semantic recall behind the `SemanticMemoryProvider` seam.
 - Cross-project telemetry and skill sharing.
 

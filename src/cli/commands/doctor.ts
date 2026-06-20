@@ -1,7 +1,11 @@
 import { join } from "node:path";
 import { Command, Option } from "commander";
+import { packageVersion } from "../../core/package-version.js";
 import { fileExists, readTextIfExists, vispPath } from "../../core/fs-utils.js";
+import { planInstall, type ToolName } from "../../install/tool-asset-installer.js";
 import { detectVisp, hasKitArtifacts, KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import { handleMessage } from "../../mcp/mcp-server.js";
+import { createToolContext } from "../../mcp/tool-bridge.js";
 import { contextPackPathIfExists, resolveProjectPath } from "./shared.js";
 
 type DoctorStatus = "pass" | "warn" | "fail";
@@ -17,6 +21,7 @@ type DoctorCheck = {
 type DoctorSummary = {
   success: boolean;
   projectPath: string;
+  version: string;
   checks: DoctorCheck[];
   nextCommand: string;
 };
@@ -45,7 +50,9 @@ export function doctorCommand(): Command {
 
 export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
   const checks: DoctorCheck[] = [];
+  const config = await readHyperConfigSnapshot(projectPath);
 
+  checks.push(checkPackageVersion());
   checks.push(await checkHyperInitialized(projectPath));
 
   const kitArtifactsPresent = await hasKitArtifacts(projectPath);
@@ -64,12 +71,28 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
   }
 
   checks.push(await checkGitHook(projectPath));
+  checks.push(await checkToolAssets(projectPath, config));
+  checks.push(await checkMemory(projectPath, config));
+  checks.push(await checkMcp(projectPath));
 
   return {
     success: checks.every((check) => check.status !== "fail"),
     projectPath,
+    version: packageVersion(),
     checks,
     nextCommand: nextCommand(checks)
+  };
+}
+
+function checkPackageVersion(): DoctorCheck {
+  const version = packageVersion();
+  return {
+    id: "hyper-version",
+    label: "Visp Hyper version",
+    status: version === "0.0.0" ? "warn" : "pass",
+    detail: version === "0.0.0"
+      ? "Could not resolve package.json version."
+      : `Running visp-hyper ${version}.`
   };
 }
 
@@ -117,6 +140,25 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
   addWarnings(checks, availability.warnings, "kit-detect-warning");
 
   const bridge = new KitCommandBridge({ projectPath });
+
+  const contract = await bridge.integrationContract();
+  addWarnings(checks, drainWarnings(bridge.warnings), "kit-contract-warning");
+  checks.push(
+    contract === null
+      ? {
+          id: "kit-contract",
+          label: "Kit integration contract",
+          status: "warn",
+          detail: "visp integration contract could not be read; falling back to legacy status and artifact probing.",
+          recovery: "Upgrade or link a Visp Kit version that supports `visp integration contract --json`."
+        }
+      : {
+          id: "kit-contract",
+          label: "Kit integration contract",
+          status: "pass",
+          detail: `Contract ${contract.contractVersion} from ${contract.kit.packageName} ${contract.kit.version}.`
+        }
+  );
 
   const policy = await bridge.policyValidate();
   addWarnings(checks, drainWarnings(bridge.warnings), "kit-policy-warning");
@@ -188,6 +230,167 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
   });
 }
 
+type HyperConfigSnapshot = {
+  defaultTool?: string;
+  memoryMode?: string;
+  memoryEndpoint?: string;
+};
+
+async function readHyperConfigSnapshot(projectPath: string): Promise<HyperConfigSnapshot | null> {
+  const raw = await readTextIfExists(vispPath(projectPath, "hyper", "config.json"));
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as HyperConfigSnapshot;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function checkToolAssets(projectPath: string, config: HyperConfigSnapshot | null): Promise<DoctorCheck> {
+  const tool = config?.defaultTool;
+  if (!isToolName(tool)) {
+    return {
+      id: "tool-assets",
+      label: "Tool assets",
+      status: "warn",
+      detail: "No valid defaultTool found in .visp/hyper/config.json.",
+      recovery: "Run `visp-hyper init --tool <tool>`."
+    };
+  }
+
+  try {
+    const planned = await planInstall(tool, projectPath);
+    const missing = planned.filter((asset) => !asset.exists).map((asset) => asset.destination);
+    if (missing.length === 0) {
+      return {
+        id: "tool-assets",
+        label: "Tool assets",
+        status: "pass",
+        detail: `${tool} assets are installed.`
+      };
+    }
+    return {
+      id: "tool-assets",
+      label: "Tool assets",
+      status: "warn",
+      detail: `${tool} assets missing: ${missing.join(", ")}.`,
+      recovery: `Run \`visp-hyper init --tool ${tool}\`.`
+    };
+  } catch (error) {
+    return {
+      id: "tool-assets",
+      label: "Tool assets",
+      status: "fail",
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+async function checkMemory(
+  projectPath: string,
+  config: HyperConfigSnapshot | null
+): Promise<DoctorCheck> {
+  const mode = config?.memoryMode;
+  if (mode !== "llm-memory") {
+    return {
+      id: "memory",
+      label: "Memory provider",
+      status: "pass",
+      detail: "File memory mode is active."
+    };
+  }
+
+  const endpoint = (config?.memoryEndpoint || "http://localhost:8000").replace(/\/+$/u, "");
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return {
+      id: "memory",
+      label: "Memory provider",
+      status: "warn",
+      detail: `llm-memory endpoint is invalid: ${endpoint}.`,
+      recovery: "Run `visp-hyper init --memory-mode file` or set a valid --memory-endpoint."
+    };
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return {
+      id: "memory",
+      label: "Memory provider",
+      status: "warn",
+      detail: `llm-memory endpoint uses unsupported protocol ${url.protocol}.`,
+      recovery: "Use an http(s) llm-memory endpoint or switch to file memory."
+    };
+  }
+
+  try {
+    const response = await fetch(`${endpoint}/healthz`, {
+      method: "GET",
+      signal: AbortSignal.timeout(750)
+    });
+    if (!response.ok) {
+      return {
+        id: "memory",
+        label: "Memory provider",
+        status: "warn",
+        detail: `llm-memory health check returned ${response.status}.`,
+        recovery: "Start llm-memory or switch memoryMode to file."
+      };
+    }
+  } catch (error) {
+    return {
+      id: "memory",
+      label: "Memory provider",
+      status: "warn",
+      detail: `llm-memory unavailable at ${endpoint}: ${error instanceof Error ? error.message : String(error)}.`,
+      recovery: "Start llm-memory or switch memoryMode to file."
+    };
+  }
+
+  return {
+    id: "memory",
+    label: "Memory provider",
+    status: "pass",
+    detail: `llm-memory is reachable at ${endpoint}.`
+  };
+}
+
+async function checkMcp(projectPath: string): Promise<DoctorCheck> {
+  try {
+    const response = await handleMessage(createToolContext(projectPath), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {}
+    }) as { result?: { serverInfo?: { version?: string } } } | null;
+    const version = response?.result?.serverInfo?.version;
+    if (version !== packageVersion()) {
+      return {
+        id: "mcp",
+        label: "MCP server",
+        status: "fail",
+        detail: `MCP server version ${version ?? "unknown"} does not match package version ${packageVersion()}.`
+      };
+    }
+    return {
+      id: "mcp",
+      label: "MCP server",
+      status: "pass",
+      detail: `MCP initialize responds with version ${version}.`
+    };
+  } catch (error) {
+    return {
+      id: "mcp",
+      label: "MCP server",
+      status: "fail",
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 async function checkGitHook(projectPath: string): Promise<DoctorCheck> {
   const gitDir = join(projectPath, ".git");
   if (!(await fileExists(gitDir))) {
@@ -252,10 +455,19 @@ function featureLabel(feature: { id: string; slug?: string } | null | undefined)
   return feature.slug ? `${feature.id}-${feature.slug}` : feature.id;
 }
 
+function isToolName(value: unknown): value is ToolName {
+  return value === "generic" ||
+    value === "codex" ||
+    value === "claude-code" ||
+    value === "copilot" ||
+    value === "opencode";
+}
+
 function formatDoctorSummary(summary: DoctorSummary): string {
   const lines = [
     "VISP_HYPER_DOCTOR",
     `Project: ${summary.projectPath}`,
+    `Version: ${summary.version}`,
     `Overall: ${summary.success ? "PASS" : "FAIL"}`,
     ""
   ];

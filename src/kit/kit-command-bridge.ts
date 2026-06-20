@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type { ZodType, ZodTypeDef } from "zod";
 import {
   kitBudgetResultSchema,
   kitContextPackSchema,
   kitGateResultSchema,
+  kitIntegrationContractSchema,
   kitNextSchema,
   kitReconcileSummarySchema,
   kitReviewSummarySchema,
@@ -15,6 +16,7 @@ import {
   type KitBudgetResult,
   type KitContextPack,
   type KitGateResult,
+  type KitIntegrationContract,
   type KitNext,
   type KitReconcileSummary,
   type KitReviewSummary,
@@ -191,6 +193,15 @@ export class KitCommandBridge {
     return this.invoke(["next"], kitNextSchema);
   }
 
+  async integrationContract(options: { quiet?: boolean } = {}): Promise<KitIntegrationContract | null> {
+    const warningStart = this.warnings.length;
+    const result = await this.invoke(["integration", "contract"], kitIntegrationContractSchema);
+    if (!result && options.quiet) {
+      this.warnings.splice(warningStart);
+    }
+    return result;
+  }
+
   /**
    * Install the kit's Claude Code PreToolUse hook via `visp hooks claude`.
    * Returns the parsed `{ success }` flag, or null on spawn/parse failure.
@@ -240,6 +251,11 @@ export class KitCommandBridge {
 
   private async contextPackPaths(taskId: string, status: KitStatus | null): Promise<string[]> {
     const paths: string[] = [];
+    const contract = await this.integrationContract({ quiet: true });
+    const contractPath = contract?.activeTask?.id === taskId ? contract.artifacts.contextPack : undefined;
+    if (contractPath && !contractPath.includes("<")) {
+      paths.push(isAbsolute(contractPath) ? contractPath : join(this.projectPath, contractPath));
+    }
     const featureRoot = join(this.projectPath, ".visp", "features");
     if (status?.activeFeature) {
       const { id, slug } = status.activeFeature;
