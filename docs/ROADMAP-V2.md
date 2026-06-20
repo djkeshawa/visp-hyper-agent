@@ -79,7 +79,8 @@ and re-plan from what the downloads and writeup reception say.
 9. Richer resume deltas — `visp-hyper resume` now reprints the handoff, required
    read status, latest checkpoint, current task action, and git diff file list;
    `context-manifest.json` now gives tools a structured read/resource contract
-   and pins the adopted Kit context artifact hash for checkpoint freshness checks;
+   and pins the adopted Kit context plus provenance artifact hashes for checkpoint
+   freshness checks;
    checkpoint snapshots now let resume report exact added/changed/cleared/unchanged
    file deltas since the latest checkpoint.
 10. `visp-hyper doctor` — one-command validation of the enforcement chain.

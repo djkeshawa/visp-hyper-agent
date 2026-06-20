@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -32,36 +33,41 @@ async function writeTaskGraph(projectPath: string): Promise<void> {
   await mkdir(join(featureDir, "context"), { recursive: true });
   await mkdir(join(projectPath, ".visp"), { recursive: true });
   await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
-  await writeFile(
-    join(featureDir, "task-graph.json"),
-    JSON.stringify({
-      featureId: "001",
-      featureSlug: "pipeline",
-      tasks: [
-        {
-          id: "T001",
-          title: "First task",
-          description: "Implement the first task",
-          dependsOn: [],
-          allowedFiles: ["src/feature.ts"],
-          validationCommands: ["pnpm typecheck", "pnpm test"],
-          status: "ready"
-        },
-        {
-          id: "T002",
-          title: "Second task",
-          dependsOn: ["T001"],
-          allowedFiles: ["src/other.ts"]
-        }
-      ]
-    }),
-    "utf8"
-  );
+  const taskGraph = JSON.stringify({
+    featureId: "001",
+    featureSlug: "pipeline",
+    tasks: [
+      {
+        id: "T001",
+        title: "First task",
+        description: "Implement the first task",
+        dependsOn: [],
+        allowedFiles: ["src/feature.ts"],
+        validationCommands: ["pnpm typecheck", "pnpm test"],
+        status: "ready"
+      },
+      {
+        id: "T002",
+        title: "Second task",
+        dependsOn: ["T001"],
+        allowedFiles: ["src/other.ts"]
+      }
+    ]
+  });
+  await writeFile(join(featureDir, "task-graph.json"), taskGraph, "utf8");
   await writeFile(
     join(featureDir, "context", "T001.context.json"),
     JSON.stringify({
       taskId: "T001",
       includedFiles: [{ path: "src/feature.ts", reason: "task target" }],
+      artifactProvenance: [
+        {
+          label: "task graph",
+          path: `.visp/features/${FEATURE_DIR}/task-graph.json`,
+          hash: sha256(taskGraph),
+          hashAlgorithm: "sha256"
+        }
+      ],
       validationCommands: ["pnpm typecheck", "pnpm test"]
     }),
     "utf8"
@@ -152,6 +158,63 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect(output).toContain("validation_commands:");
     expect(output).toContain("pnpm typecheck");
     expect(output).toContain(`context_pack: ${join(".visp", "features", FEATURE_DIR, "context", "T001.context.json")}`);
+
+    const pipeline = activePipeline(await readState(projectPath));
+    expect(pipeline.currentTaskId).toBe("T001");
+  });
+
+  it("FAIL_CLOSED: checkpoint fails when Kit provenance changes after handoff", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    await writeFile(
+      join(projectPath, ".visp", "features", FEATURE_DIR, "task-graph.json"),
+      JSON.stringify({
+        featureId: "001",
+        featureSlug: "pipeline",
+        tasks: [
+          {
+            id: "T001",
+            title: "First task changed",
+            description: "Changed after handoff",
+            dependsOn: [],
+            allowedFiles: ["src/feature.ts"],
+            validationCommands: ["pnpm typecheck", "pnpm test"],
+            status: "ready"
+          },
+          {
+            id: "T002",
+            title: "Second task",
+            dependsOn: ["T001"],
+            allowedFiles: ["src/other.ts"]
+          }
+        ]
+      }),
+      "utf8"
+    );
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("context_freshness: stale");
+    expect(output).toContain("status: FAILED");
+    expect(output).toContain("context provenance changed since handoff");
+    expect(output).toContain("task graph");
 
     const pipeline = activePipeline(await readState(projectPath));
     expect(pipeline.currentTaskId).toBe("T001");
@@ -400,4 +463,8 @@ async function listFeatureFiles(projectPath: string): Promise<string[]> {
   }
   await walk(featureRoot, "");
   return result.sort();
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }

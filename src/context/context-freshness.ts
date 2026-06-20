@@ -21,6 +21,7 @@ type ManifestLike = {
     hash?: unknown;
     hashAlgorithm?: unknown;
   };
+  artifactProvenance?: unknown;
 };
 
 export async function checkContextFreshness(projectPath: string): Promise<ContextFreshness> {
@@ -41,27 +42,109 @@ export async function checkContextFreshness(projectPath: string): Promise<Contex
     };
   }
 
-  const artifact = manifest.contextArtifact;
-  if (!artifact) {
+  const artifactChecks: FreshnessTarget[] = [];
+  if (manifest.contextArtifact) {
+    const parsed = parseTarget(manifest.contextArtifact, {
+      kind: "context artifact",
+      invalidFinding: "context manifest has invalid artifact freshness metadata; regenerate with `visp-hyper run \"<goal>\"`"
+    });
+    if ("error" in parsed) {
+      return parsed.error;
+    }
+    artifactChecks.push(parsed.target);
+  }
+
+  if (manifest.artifactProvenance !== undefined) {
+    if (!Array.isArray(manifest.artifactProvenance)) {
+      return {
+        status: "error",
+        blocking: true,
+        finding: "context manifest has invalid artifact provenance metadata; regenerate with `visp-hyper run \"<goal>\"`",
+        warnings: []
+      };
+    }
+    for (const entry of manifest.artifactProvenance) {
+      const parsed = parseTarget(entry, {
+        kind: "context provenance",
+        invalidFinding: "context manifest has invalid artifact provenance metadata; regenerate with `visp-hyper run \"<goal>\"`"
+      });
+      if ("error" in parsed) {
+        return parsed.error;
+      }
+      artifactChecks.push(parsed.target);
+    }
+  }
+
+  if (artifactChecks.length === 0) {
     return { status: "untracked", blocking: false, warnings: [] };
   }
-  if (typeof artifact.path !== "string" || typeof artifact.hash !== "string" || artifact.hashAlgorithm !== "sha256") {
+
+  let lastCurrent: ContextFreshness | undefined;
+  for (const target of artifactChecks) {
+    const result = await checkTarget(projectPath, target);
+    if (result.blocking) {
+      return result;
+    }
+    lastCurrent = result;
+  }
+
+  return lastCurrent ?? { status: "current", blocking: false, warnings: [] };
+}
+
+type FreshnessTarget = {
+  kind: "context artifact" | "context provenance";
+  path: string;
+  hash: string;
+  hashAlgorithm: "sha256";
+  label?: string;
+};
+
+function parseTarget(
+  value: unknown,
+  options: { kind: FreshnessTarget["kind"]; invalidFinding: string }
+): { target: FreshnessTarget } | { error: ContextFreshness } {
+  if (!value || typeof value !== "object") {
     return {
-      status: "error",
-      blocking: true,
-      finding: "context manifest has invalid artifact freshness metadata; regenerate with `visp-hyper run \"<goal>\"`",
-      warnings: []
+      error: {
+        status: "error",
+        blocking: true,
+        finding: options.invalidFinding,
+        warnings: []
+      }
+    };
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.path !== "string" || typeof record.hash !== "string" || record.hashAlgorithm !== "sha256") {
+    return {
+      error: {
+        status: "error",
+        blocking: true,
+        finding: options.invalidFinding,
+        warnings: []
+      }
     };
   }
 
-  const absolutePath = resolve(projectPath, artifact.path);
+  return {
+    target: {
+      kind: options.kind,
+      path: record.path,
+      hash: record.hash,
+      hashAlgorithm: "sha256",
+      ...(typeof record.label === "string" ? { label: record.label } : {})
+    }
+  };
+}
+
+async function checkTarget(projectPath: string, target: FreshnessTarget): Promise<ContextFreshness> {
+  const absolutePath = resolve(projectPath, target.path);
   const rel = relative(projectPath, absolutePath);
   if (isAbsolute(rel) || rel.startsWith("..")) {
     return {
       status: "error",
       blocking: true,
-      artifactPath: artifact.path,
-      finding: `context artifact path escapes the project: ${artifact.path}`,
+      artifactPath: target.path,
+      finding: `${target.kind} path escapes the project: ${target.path}`,
       warnings: []
     };
   }
@@ -74,31 +157,31 @@ export async function checkContextFreshness(projectPath: string): Promise<Contex
       return {
         status: "missing",
         blocking: true,
-        artifactPath: artifact.path,
-        expectedHash: artifact.hash,
-        finding: `context artifact is missing since handoff: ${artifact.path}; regenerate with \`visp-hyper run "<goal>"\``,
+        artifactPath: target.path,
+        expectedHash: target.hash,
+        finding: `${target.kind} is missing since handoff: ${describeTarget(target)}; regenerate with \`visp-hyper run "<goal>"\``,
         warnings: []
       };
     }
     return {
       status: "error",
       blocking: true,
-      artifactPath: artifact.path,
-      expectedHash: artifact.hash,
-      finding: `context artifact could not be read: ${artifact.path}`,
+      artifactPath: target.path,
+      expectedHash: target.hash,
+      finding: `${target.kind} could not be read: ${describeTarget(target)}`,
       warnings: [error instanceof Error ? error.message : String(error)]
     };
   }
 
   const actual = createHash("sha256").update(bytes).digest("hex");
-  if (actual !== artifact.hash) {
+  if (actual !== target.hash) {
     return {
       status: "stale",
       blocking: true,
-      artifactPath: artifact.path,
-      expectedHash: artifact.hash,
+      artifactPath: target.path,
+      expectedHash: target.hash,
       actualHash: actual,
-      finding: `context artifact changed since handoff: ${artifact.path}; regenerate with \`visp-hyper run "<goal>"\``,
+      finding: `${target.kind} changed since handoff: ${describeTarget(target)}; regenerate with \`visp-hyper run "<goal>"\``,
       warnings: []
     };
   }
@@ -106,9 +189,13 @@ export async function checkContextFreshness(projectPath: string): Promise<Contex
   return {
     status: "current",
     blocking: false,
-    artifactPath: artifact.path,
-    expectedHash: artifact.hash,
+    artifactPath: target.path,
+    expectedHash: target.hash,
     actualHash: actual,
     warnings: []
   };
+}
+
+function describeTarget(target: FreshnessTarget): string {
+  return target.label ? `${target.label} at ${target.path}` : target.path;
 }
