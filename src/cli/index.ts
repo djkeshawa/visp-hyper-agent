@@ -1,5 +1,6 @@
 import { Command, Option } from "commander";
 import { checkpointCommand } from "./commands/checkpoint.js";
+import { doctorCommand } from "./commands/doctor.js";
 import { guardCommand } from "./commands/guard.js";
 import { hooksCommand } from "./commands/hooks.js";
 import { initCommand } from "./commands/init.js";
@@ -28,6 +29,7 @@ export async function runCli(argv: string[]): Promise<void> {
   program.addCommand(quickCommand());
   program.addCommand(nextCommand());
   program.addCommand(statusCommand());
+  program.addCommand(doctorCommand());
   program.addCommand(checkpointCommand());
   program.addCommand(guardCommand());
   program.addCommand(hooksCommand());

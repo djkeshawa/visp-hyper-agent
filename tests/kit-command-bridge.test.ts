@@ -21,11 +21,19 @@ const initializedStatus = {
   taskSummary: { total: 2, ready: 1 }
 };
 
+async function createKitProject(): Promise<string> {
+  const projectPath = await mkdtemp(join(tmpdir(), "visp-kit-project-"));
+  await mkdir(join(projectPath, ".visp"), { recursive: true });
+  await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+  return projectPath;
+}
+
 describe("detectVisp", () => {
   it("AC001: returns available with parsed status for an initialized kit", async () => {
+    const projectPath = await createKitProject();
     const shim = await createVispShim({ status: { stdout: initializedStatus } });
 
-    const result = await detectVisp(process.cwd(), { binary: shim.binary });
+    const result = await detectVisp(projectPath, { binary: shim.binary });
 
     expect(result.available).toBe(true);
     if (result.available) {
@@ -35,7 +43,8 @@ describe("detectVisp", () => {
   });
 
   it("AC002a: returns unavailable (no throw) when the binary does not exist", async () => {
-    const result = await detectVisp(process.cwd(), {
+    const projectPath = await createKitProject();
+    const result = await detectVisp(projectPath, {
       binary: join(tmpdir(), "definitely-not-a-real-visp-binary-xyz")
     });
 
@@ -47,9 +56,10 @@ describe("detectVisp", () => {
   });
 
   it("AC002b: returns unavailable when the binary exits non-zero with garbage", async () => {
+    const projectPath = await createKitProject();
     const shim = await createVispShim({ status: { stdout: "not json at all", exitCode: 1 } });
 
-    const result = await detectVisp(process.cwd(), { binary: shim.binary });
+    const result = await detectVisp(projectPath, { binary: shim.binary });
 
     expect(result.available).toBe(false);
     if (!result.available) {
@@ -73,11 +83,12 @@ describe("detectVisp", () => {
   });
 
   it("AC002c: returns unavailable when the kit is not initialized", async () => {
+    const projectPath = await createKitProject();
     const shim = await createVispShim({
       status: { stdout: { success: true, initialized: false } }
     });
 
-    const result = await detectVisp(process.cwd(), { binary: shim.binary });
+    const result = await detectVisp(projectPath, { binary: shim.binary });
 
     expect(result.available).toBe(false);
     if (!result.available) {
