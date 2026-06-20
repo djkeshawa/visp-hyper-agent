@@ -288,6 +288,46 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect(pipeline.currentTaskId).toBe("T001");
   });
 
+  it("FAIL_CLOSED: checkpoint fails when the adopted Kit context artifact changed after handoff", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    await writeFile(
+      join(projectPath, ".visp", "features", FEATURE_DIR, "context", "T001.context.json"),
+      JSON.stringify({
+        taskId: "T001",
+        includedFiles: [{ path: "src/feature.ts", reason: "updated task target" }],
+        validationCommands: ["pnpm typecheck", "pnpm test", "pnpm lint"]
+      }),
+      "utf8"
+    );
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("context_freshness: stale");
+    expect(output).toContain("status: FAILED");
+    expect(output).toContain("context artifact changed since handoff");
+
+    const pipeline = activePipeline(await readState(projectPath));
+    expect(pipeline.currentTaskId).toBe("T001");
+  });
+
   it("AC008: checkpoint --task advances on success and stays/fails on failure", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);

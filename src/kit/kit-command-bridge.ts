@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
@@ -40,6 +41,12 @@ interface RunResult {
   exitCode: number;
   stdout: string;
 }
+
+export type KitContextPackArtifact = {
+  pack: KitContextPack;
+  path: string;
+  sha256: string;
+};
 
 /**
  * Probe whether the external `visp` CLI is installed and the target project has
@@ -128,6 +135,10 @@ export class KitCommandBridge {
   }
 
   async readContextPack(taskId: string): Promise<KitContextPack | null> {
+    return (await this.readContextPackArtifact(taskId))?.pack ?? null;
+  }
+
+  async readContextPackArtifact(taskId: string): Promise<KitContextPackArtifact | null> {
     const status = await this.status();
     const candidates = await this.contextPackPaths(taskId, status);
     for (const candidate of candidates) {
@@ -139,7 +150,11 @@ export class KitCommandBridge {
       }
       const parsed = parseJson(raw, kitContextPackSchema);
       if (parsed) {
-        return parsed;
+        return {
+          pack: parsed,
+          path: candidate,
+          sha256: hashText(raw)
+        };
       }
       this.warnings.push(`Context pack at ${candidate} could not be parsed as JSON.`);
       return null;
@@ -355,4 +370,8 @@ function parseJson<T>(stdout: string, schema: OutputSchema<T>): T | null {
   }
   const result = schema.safeParse(data);
   return result.success ? result.data : null;
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }

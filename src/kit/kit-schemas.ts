@@ -57,7 +57,8 @@ const kitContextFileSchema = z
     path: z.string(),
     reason: z.string().optional(),
     content: z.string().optional(),
-    snippet: z.string().optional()
+    snippet: z.string().optional(),
+    hash: z.string().optional()
   })
   .passthrough();
 

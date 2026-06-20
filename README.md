@@ -52,7 +52,7 @@ visp-hyper remember --summary "Implemented offline note sync"
 | `visp-hyper start "<goal>" [--tool <tool>]` | Starts a guided session, writes the session files, and prints `BEGIN_VISP_AGENT_HANDOFF`. Prefers the active Visp Kit task's context pack; falls back to the deterministic relevance scanner. Writes `context-manifest.json` as the machine-readable contract for required reads, MCP resources, selected files, validation commands, and known failure patterns. Fuses recalled llm-memory entries into the memory pack when enabled. |
 | `visp-hyper next` | Prints the next bounded action: the current pipeline task's action block (with model-routing advice) when a task DAG is active, otherwise the generic next-step block. |
 | `visp-hyper resume [--json]` | Reprints the active handoff, current task action, required read status, latest checkpoint, and current git diff file list after a context reset. |
-| `visp-hyper checkpoint [--task <id>] [--tier <tier>]` | Appends git diff evidence to `checkpoints.md`. With `--task`: runs Visp Kit verify + review through the bridge, records the attempt in telemetry, and advances the pipeline only when both pass. Failures escalate model routing and quarantine the task class. |
+| `visp-hyper checkpoint [--task <id>] [--tier <tier>]` | Appends git diff evidence to `checkpoints.md`. With `--task`: runs Visp Kit verify + review through the bridge, confirms the pinned Kit context artifact has not changed since handoff, records the attempt in telemetry, and advances the pipeline only when all checks pass. Failures escalate model routing and quarantine the task class. |
 | `visp-hyper review` | Writes `review-report.md` and prints `BEGIN_VISP_REVIEW_RESULT` (deterministic path-based warnings from `git diff`). |
 | `visp-hyper remember [--summary <s>] [--decision <d>...] [--follow-up <f>...] [--used-skill <name>...] [--input-tokens <n>] [--output-tokens <n>] [--model <m>]` | Persists the session: always writes `.visp/memory/session-history/`; additionally writes to llm-memory (session record, decisions, follow-ups) when enabled, records token usage in telemetry and forwards it to `visp budget`, harvests pending skill proposals, and tracks skill usage. |
 | `visp-hyper report [--json]` | The cost/accuracy evidence view: first-attempt verify+review pass rates per model tier and per task class, token totals, active routing quarantines, recent routing decisions, and skill usage with prune flags. |
@@ -184,6 +184,7 @@ Enable in `.visp/hyper/config.json`:
 
 - `start`/`run` recall memories relevant to the goal and render them in `memory-pack.md` with source and relevance-score tags, capped so memory never crowds out task context.
 - Failed checkpoints are deduped into `.visp/hyper/failure-patterns.json`; future `start`/`run` handoffs surface related gotchas in `memory-pack.md`.
+- Kit-backed handoffs pin the adopted context artifact hash in `context-manifest.json`; `checkpoint --task` fails closed if that artifact changes before validation.
 - `remember` writes the session record, decisions (episodic), and follow-ups (intent) back; installed skills mirror as semantic patterns.
 - Auth: set `VISP_HYPER_MEMORY_API_KEY` (sent as `X-API-KEY`); keys never live in config files.
 - The server being down is never an error: commands warn and fall back to file memory.

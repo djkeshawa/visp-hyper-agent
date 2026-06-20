@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { Command, Option } from "commander";
 import { buildContextManifest, renderContextManifest } from "../../context/context-manifest.js";
 import { scanRelevantFiles } from "../../context/relevance-scanner.js";
@@ -97,6 +97,7 @@ export async function executeStart(
     session,
     contextSource,
     taskId: adoption?.taskId,
+    contextArtifact: adoption?.contextArtifact,
     contextFiles,
     validationCommands,
     blockedPaths: config.blockedPaths,
@@ -168,6 +169,11 @@ type KitAdoption = {
   files: ContextFile[];
   source: string;
   taskId: string;
+  contextArtifact: {
+    path: string;
+    hash: string;
+    hashAlgorithm: "sha256";
+  };
   validationCommands: string[];
   warnings: string[];
 };
@@ -189,12 +195,12 @@ async function adoptKitContextPack(projectPath: string, config: HyperConfig): Pr
   }
 
   const bridge = new KitCommandBridge({ projectPath });
-  const pack = await bridge.readContextPack(activeTaskId);
-  if (!pack) {
+  const artifact = await bridge.readContextPackArtifact(activeTaskId);
+  if (!artifact) {
     return undefined;
   }
 
-  const files = await contextFilesFromPack(pack, projectPath, config.blockedPaths);
+  const files = await contextFilesFromPack(artifact.pack, projectPath, config.blockedPaths);
   if (files.length === 0) {
     return undefined;
   }
@@ -203,7 +209,12 @@ async function adoptKitContextPack(projectPath: string, config: HyperConfig): Pr
     files,
     source: `visp-kit context pack (${activeTaskId})`,
     taskId: activeTaskId,
-    validationCommands: pack.validationCommands ?? [],
+    contextArtifact: {
+      path: normalizeRelative(projectPath, artifact.path),
+      hash: artifact.sha256,
+      hashAlgorithm: "sha256"
+    },
+    validationCommands: artifact.pack.validationCommands ?? [],
     warnings: [...kit.warnings, ...bridge.warnings]
   };
 }
@@ -224,10 +235,15 @@ async function contextFilesFromPack(
     files.push({
       path: entry.path,
       reason: entry.reason ?? "visp-kit context pack",
-      content
+      content,
+      ...(entry.hash ? { sourceHash: entry.hash, sourceHashAlgorithm: "sha256" as const, sourceHashSource: "visp-kit" as const } : {})
     });
   }
   return files;
+}
+
+function normalizeRelative(projectPath: string, path: string): string {
+  return relative(projectPath, path).replace(/\\/g, "/");
 }
 
 async function readPackFile(path: string): Promise<string | undefined> {

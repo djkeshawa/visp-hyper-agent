@@ -105,6 +105,9 @@ export type ContextFile = {
   path: string;
   reason: string;
   content?: string;
+  sourceHash?: string;
+  sourceHashAlgorithm?: "sha256";
+  sourceHashSource?: "visp-kit";
 };
 
 export type ContextPackOptions = {
@@ -120,12 +123,20 @@ export type ContextManifest = {
   generatedAt: string;
   contextSource: string;
   taskId?: string;
+  contextArtifact?: {
+    path: string;
+    hash: string;
+    hashAlgorithm: "sha256";
+  };
   requiredReads: string[];
   requiredResources: HandoffResource[];
   selectedFiles: Array<{
     path: string;
     reason: string;
     hasContent: boolean;
+    sourceHash?: string;
+    sourceHashAlgorithm?: "sha256";
+    sourceHashSource?: "visp-kit";
   }>;
   validationCommands: string[];
   blockedPaths: string[];

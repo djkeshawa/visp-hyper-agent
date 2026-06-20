@@ -137,7 +137,7 @@ The toolchain should get better at *this project* the more it's used. When a ses
 ## Suggested improvements beyond the original vision
 
 - **Failure-pattern memory**: implemented for local structured memory; when verify/review fails, Hyper stores a deduped signature in `.visp/hyper/failure-patterns.json` and future sessions surface related gotchas in `memory-pack.md`. Remote llm-memory mirroring remains a follow-up.
-- **Context manifest**: implemented as `.visp/hyper/current/context-manifest.json`; it gives weaker agents and MCP clients one machine-readable contract for required reads, resource URIs, selected files, validation commands, blocked paths, and relevant failure patterns.
+- **Context manifest**: implemented as `.visp/hyper/current/context-manifest.json`; it gives weaker agents and MCP clients one machine-readable contract for required reads, resource URIs, selected files, validation commands, blocked paths, relevant failure patterns, and the pinned Kit context artifact hash. `checkpoint --task` fails closed when that artifact changes before validation.
 - **`visp-hyper doctor`**: one command validating the whole triad — visp binary, kit init state, llm-memory server health, hook installation, tool assets freshness.
 - **Session resume protocol**: implemented as `visp-hyper resume`; it re-prints the current handoff, required read status, latest checkpoint, active task action, and current git diff file list for cheap re-grounding after context-window resets.
 - **Packaging for adoption**: publish `visp-hyper` to npm; document a `docker compose` (or systemd user unit) for `llm-memory serve`; quickstart that goes from zero → gated, memory-backed Claude Code session in <5 minutes.

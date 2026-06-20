@@ -6,6 +6,7 @@ export type BuildContextManifestInput = {
   session: SessionRecord;
   contextSource: string;
   taskId?: string;
+  contextArtifact?: ContextManifest["contextArtifact"];
   contextFiles: ContextFile[];
   validationCommands: string[];
   blockedPaths: string[];
@@ -22,12 +23,16 @@ export function buildContextManifest(input: BuildContextManifestInput): ContextM
     generatedAt: input.session.updatedAt,
     contextSource: input.contextSource,
     ...(input.taskId ? { taskId: input.taskId } : {}),
+    ...(input.contextArtifact ? { contextArtifact: input.contextArtifact } : {}),
     requiredReads: [...requiredReads],
     requiredResources: cloneResources(requiredResourceReads),
     selectedFiles: input.contextFiles.map((file) => ({
       path: file.path,
       reason: file.reason,
-      hasContent: file.content !== undefined && file.content.length > 0
+      hasContent: file.content !== undefined && file.content.length > 0,
+      ...(file.sourceHash ? { sourceHash: file.sourceHash } : {}),
+      ...(file.sourceHashAlgorithm ? { sourceHashAlgorithm: file.sourceHashAlgorithm } : {}),
+      ...(file.sourceHashSource ? { sourceHashSource: file.sourceHashSource } : {})
     })),
     validationCommands: [...input.validationCommands],
     blockedPaths: [...input.blockedPaths],

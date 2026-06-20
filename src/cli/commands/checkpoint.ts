@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Command, Option } from "commander";
+import { checkContextFreshness } from "../../context/context-freshness.js";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
@@ -78,6 +79,7 @@ export function checkpointCommand(): Command {
 
       const task = currentTask(graph, session.pipeline!);
       const taskClass = task?.riskLevel ?? "unknown";
+      const contextFreshness = await checkContextFreshness(projectPath);
 
       const kit = await detectVisp(projectPath);
       let verifyPassed: boolean;
@@ -115,6 +117,17 @@ export function checkpointCommand(): Command {
         evidenceSource = "local";
         failureFindings = localFindings;
         printWarnings([...kit.warnings, ...evidence.warnings]);
+      }
+      printWarnings(contextFreshness.warnings);
+      if (contextFreshness.blocking) {
+        reviewPassed = false;
+        failureFindings = [
+          ...failureFindings,
+          contextFreshness.finding ?? "context freshness check failed"
+        ];
+        if (evidenceSource === "local") {
+          localFindings = [...localFindings, contextFreshness.finding ?? "context freshness check failed"];
+        }
       }
 
       const passed = verifyPassed && reviewPassed;
@@ -184,7 +197,8 @@ export function checkpointCommand(): Command {
         `task: ${taskId}`,
         `verify: ${verifyPassed ? "PASSED" : "FAILED"}`,
         `review: ${reviewPassed ? "PASSED" : "FAILED"}`,
-        `evidence_source: ${evidenceSource}`
+        `evidence_source: ${evidenceSource}`,
+        `context_freshness: ${contextFreshness.status}`
       ];
       const visibleFindings = evidenceSource === "local" ? localFindings : failureFindings;
       if (visibleFindings.length > 0 && !passed) {
