@@ -137,6 +137,23 @@ export type ContextManifest = {
     source: "visp-kit";
   }>;
   freshnessWarnings?: string[];
+  kitReadContract?: {
+    contractVersion: string;
+    readContractVersion: string;
+    requiredArtifacts: Array<{
+      id: string;
+      path: string;
+      role: string;
+      mimeType: string;
+      requiredFor: string[];
+      freshness: string;
+    }>;
+    freshnessPolicy?: {
+      contextPackHashPinned?: boolean;
+      provenanceArtifactsHashPinned?: boolean;
+      staleContextBlocks: string[];
+    };
+  };
   requiredReads: string[];
   requiredResources: HandoffResource[];
   selectedFiles: Array<{

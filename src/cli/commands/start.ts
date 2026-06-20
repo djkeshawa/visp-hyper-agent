@@ -5,12 +5,12 @@ import { buildContextManifest, renderContextManifest } from "../../context/conte
 import { scanRelevantFiles } from "../../context/relevance-scanner.js";
 import { vispPath, writeText } from "../../core/fs-utils.js";
 import { createSession, initializeProject, readConfig } from "../../core/session-manager.js";
-import type { ContextFile, ContextPackOptions, HyperConfig, SessionRecord, ToolProfile } from "../../core/types.js";
+import type { ContextFile, ContextManifest, ContextPackOptions, HyperConfig, SessionRecord, ToolProfile } from "../../core/types.js";
 import { buildHandoffProtocol, renderHandoff } from "../../handoff/handoff-protocol.js";
 import { isBlockedPath } from "../../governance/blocked-files.js";
 import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
 import { readKitArtifacts } from "../../kit/kit-reader.js";
-import type { KitContextPack } from "../../kit/kit-schemas.js";
+import type { KitContextPack, KitIntegrationContract } from "../../kit/kit-schemas.js";
 import { readMemoryPack } from "../../memory/file-memory-provider.js";
 import { readRelevantFailurePatterns } from "../../memory/failure-patterns.js";
 import { LlmMemoryProvider } from "../../memory/llm-memory-provider.js";
@@ -100,6 +100,7 @@ export async function executeStart(
     contextArtifact: adoption?.contextArtifact,
     artifactProvenance: adoption?.artifactProvenance,
     freshnessWarnings: adoption?.freshnessWarnings,
+    kitReadContract: adoption?.kitReadContract,
     contextFiles,
     validationCommands,
     blockedPaths: config.blockedPaths,
@@ -183,6 +184,7 @@ type KitAdoption = {
     hashAlgorithm: "sha256";
     source: "visp-kit";
   }>;
+  kitReadContract?: ContextManifest["kitReadContract"];
   freshnessWarnings: string[];
   validationCommands: string[];
   warnings: string[];
@@ -209,6 +211,7 @@ async function adoptKitContextPack(projectPath: string, config: HyperConfig): Pr
   if (!artifact) {
     return undefined;
   }
+  const contract = await bridge.integrationContract({ quiet: true });
 
   const files = await contextFilesFromPack(artifact.pack, projectPath, config.blockedPaths);
   if (files.length === 0) {
@@ -234,9 +237,52 @@ async function adoptKitContextPack(projectPath: string, config: HyperConfig): Pr
       hashAlgorithm: "sha256"
     },
     artifactProvenance,
+    kitReadContract: readContractFromKit(contract, activeTaskId),
     freshnessWarnings,
     validationCommands: artifact.pack.validationCommands ?? [],
     warnings: [...kit.warnings, ...bridge.warnings, ...freshnessWarnings]
+  };
+}
+
+function readContractFromKit(
+  contract: KitIntegrationContract | null,
+  activeTaskId: string
+): ContextManifest["kitReadContract"] | undefined {
+  if (!contract?.orchestrator?.readContractVersion) {
+    return undefined;
+  }
+  if (contract.activeTask && contract.activeTask.id !== activeTaskId) {
+    return undefined;
+  }
+  const requiredArtifacts = contract.orchestrator.requiredArtifacts ?? [];
+  if (requiredArtifacts.length === 0) {
+    return undefined;
+  }
+
+  return {
+    contractVersion: contract.contractVersion,
+    readContractVersion: contract.orchestrator.readContractVersion,
+    requiredArtifacts: requiredArtifacts.map((artifact) => ({
+      id: artifact.id,
+      path: artifact.path,
+      role: artifact.role,
+      mimeType: artifact.mimeType,
+      requiredFor: artifact.requiredFor ?? [],
+      freshness: artifact.freshness ?? "read-latest"
+    })),
+    ...(contract.orchestrator.freshnessPolicy
+      ? {
+          freshnessPolicy: {
+            ...(contract.orchestrator.freshnessPolicy.contextPackHashPinned === undefined
+              ? {}
+              : { contextPackHashPinned: contract.orchestrator.freshnessPolicy.contextPackHashPinned }),
+            ...(contract.orchestrator.freshnessPolicy.provenanceArtifactsHashPinned === undefined
+              ? {}
+              : { provenanceArtifactsHashPinned: contract.orchestrator.freshnessPolicy.provenanceArtifactsHashPinned }),
+            staleContextBlocks: contract.orchestrator.freshnessPolicy.staleContextBlocks ?? []
+          }
+        }
+      : {})
   };
 }
 

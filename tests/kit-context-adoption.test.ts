@@ -60,6 +60,71 @@ function prependToPath(dir: string): void {
   process.env.PATH = `${dir}${process.platform === "win32" ? ";" : ":"}${originalPath ?? ""}`;
 }
 
+function kit13ReadContract(projectPath: string) {
+  return {
+    stdout: {
+      success: true,
+      contractVersion: "1.3",
+      kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.3" },
+      targetPath: projectPath,
+      initialized: true,
+      activeFeature: { id: "001", slug: "x", key: "001-x", path: ".visp/features/001-x" },
+      activeTask: { id: "T009", title: "Adopt context pack", status: "ready" },
+      commands: {},
+      capabilities: {
+        contextGrounding: {
+          taskScopedContextPacks: true,
+          artifactProvenance: true,
+          orchestratorReadContract: true
+        }
+      },
+      workflow: {
+        freshnessChecks: [
+          ".visp/features/<feature>/context/<task-id>.context.json",
+          "contextPack.artifactProvenance[]"
+        ]
+      },
+      artifacts: {
+        kitSignals: [".visp/policy.json", ".visp/project.json"],
+        projectStatus: ".visp/status.json",
+        projectProfile: ".visp/project.json",
+        featureRoot: ".visp/features",
+        featureDir: ".visp/features/001-x",
+        taskGraph: ".visp/features/001-x/task-graph.json",
+        contextPack: ".visp/features/001-x/context/T009.context.json",
+        contextPrompt: ".visp/features/001-x/context/T009.prompt.md"
+      },
+      orchestrator: {
+        readContractVersion: "0.1",
+        requiredArtifacts: [
+          {
+            id: "context-pack",
+            path: ".visp/features/001-x/context/T009.context.json",
+            role: "context-pack",
+            mimeType: "application/json",
+            requiredFor: ["handoff", "implementation", "checkpoint"],
+            freshness: "hash-pinned"
+          },
+          {
+            id: "implementation-checklist",
+            path: ".visp/features/001-x/context/T009.implementation-checklist.json",
+            role: "checklist",
+            mimeType: "application/json",
+            requiredFor: ["implementation", "pr"],
+            freshness: "gate-validated"
+          }
+        ],
+        freshnessPolicy: {
+          contextPackHashPinned: true,
+          provenanceArtifactsHashPinned: true,
+          staleContextBlocks: ["implementation", "checkpoint", "pr"]
+        }
+      },
+      warnings: []
+    }
+  };
+}
+
 describe("kit context-pack adoption in start", () => {
   afterEach(() => {
     process.env.PATH = originalPath;
@@ -78,7 +143,8 @@ describe("kit context-pack adoption in start", () => {
           activeFeature: { id: "001", slug: "x" },
           activeTask: { id: "T009", title: "Adopt context pack", status: "ready" }
         }
-      }
+      },
+      integration: kit13ReadContract(projectPath)
     });
     prependToPath(dirname(shim.binary));
 
@@ -120,6 +186,31 @@ describe("kit context-pack adoption in start", () => {
         source: "visp-kit"
       }
     ]);
+    expect(manifest.kitReadContract).toMatchObject({
+      contractVersion: "1.3",
+      readContractVersion: "0.1",
+      freshnessPolicy: {
+        contextPackHashPinned: true,
+        provenanceArtifactsHashPinned: true,
+        staleContextBlocks: ["implementation", "checkpoint", "pr"]
+      }
+    });
+    expect(manifest.kitReadContract.requiredArtifacts).toContainEqual({
+      id: "context-pack",
+      path: ".visp/features/001-x/context/T009.context.json",
+      role: "context-pack",
+      mimeType: "application/json",
+      requiredFor: ["handoff", "implementation", "checkpoint"],
+      freshness: "hash-pinned"
+    });
+    expect(manifest.kitReadContract.requiredArtifacts).toContainEqual({
+      id: "implementation-checklist",
+      path: ".visp/features/001-x/context/T009.implementation-checklist.json",
+      role: "checklist",
+      mimeType: "application/json",
+      requiredFor: ["implementation", "pr"],
+      freshness: "gate-validated"
+    });
     expect(manifest).not.toHaveProperty("freshnessWarnings");
     expect(manifest.selectedFiles).toEqual([
       expect.objectContaining({

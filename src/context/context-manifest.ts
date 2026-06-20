@@ -9,6 +9,7 @@ export type BuildContextManifestInput = {
   contextArtifact?: ContextManifest["contextArtifact"];
   artifactProvenance?: ContextManifest["artifactProvenance"];
   freshnessWarnings?: string[];
+  kitReadContract?: ContextManifest["kitReadContract"];
   contextFiles: ContextFile[];
   validationCommands: string[];
   blockedPaths: string[];
@@ -32,6 +33,7 @@ export function buildContextManifest(input: BuildContextManifestInput): ContextM
     ...(input.freshnessWarnings && input.freshnessWarnings.length > 0
       ? { freshnessWarnings: [...input.freshnessWarnings] }
       : {}),
+    ...(input.kitReadContract ? { kitReadContract: input.kitReadContract } : {}),
     requiredReads: [...requiredReads],
     requiredResources: cloneResources(requiredResourceReads),
     selectedFiles: input.contextFiles.map((file) => ({
