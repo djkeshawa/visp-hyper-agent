@@ -1,4 +1,6 @@
 import { Command } from "commander";
+import { checkContextFreshness } from "../../context/context-freshness.js";
+import type { ContextFreshness } from "../../context/context-freshness.js";
 import { readTextIfExists, vispPath } from "../../core/fs-utils.js";
 import { getActiveSession } from "../../core/session-manager.js";
 import { resolveProjectPath } from "./shared.js";
@@ -31,10 +33,22 @@ export function statusCommand(): Command {
       console.log(`Updated: ${session.updatedAt}`);
       console.log(`Relevant files: ${session.relevantFiles.length}`);
       console.log(`Generated files: ${await generatedFileStatus(projectPath)}`);
+      console.log(`Context freshness: ${formatContextFreshness(await checkContextFreshness(projectPath))}`);
       console.log(`Last checkpoint: ${await artifactStatus(projectPath, "checkpoints.md")}`);
       console.log(`Last review: ${await artifactStatus(projectPath, "review-report.md")}`);
       console.log(`Memory: ${await memoryStatus(projectPath, session.id)}`);
     });
+}
+
+function formatContextFreshness(freshness: ContextFreshness): string {
+  const parts = [freshness.status];
+  if (freshness.blocking && freshness.finding) {
+    parts.push(`- ${freshness.finding}`);
+  }
+  if (freshness.warnings.length > 0) {
+    parts.push(`warnings: ${freshness.warnings.join("; ")}`);
+  }
+  return parts.join(" ");
 }
 
 async function generatedFileStatus(projectPath: string): Promise<string> {

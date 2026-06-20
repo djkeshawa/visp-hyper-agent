@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Command, Option } from "commander";
+import { checkContextFreshness } from "../../context/context-freshness.js";
+import type { ContextFreshness, ContextFreshnessStatus } from "../../context/context-freshness.js";
 import { readTextIfExists, vispPath } from "../../core/fs-utils.js";
 import { getActiveSession } from "../../core/session-manager.js";
 import type { SessionRecord } from "../../core/types.js";
@@ -31,12 +33,21 @@ type ResumeSummary = {
   readonly requiredReads: readonly ResumeFileStatus[];
   readonly artifacts: readonly ResumeFileStatus[];
   readonly latestCheckpoint: string | null;
+  readonly contextFreshness?: ResumeContextFreshness;
   readonly changedFiles: readonly string[];
   readonly checkpointDelta: CheckpointDelta;
   readonly warnings: readonly string[];
   readonly nextCommand: string;
   readonly handoff?: string;
   readonly actionBlock?: string;
+};
+
+type ResumeContextFreshness = {
+  readonly status: ContextFreshnessStatus;
+  readonly blocking: boolean;
+  readonly artifactPath?: string;
+  readonly finding?: string;
+  readonly warnings: readonly string[];
 };
 
 const artifactPaths = [
@@ -82,12 +93,13 @@ export async function buildResumeSummary(projectPath: string): Promise<ResumeSum
     };
   }
 
-  const [readStatuses, artifactStatuses, checkpointText, changed, checkpointDelta] = await Promise.all([
+  const [readStatuses, artifactStatuses, checkpointText, changed, checkpointDelta, contextFreshness] = await Promise.all([
     fileStatuses(projectPath, requiredReads),
     fileStatuses(projectPath, artifactPaths),
     readTextIfExists(vispPath(projectPath, "hyper", "current", "checkpoints.md")),
     changedFiles(projectPath),
-    compareCurrentToCheckpoint(projectPath)
+    compareCurrentToCheckpoint(projectPath),
+    checkContextFreshness(projectPath)
   ]);
   const actionBlock = await currentActionBlock(projectPath, session);
   const handoff = await handoffText(projectPath, session);
@@ -102,6 +114,10 @@ export async function buildResumeSummary(projectPath: string): Promise<ResumeSum
   if (latest && !checkpointDelta.checkpointAt) {
     warnings.push("Latest checkpoint has no machine-readable snapshot; run `visp-hyper checkpoint` again to enable exact resume deltas.");
   }
+  if (contextFreshness.blocking) {
+    warnings.push(contextFreshness.finding ?? `Context freshness is ${contextFreshness.status}; regenerate the handoff.`);
+  }
+  warnings.push(...contextFreshness.warnings);
   warnings.push(...changed.warnings);
   warnings.push(...checkpointDelta.warnings);
 
@@ -116,10 +132,13 @@ export async function buildResumeSummary(projectPath: string): Promise<ResumeSum
     requiredReads: readStatuses,
     artifacts: artifactStatuses,
     latestCheckpoint: latest,
+    contextFreshness: summarizeContextFreshness(contextFreshness),
     changedFiles: changed.files,
     checkpointDelta,
     warnings,
-    nextCommand: session.pipeline?.currentTaskId
+    nextCommand: contextFreshness.blocking
+      ? `visp-hyper run "${session.goal}"`
+      : session.pipeline?.currentTaskId
       ? `visp-hyper checkpoint --task ${session.pipeline.currentTaskId}`
       : "visp-hyper next",
     handoff,
@@ -144,6 +163,7 @@ function formatResumeSummary(summary: ResumeSummary): string {
     `phase: ${summary.phase}`,
     `current_task: ${summary.currentTaskId ?? "none"}`,
     `latest_checkpoint: ${summary.latestCheckpoint ?? "none"}`,
+    `context_freshness: ${formatContextFreshness(summary.contextFreshness)}`,
     "",
     "required_reads:",
     ...summary.requiredReads.map((status) => `  - ${status.path}: ${status.present ? "present" : "missing"}`),
@@ -184,6 +204,30 @@ function formatResumeSummary(summary: ResumeSummary): string {
   }
 
   return lines.join("\n");
+}
+
+function summarizeContextFreshness(freshness: ContextFreshness): ResumeContextFreshness {
+  return {
+    status: freshness.status,
+    blocking: freshness.blocking,
+    ...(freshness.artifactPath ? { artifactPath: freshness.artifactPath } : {}),
+    ...(freshness.finding ? { finding: freshness.finding } : {}),
+    warnings: [...freshness.warnings]
+  };
+}
+
+function formatContextFreshness(freshness: ResumeContextFreshness | undefined): string {
+  if (!freshness) {
+    return "unknown";
+  }
+  const parts = [freshness.status];
+  if (freshness.blocking && freshness.finding) {
+    parts.push(`- ${freshness.finding}`);
+  }
+  if (freshness.warnings.length > 0) {
+    parts.push(`warnings: ${freshness.warnings.join("; ")}`);
+  }
+  return parts.join(" ");
 }
 
 function formatFileList(files: readonly string[], indent: string): string[] {
