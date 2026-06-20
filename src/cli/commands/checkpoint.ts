@@ -119,7 +119,6 @@ export function checkpointCommand(): Command {
         failureFindings = localFindings;
         printWarnings([...kit.warnings, ...evidence.warnings]);
       }
-      printWarnings(contextFreshness.warnings);
       if (contextFreshness.blocking) {
         reviewPassed = false;
         failureFindings = [
@@ -201,6 +200,12 @@ export function checkpointCommand(): Command {
         `evidence_source: ${evidenceSource}`,
         `context_freshness: ${contextFreshness.status}`
       ];
+      if (contextFreshness.warnings.length > 0) {
+        lines.push("warnings:");
+        for (const warning of contextFreshness.warnings) {
+          lines.push(` - ${warning}`);
+        }
+      }
       const visibleFindings = evidenceSource === "local" ? localFindings : failureFindings;
       if (visibleFindings.length > 0 && !passed) {
         lines.push("findings:");

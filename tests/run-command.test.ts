@@ -28,8 +28,9 @@ async function createProject(): Promise<string> {
   return projectPath;
 }
 
-async function writeTaskGraph(projectPath: string): Promise<void> {
+async function writeTaskGraph(projectPath: string, options: { provenance?: boolean } = {}): Promise<void> {
   const featureDir = join(projectPath, ".visp", "features", FEATURE_DIR);
+  const includeProvenance = options.provenance ?? true;
   await mkdir(join(featureDir, "context"), { recursive: true });
   await mkdir(join(projectPath, ".visp"), { recursive: true });
   await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
@@ -60,14 +61,18 @@ async function writeTaskGraph(projectPath: string): Promise<void> {
     JSON.stringify({
       taskId: "T001",
       includedFiles: [{ path: "src/feature.ts", reason: "task target" }],
-      artifactProvenance: [
-        {
-          label: "task graph",
-          path: `.visp/features/${FEATURE_DIR}/task-graph.json`,
-          hash: sha256(taskGraph),
-          hashAlgorithm: "sha256"
-        }
-      ],
+      ...(includeProvenance
+        ? {
+            artifactProvenance: [
+              {
+                label: "task graph",
+                path: `.visp/features/${FEATURE_DIR}/task-graph.json`,
+                hash: sha256(taskGraph),
+                hashAlgorithm: "sha256"
+              }
+            ]
+          }
+        : {}),
       validationCommands: ["pnpm typecheck", "pnpm test"]
     }),
     "utf8"
@@ -271,6 +276,35 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const pipeline = activePipeline(await readState(projectPath));
     expect(pipeline.currentTaskId).toBe("T001");
+  });
+
+  it("checkpoint carries freshness warnings for context packs without provenance", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath, { provenance: false });
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("context_freshness: current");
+    expect(output).toContain("warnings:");
+    expect(output).toContain("has no artifactProvenance");
+    expect(output).toContain("checkpoint can pin only the context-pack file");
+    expect(output).toContain("status: PASSED");
   });
 
   it("AC005: blocked gate prints PIPELINE_BLOCKED and authors no kit artifacts", async () => {

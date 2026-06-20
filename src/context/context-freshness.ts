@@ -22,6 +22,7 @@ type ManifestLike = {
     hashAlgorithm?: unknown;
   };
   artifactProvenance?: unknown;
+  freshnessWarnings?: unknown;
 };
 
 export async function checkContextFreshness(projectPath: string): Promise<ContextFreshness> {
@@ -41,6 +42,7 @@ export async function checkContextFreshness(projectPath: string): Promise<Contex
       warnings: []
     };
   }
+  const manifestWarnings = parseFreshnessWarnings(manifest.freshnessWarnings);
 
   const artifactChecks: FreshnessTarget[] = [];
   if (manifest.contextArtifact) {
@@ -49,7 +51,7 @@ export async function checkContextFreshness(projectPath: string): Promise<Contex
       invalidFinding: "context manifest has invalid artifact freshness metadata; regenerate with `visp-hyper run \"<goal>\"`"
     });
     if ("error" in parsed) {
-      return parsed.error;
+      return withWarnings(parsed.error, manifestWarnings);
     }
     artifactChecks.push(parsed.target);
   }
@@ -60,7 +62,7 @@ export async function checkContextFreshness(projectPath: string): Promise<Contex
         status: "error",
         blocking: true,
         finding: "context manifest has invalid artifact provenance metadata; regenerate with `visp-hyper run \"<goal>\"`",
-        warnings: []
+        warnings: manifestWarnings
       };
     }
     for (const entry of manifest.artifactProvenance) {
@@ -69,26 +71,26 @@ export async function checkContextFreshness(projectPath: string): Promise<Contex
         invalidFinding: "context manifest has invalid artifact provenance metadata; regenerate with `visp-hyper run \"<goal>\"`"
       });
       if ("error" in parsed) {
-        return parsed.error;
+        return withWarnings(parsed.error, manifestWarnings);
       }
       artifactChecks.push(parsed.target);
     }
   }
 
   if (artifactChecks.length === 0) {
-    return { status: "untracked", blocking: false, warnings: [] };
+    return { status: "untracked", blocking: false, warnings: manifestWarnings };
   }
 
   let lastCurrent: ContextFreshness | undefined;
   for (const target of artifactChecks) {
     const result = await checkTarget(projectPath, target);
     if (result.blocking) {
-      return result;
+      return withWarnings(result, manifestWarnings);
     }
     lastCurrent = result;
   }
 
-  return lastCurrent ?? { status: "current", blocking: false, warnings: [] };
+  return withWarnings(lastCurrent ?? { status: "current", blocking: false, warnings: [] }, manifestWarnings);
 }
 
 type FreshnessTarget = {
@@ -198,4 +200,21 @@ async function checkTarget(projectPath: string, target: FreshnessTarget): Promis
 
 function describeTarget(target: FreshnessTarget): string {
   return target.label ? `${target.label} at ${target.path}` : target.path;
+}
+
+function parseFreshnessWarnings(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+}
+
+function withWarnings(result: ContextFreshness, warnings: string[]): ContextFreshness {
+  if (warnings.length === 0) {
+    return result;
+  }
+  return {
+    ...result,
+    warnings: [...warnings, ...result.warnings]
+  };
 }
