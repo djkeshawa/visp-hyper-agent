@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,6 +27,10 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
 }
 
 function stubContext(executeImpl?: McpContext["execute"]): McpContext {
@@ -303,6 +308,9 @@ describe("handleMessage resources and prompts surface", () => {
       "visp-hyper://meta/surface-manifest"
     );
     expect(listed.result.resources.map((resource) => resource.uri)).toContain(
+      "visp-hyper://current/context-freshness"
+    );
+    expect(listed.result.resources.map((resource) => resource.uri)).toContain(
       "visp-hyper://current/context-pack"
     );
     expect(listed.result.resources.map((resource) => resource.uri)).toContain(
@@ -336,6 +344,25 @@ describe("handleMessage resources and prompts surface", () => {
       text: "{\"version\":\"0.1\",\"sessionId\":\"vh_test\"}\n"
     });
 
+    const freshnessRead = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 6,
+      method: "resources/read",
+      params: { uri: "visp-hyper://current/context-freshness" }
+    })) as { result: { contents: Array<{ uri: string; mimeType: string; text: string }> } };
+    const freshness = JSON.parse(freshnessRead.result.contents[0]?.text ?? "{}");
+    expect(freshnessRead.result.contents[0]).toMatchObject({
+      uri: "visp-hyper://current/context-freshness",
+      mimeType: "application/json"
+    });
+    expect(freshness).toMatchObject({
+      version: "0.1",
+      status: "untracked",
+      blocking: false,
+      warnings: []
+    });
+    expect(freshness.generatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+
     const snapshotRead = (await handleMessage(ctx, {
       jsonrpc: "2.0",
       id: 5,
@@ -347,6 +374,58 @@ describe("handleMessage resources and prompts surface", () => {
       mimeType: "application/json",
       text: "{\"version\":\"0.1\",\"surface\":\"checkpoint\"}\n"
     });
+  });
+
+  it("context freshness resource reports stale pinned context", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-context-freshness-"));
+    await initializeProject(projectPath);
+    const originalContext = "# Context\n\n- src/feature.ts\n";
+    const changedContext = "# Context\n\n- src/other.ts\n";
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "current", "context-pack.md"),
+      originalContext,
+      "utf8"
+    );
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "current", "context-manifest.json"),
+      `${JSON.stringify(
+        {
+          version: "0.1",
+          sessionId: "vh_test",
+          contextArtifact: {
+            path: ".visp/hyper/current/context-pack.md",
+            hash: sha256(originalContext),
+            hashAlgorithm: "sha256"
+          }
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "current", "context-pack.md"),
+      changedContext,
+      "utf8"
+    );
+
+    const read = (await handleMessage(createToolContext(projectPath), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "resources/read",
+      params: { uri: "visp-hyper://current/context-freshness" }
+    })) as { result: { contents: Array<{ mimeType: string; text: string }> } };
+    const freshness = JSON.parse(read.result.contents[0]?.text ?? "{}");
+
+    expect(read.result.contents[0]?.mimeType).toBe("application/json");
+    expect(freshness).toMatchObject({
+      status: "stale",
+      blocking: true,
+      artifactPath: ".visp/hyper/current/context-pack.md",
+      expectedHash: sha256(originalContext),
+      actualHash: sha256(changedContext)
+    });
+    expect(freshness.finding).toContain("context artifact changed since handoff");
   });
 
   it("surface manifest hashes the advertised MCP tools, resources, prompts, and safety posture", async () => {
@@ -377,6 +456,15 @@ describe("handleMessage resources and prompts surface", () => {
     expect(manifest.resources.map((resource: { uri: string }) => resource.uri)).toContain(
       "visp-hyper://current/checkpoint-snapshot"
     );
+    expect(manifest.resources.map((resource: { uri: string }) => resource.uri)).toContain(
+      "visp-hyper://current/context-freshness"
+    );
+    expect(
+      manifest.resources.find(
+        (resource: { uri: string; computed?: boolean }) =>
+          resource.uri === "visp-hyper://current/context-freshness"
+      )?.computed
+    ).toBe(true);
     expect(manifest.prompts.map((prompt: { name: string }) => prompt.name)).toEqual([
       "hyper_resume",
       "hyper_run_goal"

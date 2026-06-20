@@ -3,6 +3,7 @@ import { runCli } from "../cli/index.js";
 import type { McpBridge } from "../core/types.js";
 import { packageVersion } from "../core/package-version.js";
 import { readTextIfExists, vispPath } from "../core/fs-utils.js";
+import { checkContextFreshness } from "../context/context-freshness.js";
 import type {
   McpContext,
   McpPromptDef,
@@ -398,6 +399,18 @@ const SURFACE_MANIFEST_RESOURCE: McpResourceDef = {
   }
 };
 
+const CONTEXT_FRESHNESS_RESOURCE: McpResourceDef = {
+  uri: "visp-hyper://current/context-freshness",
+  name: "context-freshness.json",
+  title: "Current Context Freshness",
+  description: "Machine-readable freshness status for the active context pack and grounded Kit artifacts.",
+  mimeType: "application/json",
+  annotations: {
+    audience: ["user", "assistant"],
+    priority: 1
+  }
+};
+
 const PROMPTS: McpPromptDef[] = [
   {
     name: "hyper_resume",
@@ -498,7 +511,7 @@ function toolDefs(): McpToolDef[] {
 }
 
 async function resourceDefs(projectPath: string): Promise<McpResourceDef[]> {
-  const defs: McpResourceDef[] = [SURFACE_MANIFEST_RESOURCE];
+  const defs: McpResourceDef[] = [SURFACE_MANIFEST_RESOURCE, CONTEXT_FRESHNESS_RESOURCE];
   for (const spec of RESOURCE_SPECS) {
     const content = await readTextIfExists(vispPath(projectPath, ...spec.path));
     if (content === undefined) {
@@ -515,6 +528,23 @@ async function readResource(projectPath: string, uri: string): Promise<McpResour
       uri,
       mimeType: SURFACE_MANIFEST_RESOURCE.mimeType,
       text: `${JSON.stringify(buildSurfaceManifest(), null, 2)}\n`
+    };
+  }
+
+  if (uri === CONTEXT_FRESHNESS_RESOURCE.uri) {
+    const freshness = await checkContextFreshness(projectPath);
+    return {
+      uri,
+      mimeType: CONTEXT_FRESHNESS_RESOURCE.mimeType,
+      text: `${JSON.stringify(
+        {
+          version: "0.1",
+          generatedAt: new Date().toISOString(),
+          ...freshness
+        },
+        null,
+        2
+      )}\n`
     };
   }
 
@@ -571,6 +601,10 @@ function buildSurfaceManifest(): object {
     })),
     resources: [
       SURFACE_MANIFEST_RESOURCE,
+      {
+        ...CONTEXT_FRESHNESS_RESOURCE,
+        computed: true
+      },
       ...RESOURCE_SPECS.map((resource) => ({
         uri: resource.uri,
         name: resource.name,
