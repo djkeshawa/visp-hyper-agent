@@ -58,7 +58,7 @@ export type ChangedFilesMode =
  * degrade open.
  *
  * - `staged`: `git diff --name-only --cached`
- * - `all`: union of working-tree (`git diff --name-only`) and staged changes
+ * - `all`: union of working-tree (`git diff --name-only`), staged, and untracked changes
  * - `base`: `git diff --name-only <baseRef>...HEAD`
  */
 export async function collectChangedFiles(
@@ -74,11 +74,12 @@ export async function collectChangedFiles(
     }
 
     if (mode.mode === "all") {
-      const [unstaged, staged] = await Promise.all([
+      const [unstaged, staged, untracked] = await Promise.all([
         execFileAsync("git", ["diff", "--name-only"], { cwd: projectPath }),
-        execFileAsync("git", ["diff", "--name-only", "--cached"], { cwd: projectPath })
+        execFileAsync("git", ["diff", "--name-only", "--cached"], { cwd: projectPath }),
+        execFileAsync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectPath })
       ]);
-      const files = [...splitNames(unstaged.stdout), ...splitNames(staged.stdout)];
+      const files = [...splitNames(unstaged.stdout), ...splitNames(staged.stdout), ...splitNames(untracked.stdout)];
       return { files: [...new Set(files)], warnings: [] };
     }
 

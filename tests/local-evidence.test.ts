@@ -101,6 +101,20 @@ describe("collectLocalEvidence", () => {
     expect(evidence.findings).toContain("scope violation: lib/other.ts outside allowed files");
   });
 
+  it("AC003-scope: untracked file outside allowed files fails review", async () => {
+    const projectPath = await createRepo();
+    await mkdir(join(projectPath, "lib"), { recursive: true });
+    await writeFile(join(projectPath, "lib", "untracked.ts"), "export const x = 2;\n", "utf8");
+
+    const evidence = await collectLocalEvidence({
+      projectPath,
+      task: { id: "T001", allowedFiles: ["src"] },
+      blockedPaths: []
+    });
+    expect(evidence.reviewPassed).toBe(false);
+    expect(evidence.findings).toContain("scope violation: lib/untracked.ts outside allowed files");
+  });
+
   it("AC003-scope: changed file inside allowed files passes review", async () => {
     const projectPath = await createRepo();
     await writeFile(join(projectPath, "src", "ok.ts"), "export const ok = 1;\n", "utf8");
@@ -252,6 +266,21 @@ describe("checkpoint --task local evidence integration", () => {
     const pipeline = await readPipeline(projectPath);
     expect(pipeline.currentTaskId).toBe("T001");
     expect(pipeline.completed).not.toContain("T001");
+
+    const patterns = JSON.parse(await readFile(join(projectPath, ".visp", "hyper", "failure-patterns.json"), "utf8"));
+    expect(patterns.patterns[0]).toMatchObject({
+      taskId: "T001",
+      source: "local",
+      verifyPassed: false,
+      reviewPassed: true
+    });
+    expect(patterns.patterns[0].findings).toContain("verify failed: node -e process.exit(2) (exit 2)");
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "continue T001", "--tool", "codex"]);
+    const memoryPack = await readFile(join(projectPath, ".visp", "hyper", "current", "memory-pack.md"), "utf8");
+    expect(memoryPack).toContain("## Known Failure Patterns");
+    expect(memoryPack).toContain("verify failed: node -e process.exit(2) (exit 2)");
   });
 
   it("kit-present parity: a working visp shim reports evidence_source: kit", async () => {

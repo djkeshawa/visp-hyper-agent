@@ -85,7 +85,9 @@ and re-plan from what the downloads and writeup reception say.
 12. Memory backend adapter (Mem0/OpenMemory) — **only if inbound demand names it**;
     the deterministic firing points (task-scoped recall, before-change warnings,
     failure → gotcha distillation) remain the differentiated layer and are
-    backend-independent by design.
+    backend-independent by design. Local failure-pattern memory is already in
+    place; the backend adapter should mirror those records rather than replace
+    them.
 
 ## Killed / deferred (with reasons)
 

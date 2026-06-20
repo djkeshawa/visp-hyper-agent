@@ -178,6 +178,7 @@ Enable in `.visp/hyper/config.json`:
 ```
 
 - `start`/`run` recall memories relevant to the goal and render them in `memory-pack.md` with source and relevance-score tags, capped so memory never crowds out task context.
+- Failed checkpoints are deduped into `.visp/hyper/failure-patterns.json`; future `start`/`run` handoffs surface related gotchas in `memory-pack.md`.
 - `remember` writes the session record, decisions (episodic), and follow-ups (intent) back; installed skills mirror as semantic patterns.
 - Auth: set `VISP_HYPER_MEMORY_API_KEY` (sent as `X-API-KEY`); keys never live in config files.
 - The server being down is never an error: commands warn and fall back to file memory.
@@ -211,6 +212,7 @@ Runtime files:
     state.json           # sessions + pipeline state (task DAG progress)
     telemetry.json       # checkpoint attempts + token usage
     routing.json         # quarantines + routing decisions
+    failure-patterns.json # failed checkpoint gotchas for future sessions
     skills.json          # installed-skill registry
     skill-proposals/     # incoming/ staged/ rejected/
     current/

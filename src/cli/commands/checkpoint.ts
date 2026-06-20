@@ -4,6 +4,8 @@ import { Command, Option } from "commander";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import type { KitReviewSummary, KitVerifySummary } from "../../kit/kit-schemas.js";
+import { recordFailurePattern } from "../../memory/failure-patterns.js";
 import { collectLocalEvidence } from "../../quality/local-evidence.js";
 import { harvestSkillProposals } from "./remember.js";
 import { advance, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
@@ -15,6 +17,7 @@ import {
 import { readRoutingState, writeRoutingState } from "../../routing/routing-state.js";
 import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
 import { printWarnings, resolveProjectPath } from "./shared.js";
+import { collectChangedFiles } from "../../governance/scope-guard.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -81,6 +84,7 @@ export function checkpointCommand(): Command {
       let reviewPassed: boolean;
       let evidenceSource: "kit" | "local";
       let localFindings: string[] = [];
+      let failureFindings: string[] = [];
 
       if (kit.available) {
         const bridge = new KitCommandBridge({ projectPath });
@@ -90,6 +94,10 @@ export function checkpointCommand(): Command {
         verifyPassed = verify?.success === true;
         reviewPassed = review?.success === true;
         evidenceSource = "kit";
+        failureFindings = [
+          ...summaryFindings("verify", verify),
+          ...summaryFindings("review", review)
+        ];
       } else {
         const config = await readConfig(projectPath);
         const evidence = await collectLocalEvidence({
@@ -105,6 +113,7 @@ export function checkpointCommand(): Command {
         reviewPassed = evidence.reviewPassed;
         localFindings = evidence.findings;
         evidenceSource = "local";
+        failureFindings = localFindings;
         printWarnings([...kit.warnings, ...evidence.warnings]);
       }
 
@@ -147,6 +156,27 @@ export function checkpointCommand(): Command {
         } catch (error) {
           console.log(`warning: routing escalation was not recorded: ${error instanceof Error ? error.message : String(error)}`);
         }
+
+        try {
+          const diff = await collectChangedFiles(projectPath, { mode: "all" });
+          const relatedFiles = [
+            ...diff.files,
+            ...(task?.allowedFiles ?? []),
+            ...(task?.expectedFiles ?? [])
+          ];
+          await recordFailurePattern(projectPath, {
+            taskId,
+            taskClass,
+            sessionId: session.id,
+            source: evidenceSource,
+            verifyPassed,
+            reviewPassed,
+            findings: failureFindings.length > 0 ? failureFindings : ["checkpoint failed without detailed findings"],
+            relatedFiles
+          });
+        } catch (error) {
+          console.log(`warning: failure pattern was not recorded: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
 
       const lines = [
@@ -156,9 +186,10 @@ export function checkpointCommand(): Command {
         `review: ${reviewPassed ? "PASSED" : "FAILED"}`,
         `evidence_source: ${evidenceSource}`
       ];
-      if (localFindings.length > 0) {
+      const visibleFindings = evidenceSource === "local" ? localFindings : failureFindings;
+      if (visibleFindings.length > 0 && !passed) {
         lines.push("findings:");
-        for (const finding of localFindings) {
+        for (const finding of visibleFindings) {
           lines.push(` - ${finding}`);
         }
       }
@@ -203,6 +234,37 @@ export function checkpointCommand(): Command {
         console.log(line);
       }
     });
+}
+
+function summaryFindings(label: "verify" | "review", summary: KitVerifySummary | KitReviewSummary | null): string[] {
+  if (!summary) {
+    return [`${label} evidence was unavailable or unparseable`];
+  }
+  if (summary.success) {
+    return [];
+  }
+  const findings = [
+    `${label} failed`,
+    ...(summary.errors ?? []).map((entry) => `${label} error: ${entry}`),
+    ...(summary.warnings ?? []).map((entry) => `${label} warning: ${entry}`),
+    ...(summary.findings ?? []).map((entry) => `${label} finding: ${stringifyFinding(entry)}`)
+  ];
+  return [...new Set(findings.filter((entry) => entry.trim().length > 0))];
+}
+
+function stringifyFinding(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["title", "message", "description", "summary"]) {
+      if (typeof record[key] === "string") {
+        return record[key];
+      }
+    }
+  }
+  return JSON.stringify(value) ?? String(value);
 }
 
 async function writeCheckpointMarkdown(projectPath: string, sessionId: string, goal: string): Promise<void> {

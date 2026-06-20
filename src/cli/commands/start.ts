@@ -11,6 +11,7 @@ import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
 import { readKitArtifacts } from "../../kit/kit-reader.js";
 import type { KitContextPack } from "../../kit/kit-schemas.js";
 import { readMemoryPack } from "../../memory/file-memory-provider.js";
+import { readRelevantFailurePatterns } from "../../memory/failure-patterns.js";
 import { LlmMemoryProvider } from "../../memory/llm-memory-provider.js";
 import { selectMemoryProvider } from "../../memory/provider-factory.js";
 import { readSkillRegistry } from "../../skills/skill-registry.js";
@@ -73,6 +74,11 @@ export async function executeStart(
     ? { source: adoption.source, validationCommands: adoption.validationCommands }
     : {};
   const contextKit = adoption ? { ...kit, warnings: [...kit.warnings, ...adoption.warnings] } : kit;
+  const failurePatterns = await readRelevantFailurePatterns(projectPath, {
+    goal,
+    taskId: adoption?.taskId,
+    files: contextFiles.map((file) => file.path)
+  });
   const session = await createSession({
     projectPath,
     goal,
@@ -92,7 +98,11 @@ export async function executeStart(
   );
   await writeText(
     vispPath(projectPath, "hyper", "current", "memory-pack.md"),
-    renderMemoryPack(memory, { recalled: memoryFusion.recalled, recalledWarnings: memoryFusion.warnings })
+    renderMemoryPack(memory, {
+      recalled: memoryFusion.recalled,
+      recalledWarnings: memoryFusion.warnings,
+      failurePatterns
+    })
   );
   await writeText(vispPath(projectPath, "hyper", "current", "quality-gates.md"), renderQualityGates(config.blockedPaths));
   await writeText(vispPath(projectPath, "hyper", "current", "agent-instructions.md"), renderAgentInstructions(session));
@@ -140,6 +150,7 @@ async function fuseRecalledMemory(projectPath: string, config: HyperConfig, goal
 type KitAdoption = {
   files: ContextFile[];
   source: string;
+  taskId: string;
   validationCommands: string[];
   warnings: string[];
 };
@@ -174,6 +185,7 @@ async function adoptKitContextPack(projectPath: string, config: HyperConfig): Pr
   return {
     files,
     source: `visp-kit context pack (${activeTaskId})`,
+    taskId: activeTaskId,
     validationCommands: pack.validationCommands ?? [],
     warnings: [...kit.warnings, ...bridge.warnings]
   };

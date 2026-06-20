@@ -1,4 +1,5 @@
 import type { ContextFile, ContextPackOptions, KitArtifacts, MemoryPack, SessionRecord } from "../core/types.js";
+import type { FailurePattern } from "../memory/failure-patterns.js";
 
 export function renderSession(session: SessionRecord): string {
   return [
@@ -63,23 +64,47 @@ export type RecalledMemory = {
 export type RenderMemoryPackOptions = {
   recalled?: RecalledMemory[];
   recalledWarnings?: string[];
+  failurePatterns?: FailurePattern[];
 };
 
 const recalledContentBudget = 12_000;
 
 export function renderMemoryPack(memory: MemoryPack, options: RenderMemoryPackOptions = {}): string {
   const recalled = renderRecalledSection(options.recalled);
+  const failures = renderFailurePatternSection(options.failurePatterns);
   const warnings = renderWarnings([...memory.warnings, ...(options.recalledWarnings ?? [])]);
   if (memory.files.length === 0) {
-    return ["# Memory Pack", "", ...warnings, "No local Visp memory files found yet.", "", ...recalled].join("\n");
+    return ["# Memory Pack", "", ...warnings, "No local Visp memory files found yet.", "", ...failures, ...recalled].join("\n");
   }
   return [
     "# Memory Pack",
     "",
     ...warnings,
     ...memory.files.flatMap((file) => [`## ${file.path}`, "", `Summary: ${file.summary}`, "", fenced(file.content), ""]),
+    ...failures,
     ...recalled
   ].join("\n");
+}
+
+function renderFailurePatternSection(patterns: FailurePattern[] | undefined): string[] {
+  if (!patterns || patterns.length === 0) {
+    return [];
+  }
+  const lines: string[] = ["## Known Failure Patterns", ""];
+  for (const pattern of patterns) {
+    lines.push(
+      `### ${pattern.taskId} (${pattern.taskClass})`,
+      "",
+      `- Source: ${pattern.source}`,
+      `- Last seen: ${pattern.lastSeenAt}`,
+      `- Occurrences: ${pattern.occurrences}`,
+      `- Related files: ${pattern.relatedFiles.length > 0 ? pattern.relatedFiles.join(", ") : "none"}`,
+      "- Findings:",
+      ...pattern.findings.slice(0, 5).map((finding) => `  - ${finding}`),
+      ""
+    );
+  }
+  return lines;
 }
 
 function renderRecalledSection(recalled: RecalledMemory[] | undefined): string[] {
