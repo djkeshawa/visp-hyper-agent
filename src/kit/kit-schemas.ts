@@ -150,7 +150,8 @@ const kitIntegrationCapabilitiesSchema = z
         taskScopedContextPacks: z.boolean().optional(),
         artifactProvenance: z.boolean().optional(),
         currentTaskPrompt: z.boolean().optional(),
-        implementationChecklist: z.boolean().optional()
+        implementationChecklist: z.boolean().optional(),
+        orchestratorReadContract: z.boolean().optional()
       })
       .optional(),
     evidence: z
@@ -190,6 +191,33 @@ const kitIntegrationWorkflowSchema = z
   })
   .optional();
 
+const kitIntegrationOrchestratorArtifactSchema = z
+  .object({
+    id: z.string(),
+    path: z.string(),
+    role: z.string(),
+    mimeType: z.string(),
+    requiredFor: z.array(z.string()).optional(),
+    freshness: z.string().optional()
+  })
+  .passthrough();
+
+const kitIntegrationOrchestratorSchema = z
+  .object({
+    readContractVersion: z.string().optional(),
+    requiredArtifacts: z.array(kitIntegrationOrchestratorArtifactSchema).optional(),
+    freshnessPolicy: z
+      .object({
+        contextPackHashPinned: z.boolean().optional(),
+        provenanceArtifactsHashPinned: z.boolean().optional(),
+        staleContextBlocks: z.array(z.string()).optional()
+      })
+      .passthrough()
+      .optional()
+  })
+  .passthrough()
+  .optional();
+
 export const kitIntegrationContractSchema = z
   .object({
     success: z.boolean(),
@@ -216,6 +244,7 @@ export const kitIntegrationContractSchema = z
       contextPack: z.string(),
       contextPrompt: z.string()
     }),
+    orchestrator: kitIntegrationOrchestratorSchema,
     warnings: z.array(z.string()).optional()
   })
   .passthrough();

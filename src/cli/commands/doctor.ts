@@ -630,9 +630,17 @@ function drainWarnings(warnings: string[]): string[] {
 function formatContractCapabilities(contract: {
   capabilities?: {
     governance?: { failClosedGates?: boolean };
-    contextGrounding?: { taskScopedContextPacks?: boolean; artifactProvenance?: boolean };
+    contextGrounding?: {
+      taskScopedContextPacks?: boolean;
+      artifactProvenance?: boolean;
+      orchestratorReadContract?: boolean;
+    };
     evidence?: { verification?: boolean; review?: boolean; reconciliation?: boolean };
     enforcementSurfaces?: { gitPreCommitHook?: boolean; ciPolicyGate?: boolean };
+  };
+  orchestrator?: {
+    readContractVersion?: string;
+    requiredArtifacts?: unknown[];
   };
   workflow?: {
     freshnessChecks?: string[];
@@ -646,6 +654,11 @@ function formatContractCapabilities(contract: {
     capabilities.governance?.failClosedGates ? "fail-closed gates" : null,
     capabilities.contextGrounding?.taskScopedContextPacks ? "task context packs" : null,
     capabilities.contextGrounding?.artifactProvenance ? "artifact provenance" : null,
+    capabilities.contextGrounding?.orchestratorReadContract &&
+      contract.orchestrator?.readContractVersion &&
+      Array.isArray(contract.orchestrator.requiredArtifacts)
+      ? `orchestrator read contract ${contract.orchestrator.readContractVersion} (${contract.orchestrator.requiredArtifacts.length} artifacts)`
+      : null,
     capabilities.evidence?.verification && capabilities.evidence.review && capabilities.evidence.reconciliation
       ? "verify/review/reconcile"
       : null,

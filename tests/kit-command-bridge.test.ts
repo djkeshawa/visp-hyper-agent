@@ -254,7 +254,7 @@ describe("KitCommandBridge", () => {
       integration: {
         stdout: {
           success: true,
-          contractVersion: "1.2",
+          contractVersion: "1.3",
           kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
           targetPath: "/repo",
           initialized: true,
@@ -263,7 +263,11 @@ describe("KitCommandBridge", () => {
           commands: { status: ["status", "--json"] },
           capabilities: {
             governance: { failClosedGates: true, sourceEditsRequireImplementGate: true },
-            contextGrounding: { taskScopedContextPacks: true, artifactProvenance: true },
+            contextGrounding: {
+              taskScopedContextPacks: true,
+              artifactProvenance: true,
+              orchestratorReadContract: true
+            },
             evidence: { verification: true, review: true, reconciliation: true },
             enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
           },
@@ -286,6 +290,24 @@ describe("KitCommandBridge", () => {
             contextPack: ".visp/features/001-demo/context/T001.context.json",
             contextPrompt: ".visp/features/001-demo/context/T001.prompt.md"
           },
+          orchestrator: {
+            readContractVersion: "0.1",
+            requiredArtifacts: [
+              {
+                id: "context-pack",
+                path: ".visp/features/001-demo/context/T001.context.json",
+                role: "context-pack",
+                mimeType: "application/json",
+                requiredFor: ["handoff", "implementation", "checkpoint"],
+                freshness: "hash-pinned"
+              }
+            ],
+            freshnessPolicy: {
+              contextPackHashPinned: true,
+              provenanceArtifactsHashPinned: true,
+              staleContextBlocks: ["implementation", "checkpoint", "pr"]
+            }
+          },
           warnings: []
         }
       }
@@ -294,10 +316,13 @@ describe("KitCommandBridge", () => {
 
     const contract = await bridge.integrationContract();
 
-    expect(contract?.contractVersion).toBe("1.2");
+    expect(contract?.contractVersion).toBe("1.3");
     expect(contract?.kit.version).toBe("0.1.2");
     expect(contract?.capabilities?.governance?.failClosedGates).toBe(true);
     expect(contract?.capabilities?.contextGrounding?.artifactProvenance).toBe(true);
+    expect(contract?.capabilities?.contextGrounding?.orchestratorReadContract).toBe(true);
+    expect(contract?.orchestrator?.readContractVersion).toBe("0.1");
+    expect(contract?.orchestrator?.requiredArtifacts?.[0]?.id).toBe("context-pack");
     expect(contract?.workflow?.failClosedOn).toContain("gateImplement");
     expect(contract?.workflow?.freshnessChecks).toContain("contextPack.artifactProvenance[]");
     const argv = JSON.parse((await readFile(shim.argvLogPath, "utf8")).trim()) as string[];
