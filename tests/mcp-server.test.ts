@@ -311,6 +311,9 @@ describe("handleMessage resources and prompts surface", () => {
       "visp-hyper://current/context-freshness"
     );
     expect(listed.result.resources.map((resource) => resource.uri)).toContain(
+      "visp-hyper://current/kit-read-contract"
+    );
+    expect(listed.result.resources.map((resource) => resource.uri)).toContain(
       "visp-hyper://current/context-pack"
     );
     expect(listed.result.resources.map((resource) => resource.uri)).toContain(
@@ -362,6 +365,23 @@ describe("handleMessage resources and prompts surface", () => {
       warnings: []
     });
     expect(freshness.generatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+
+    const kitReadContractRead = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 7,
+      method: "resources/read",
+      params: { uri: "visp-hyper://current/kit-read-contract" }
+    })) as { result: { contents: Array<{ uri: string; mimeType: string; text: string }> } };
+    const kitReadContract = JSON.parse(kitReadContractRead.result.contents[0]?.text ?? "{}");
+    expect(kitReadContractRead.result.contents[0]).toMatchObject({
+      uri: "visp-hyper://current/kit-read-contract",
+      mimeType: "application/json"
+    });
+    expect(kitReadContract).toMatchObject({
+      version: "0.1",
+      status: "unavailable"
+    });
+    expect(kitReadContract.reason).toContain("no Kit read contract");
 
     const snapshotRead = (await handleMessage(ctx, {
       jsonrpc: "2.0",
@@ -428,6 +448,70 @@ describe("handleMessage resources and prompts surface", () => {
     expect(freshness.finding).toContain("context artifact changed since handoff");
   });
 
+  it("kit read contract resource returns adopted Kit artifact roles when present", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-kit-read-contract-"));
+    await initializeProject(projectPath);
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "current", "context-manifest.json"),
+      `${JSON.stringify(
+        {
+          version: "0.1",
+          sessionId: "vh_test",
+          kitReadContract: {
+            contractVersion: "1.3",
+            readContractVersion: "0.1",
+            requiredArtifacts: [
+              {
+                id: "context-pack",
+                path: ".visp/features/001-x/context/T009.context.json",
+                role: "context-pack",
+                mimeType: "application/json",
+                requiredFor: ["handoff", "implementation", "checkpoint"],
+                freshness: "hash-pinned"
+              }
+            ],
+            freshnessPolicy: {
+              contextPackHashPinned: true,
+              provenanceArtifactsHashPinned: true,
+              staleContextBlocks: ["implementation", "checkpoint", "pr"]
+            }
+          }
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    const read = (await handleMessage(createToolContext(projectPath), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "resources/read",
+      params: { uri: "visp-hyper://current/kit-read-contract" }
+    })) as { result: { contents: Array<{ mimeType: string; text: string }> } };
+    const contract = JSON.parse(read.result.contents[0]?.text ?? "{}");
+
+    expect(read.result.contents[0]?.mimeType).toBe("application/json");
+    expect(contract).toMatchObject({
+      version: "0.1",
+      status: "available",
+      contractVersion: "1.3",
+      readContractVersion: "0.1",
+      freshnessPolicy: {
+        contextPackHashPinned: true,
+        provenanceArtifactsHashPinned: true,
+        staleContextBlocks: ["implementation", "checkpoint", "pr"]
+      }
+    });
+    expect(contract.requiredArtifacts).toContainEqual(
+      expect.objectContaining({
+        id: "context-pack",
+        role: "context-pack",
+        freshness: "hash-pinned"
+      })
+    );
+  });
+
   it("surface manifest hashes the advertised MCP tools, resources, prompts, and safety posture", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-surface-"));
     const ctx = createToolContext(projectPath);
@@ -459,10 +543,19 @@ describe("handleMessage resources and prompts surface", () => {
     expect(manifest.resources.map((resource: { uri: string }) => resource.uri)).toContain(
       "visp-hyper://current/context-freshness"
     );
+    expect(manifest.resources.map((resource: { uri: string }) => resource.uri)).toContain(
+      "visp-hyper://current/kit-read-contract"
+    );
     expect(
       manifest.resources.find(
         (resource: { uri: string; computed?: boolean }) =>
           resource.uri === "visp-hyper://current/context-freshness"
+      )?.computed
+    ).toBe(true);
+    expect(
+      manifest.resources.find(
+        (resource: { uri: string; computed?: boolean }) =>
+          resource.uri === "visp-hyper://current/kit-read-contract"
       )?.computed
     ).toBe(true);
     expect(manifest.prompts.map((prompt: { name: string }) => prompt.name)).toEqual([

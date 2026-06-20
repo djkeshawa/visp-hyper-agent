@@ -86,6 +86,7 @@ Resources:
 
 - `visp-hyper://meta/surface-manifest`
 - `visp-hyper://current/context-freshness`
+- `visp-hyper://current/kit-read-contract`
 - `visp-hyper://current/session`
 - `visp-hyper://current/context-pack`
 - `visp-hyper://current/context-manifest`
@@ -101,6 +102,7 @@ Resources:
 `visp-hyper://meta/surface-manifest` is always available. It declares the fixed MCP tool/resource/prompt surface, per-tool input schema hashes, the server version, and a stable SHA-256 `surfaceHash` so MCP hosts and enterprise reviewers can detect unexpected surface drift.
 It also hashes each tool output schema, making text-only regressions and schema drift visible to integration checks.
 `visp-hyper://current/context-freshness` is also always available. It reports the active context pack and grounded Kit artifact freshness as JSON, including `status`, `blocking`, hashes, warnings, and any finding that should stop a coding agent before it drifts.
+`visp-hyper://current/kit-read-contract` is always available too. When a Kit `1.3` handoff is active, it returns the adopted artifact roles, MIME types, required stages, and freshness policy; otherwise it returns an explicit `unavailable` status.
 
 Prompts:
 

@@ -29,6 +29,12 @@ export const requiredResourceReads: readonly HandoffResource[] = [
     source: "computed"
   },
   {
+    uri: "visp-hyper://current/kit-read-contract",
+    title: "Current Kit Read Contract",
+    mimeType: "application/json",
+    source: "computed"
+  },
+  {
     path: ".visp/hyper/current/memory-pack.md",
     uri: "visp-hyper://current/memory-pack",
     title: "Current Memory Pack",

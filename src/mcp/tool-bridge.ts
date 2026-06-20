@@ -411,6 +411,18 @@ const CONTEXT_FRESHNESS_RESOURCE: McpResourceDef = {
   }
 };
 
+const KIT_READ_CONTRACT_RESOURCE: McpResourceDef = {
+  uri: "visp-hyper://current/kit-read-contract",
+  name: "kit-read-contract.json",
+  title: "Current Kit Read Contract",
+  description: "Machine-readable Kit artifact read roles and freshness policy adopted into the active handoff.",
+  mimeType: "application/json",
+  annotations: {
+    audience: ["user", "assistant"],
+    priority: 1
+  }
+};
+
 const PROMPTS: McpPromptDef[] = [
   {
     name: "hyper_resume",
@@ -511,7 +523,11 @@ function toolDefs(): McpToolDef[] {
 }
 
 async function resourceDefs(projectPath: string): Promise<McpResourceDef[]> {
-  const defs: McpResourceDef[] = [SURFACE_MANIFEST_RESOURCE, CONTEXT_FRESHNESS_RESOURCE];
+  const defs: McpResourceDef[] = [
+    SURFACE_MANIFEST_RESOURCE,
+    CONTEXT_FRESHNESS_RESOURCE,
+    KIT_READ_CONTRACT_RESOURCE
+  ];
   for (const spec of RESOURCE_SPECS) {
     const content = await readTextIfExists(vispPath(projectPath, ...spec.path));
     if (content === undefined) {
@@ -546,6 +562,10 @@ async function readResource(projectPath: string, uri: string): Promise<McpResour
         2
       )}\n`
     };
+  }
+
+  if (uri === KIT_READ_CONTRACT_RESOURCE.uri) {
+    return readKitReadContractResource(projectPath, uri);
   }
 
   const spec = RESOURCE_SPECS.find((candidate) => candidate.uri === uri);
@@ -605,6 +625,10 @@ function buildSurfaceManifest(): object {
         ...CONTEXT_FRESHNESS_RESOURCE,
         computed: true
       },
+      {
+        ...KIT_READ_CONTRACT_RESOURCE,
+        computed: true
+      },
       ...RESOURCE_SPECS.map((resource) => ({
         uri: resource.uri,
         name: resource.name,
@@ -637,6 +661,82 @@ function buildSurfaceManifest(): object {
     surfaceHashAlgorithm: "sha256",
     surfaceHash: hashStable(surface),
     ...surface
+  };
+}
+
+async function readKitReadContractResource(projectPath: string, uri: string): Promise<McpResourceContent> {
+  const generatedAt = new Date().toISOString();
+  const manifestText = await readTextIfExists(vispPath(projectPath, "hyper", "current", "context-manifest.json"));
+  if (!manifestText) {
+    return {
+      uri,
+      mimeType: KIT_READ_CONTRACT_RESOURCE.mimeType,
+      text: `${JSON.stringify(
+        {
+          version: "0.1",
+          generatedAt,
+          status: "unavailable",
+          reason: "context manifest is missing; run `visp-hyper run \"<goal>\"` to create the active handoff"
+        },
+        null,
+        2
+      )}\n`
+    };
+  }
+
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(manifestText);
+  } catch {
+    return {
+      uri,
+      mimeType: KIT_READ_CONTRACT_RESOURCE.mimeType,
+      text: `${JSON.stringify(
+        {
+          version: "0.1",
+          generatedAt,
+          status: "error",
+          reason: "context manifest is unreadable; regenerate with `visp-hyper run \"<goal>\"`"
+        },
+        null,
+        2
+      )}\n`
+    };
+  }
+
+  const kitReadContract = manifest && typeof manifest === "object"
+    ? (manifest as Record<string, unknown>).kitReadContract
+    : undefined;
+  if (!kitReadContract || typeof kitReadContract !== "object") {
+    return {
+      uri,
+      mimeType: KIT_READ_CONTRACT_RESOURCE.mimeType,
+      text: `${JSON.stringify(
+        {
+          version: "0.1",
+          generatedAt,
+          status: "unavailable",
+          reason: "active context manifest has no Kit read contract; rerun with a Visp Kit that advertises integration contract 1.3"
+        },
+        null,
+        2
+      )}\n`
+    };
+  }
+
+  return {
+    uri,
+    mimeType: KIT_READ_CONTRACT_RESOURCE.mimeType,
+    text: `${JSON.stringify(
+      {
+        version: "0.1",
+        generatedAt,
+        ...kitReadContract,
+        status: "available"
+      },
+      null,
+      2
+    )}\n`
   };
 }
 
