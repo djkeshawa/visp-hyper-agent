@@ -62,11 +62,19 @@ const kitContextFileSchema = z
   })
   .passthrough();
 
+const kitArtifactProvenanceSchema = z.object({
+  label: z.string(),
+  path: z.string(),
+  hash: z.string(),
+  hashAlgorithm: z.literal("sha256")
+});
+
 export const kitContextPackSchema = z
   .object({
     taskId: z.string().optional(),
     files: z.array(kitContextFileSchema).optional(),
     includedFiles: z.array(kitContextFileSchema).optional(),
+    artifactProvenance: z.array(kitArtifactProvenanceSchema).optional(),
     rules: z.array(z.string()).optional(),
     validationCommands: z.array(z.string()).optional()
   })

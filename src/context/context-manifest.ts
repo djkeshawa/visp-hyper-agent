@@ -7,6 +7,7 @@ export type BuildContextManifestInput = {
   contextSource: string;
   taskId?: string;
   contextArtifact?: ContextManifest["contextArtifact"];
+  artifactProvenance?: ContextManifest["artifactProvenance"];
   contextFiles: ContextFile[];
   validationCommands: string[];
   blockedPaths: string[];
@@ -24,6 +25,9 @@ export function buildContextManifest(input: BuildContextManifestInput): ContextM
     contextSource: input.contextSource,
     ...(input.taskId ? { taskId: input.taskId } : {}),
     ...(input.contextArtifact ? { contextArtifact: input.contextArtifact } : {}),
+    ...(input.artifactProvenance && input.artifactProvenance.length > 0
+      ? { artifactProvenance: input.artifactProvenance }
+      : {}),
     requiredReads: [...requiredReads],
     requiredResources: cloneResources(requiredResourceReads),
     selectedFiles: input.contextFiles.map((file) => ({

@@ -98,6 +98,7 @@ export async function executeStart(
     contextSource,
     taskId: adoption?.taskId,
     contextArtifact: adoption?.contextArtifact,
+    artifactProvenance: adoption?.artifactProvenance,
     contextFiles,
     validationCommands,
     blockedPaths: config.blockedPaths,
@@ -174,6 +175,13 @@ type KitAdoption = {
     hash: string;
     hashAlgorithm: "sha256";
   };
+  artifactProvenance: Array<{
+    label: string;
+    path: string;
+    hash: string;
+    hashAlgorithm: "sha256";
+    source: "visp-kit";
+  }>;
   validationCommands: string[];
   warnings: string[];
 };
@@ -214,6 +222,10 @@ async function adoptKitContextPack(projectPath: string, config: HyperConfig): Pr
       hash: artifact.sha256,
       hashAlgorithm: "sha256"
     },
+    artifactProvenance: (artifact.pack.artifactProvenance ?? []).map((entry) => ({
+      ...entry,
+      source: "visp-kit" as const
+    })),
     validationCommands: artifact.pack.validationCommands ?? [],
     warnings: [...kit.warnings, ...bridge.warnings]
   };

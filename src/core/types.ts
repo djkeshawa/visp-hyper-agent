@@ -128,6 +128,13 @@ export type ContextManifest = {
     hash: string;
     hashAlgorithm: "sha256";
   };
+  artifactProvenance?: Array<{
+    label: string;
+    path: string;
+    hash: string;
+    hashAlgorithm: "sha256";
+    source: "visp-kit";
+  }>;
   requiredReads: string[];
   requiredResources: HandoffResource[];
   selectedFiles: Array<{

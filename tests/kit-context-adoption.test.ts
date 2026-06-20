@@ -37,6 +37,14 @@ async function writeContextPack(projectPath: string): Promise<void> {
         { path: "src/feature.ts", reason: "task target", hash: "abc123" },
         { path: ".env", reason: "secrets file" }
       ],
+      artifactProvenance: [
+        {
+          label: "spec",
+          path: ".visp/features/001-x/spec.json",
+          hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          hashAlgorithm: "sha256"
+        }
+      ],
       validationCommands: ["pnpm typecheck", "pnpm test"]
     }),
     "utf8"
@@ -98,6 +106,15 @@ describe("kit context-pack adoption in start", () => {
       hashAlgorithm: "sha256"
     });
     expect(manifest.contextArtifact.hash).toHaveLength(64);
+    expect(manifest.artifactProvenance).toEqual([
+      {
+        label: "spec",
+        path: ".visp/features/001-x/spec.json",
+        hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        hashAlgorithm: "sha256",
+        source: "visp-kit"
+      }
+    ]);
     expect(manifest.selectedFiles).toEqual([
       expect.objectContaining({
         path: "src/feature.ts",
