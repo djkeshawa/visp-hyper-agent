@@ -1,12 +1,45 @@
-import type { HandoffProtocol, IntegrationSeam, SessionRecord, ToolProfile } from "../core/types.js";
+import type { HandoffProtocol, HandoffResource, IntegrationSeam, SessionRecord, ToolProfile } from "../core/types.js";
 
-export const requiredReads = [
-  ".visp/hyper/current/session.md",
-  ".visp/hyper/current/context-pack.md",
-  ".visp/hyper/current/memory-pack.md",
-  ".visp/hyper/current/quality-gates.md",
-  ".visp/hyper/current/agent-instructions.md"
+export const requiredResourceReads: readonly HandoffResource[] = [
+  {
+    path: ".visp/hyper/current/session.md",
+    uri: "visp-hyper://current/session",
+    title: "Current Session",
+    mimeType: "text/markdown"
+  },
+  {
+    path: ".visp/hyper/current/context-pack.md",
+    uri: "visp-hyper://current/context-pack",
+    title: "Current Context Pack",
+    mimeType: "text/markdown"
+  },
+  {
+    path: ".visp/hyper/current/context-manifest.json",
+    uri: "visp-hyper://current/context-manifest",
+    title: "Current Context Manifest",
+    mimeType: "application/json"
+  },
+  {
+    path: ".visp/hyper/current/memory-pack.md",
+    uri: "visp-hyper://current/memory-pack",
+    title: "Current Memory Pack",
+    mimeType: "text/markdown"
+  },
+  {
+    path: ".visp/hyper/current/quality-gates.md",
+    uri: "visp-hyper://current/quality-gates",
+    title: "Current Quality Gates",
+    mimeType: "text/markdown"
+  },
+  {
+    path: ".visp/hyper/current/agent-instructions.md",
+    uri: "visp-hyper://current/agent-instructions",
+    title: "Current Agent Instructions",
+    mimeType: "text/markdown"
+  }
 ] as const;
+
+export const requiredReads = requiredResourceReads.map((resource) => resource.path);
 
 const workflow = [
   "Read the required files.",
@@ -95,6 +128,7 @@ export function buildHandoffProtocol(session: SessionRecord): HandoffProtocol {
     toolProfileLabel: profile.label,
     profileInstructions: profile.instructions,
     requiredReads: [...requiredReads],
+    requiredResources: requiredResourceReads.map((resource) => ({ ...resource })),
     workflow,
     hardRules,
     integrationSeams,
@@ -130,6 +164,9 @@ export function renderHandoff(session: SessionRecord, options?: RenderHandoffOpt
     "required_reads:",
     ...handoff.requiredReads.map((path) => `  - ${path}`),
     "",
+    "mcp_resources:",
+    ...handoff.requiredResources.map((resource) => `  - ${resource.uri} (${resource.path})`),
+    "",
     "workflow:",
     ...handoff.workflow.map((step, index) => `  ${index + 1}. ${step}`),
     "",
@@ -146,8 +183,8 @@ export function renderHandoff(session: SessionRecord, options?: RenderHandoffOpt
     `  ${handoff.completionInstruction}`
   ];
 
-  // Only run/start pass `options`; the default (no options) output stays
-  // byte-identical so existing handoff contracts are preserved.
+  // Only run/start pass `options`; skill details stay opt-in so plain handoff
+  // rendering remains stable apart from intentional protocol fields.
   if (options) {
     const skills = options.skills ?? [];
     if (skills.length > 0) {

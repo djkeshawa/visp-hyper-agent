@@ -233,6 +233,11 @@ describe("handleMessage resources and prompts surface", () => {
       "# Context\n\n- src/feature.ts\n",
       "utf8"
     );
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "current", "context-manifest.json"),
+      "{\"version\":\"0.1\",\"sessionId\":\"vh_test\"}\n",
+      "utf8"
+    );
     const ctx = createToolContext(projectPath);
 
     const listed = (await handleMessage(ctx, {
@@ -242,6 +247,9 @@ describe("handleMessage resources and prompts surface", () => {
     })) as { result: { resources: Array<{ uri: string; name: string }> } };
     expect(listed.result.resources.map((resource) => resource.uri)).toContain(
       "visp-hyper://current/context-pack"
+    );
+    expect(listed.result.resources.map((resource) => resource.uri)).toContain(
+      "visp-hyper://current/context-manifest"
     );
 
     const read = (await handleMessage(ctx, {
@@ -254,6 +262,18 @@ describe("handleMessage resources and prompts surface", () => {
       uri: "visp-hyper://current/context-pack",
       mimeType: "text/markdown",
       text: "# Context\n\n- src/feature.ts\n"
+    });
+
+    const manifestRead = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "resources/read",
+      params: { uri: "visp-hyper://current/context-manifest" }
+    })) as { result: { contents: Array<{ uri: string; mimeType: string; text: string }> } };
+    expect(manifestRead.result.contents[0]).toMatchObject({
+      uri: "visp-hyper://current/context-manifest",
+      mimeType: "application/json",
+      text: "{\"version\":\"0.1\",\"sessionId\":\"vh_test\"}\n"
     });
   });
 

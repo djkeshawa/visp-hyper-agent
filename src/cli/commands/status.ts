@@ -6,6 +6,7 @@ import { resolveProjectPath } from "./shared.js";
 const generatedFiles = [
   "session.md",
   "context-pack.md",
+  "context-manifest.json",
   "memory-pack.md",
   "quality-gates.md",
   "agent-instructions.md",

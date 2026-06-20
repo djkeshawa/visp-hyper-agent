@@ -278,6 +278,14 @@ const RESOURCE_SPECS: ResourceSpec[] = [
     path: ["hyper", "current", "context-pack.md"]
   },
   {
+    uri: "visp-hyper://current/context-manifest",
+    name: "context-manifest.json",
+    title: "Current Context Manifest",
+    description: "Machine-readable required reads, MCP resources, files, validation, and failure-pattern context.",
+    mimeType: "application/json",
+    path: ["hyper", "current", "context-manifest.json"]
+  },
+  {
     uri: "visp-hyper://current/memory-pack",
     name: "memory-pack.md",
     title: "Current Memory Pack",

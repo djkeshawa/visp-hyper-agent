@@ -54,6 +54,7 @@ describe("session control commands", () => {
 
     const status = logs.join("\n");
     expect(status).toContain("Generated files: session.md");
+    expect(status).toContain("context-manifest.json");
     expect(status).toContain("Last checkpoint: missing");
     expect(status).toContain("Last review: missing");
     expect(status).toContain("Memory: not remembered");

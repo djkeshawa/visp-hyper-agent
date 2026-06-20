@@ -8,6 +8,7 @@ import { initializeProject } from "../src/core/session-manager.js";
 const requiredCurrentFiles = [
   "session.md",
   "context-pack.md",
+  "context-manifest.json",
   "memory-pack.md",
   "quality-gates.md",
   "agent-instructions.md",
@@ -60,9 +61,14 @@ describe("local session workflow", () => {
 
     const stdout = logs.join("\n");
     const handoff = JSON.parse(await readFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "utf8"));
+    const manifest = JSON.parse(
+      await readFile(join(projectPath, ".visp", "hyper", "current", "context-manifest.json"), "utf8")
+    );
 
     expect(stdout).toContain("BEGIN_VISP_AGENT_HANDOFF");
     expect(stdout).toContain("completion_instruction:");
+    expect(stdout).toContain("mcp_resources:");
+    expect(stdout).toContain("visp-hyper://current/context-manifest");
     expect(stdout).toContain(`session_id: ${handoff.sessionId}`);
     expect(stdout).toContain(`goal: ${handoff.goal}`);
     expect(stdout).toContain(`tool_profile: ${handoff.toolProfile}`);
@@ -80,9 +86,26 @@ describe("local session workflow", () => {
     expect(handoff.requiredReads).toEqual([
       ".visp/hyper/current/session.md",
       ".visp/hyper/current/context-pack.md",
+      ".visp/hyper/current/context-manifest.json",
       ".visp/hyper/current/memory-pack.md",
       ".visp/hyper/current/quality-gates.md",
       ".visp/hyper/current/agent-instructions.md"
     ]);
+    expect(handoff.requiredResources.map((resource: { uri: string }) => resource.uri)).toContain(
+      "visp-hyper://current/context-manifest"
+    );
+    expect(manifest).toMatchObject({
+      version: "0.1",
+      sessionId: handoff.sessionId,
+      goal: "implement offline note sync",
+      toolProfile: "codex",
+      contextSource: "visp-hyper relevance scanner",
+      nextCommand: "visp-hyper next"
+    });
+    expect(manifest.requiredReads).toEqual(handoff.requiredReads);
+    expect(manifest.requiredResources.map((resource: { uri: string }) => resource.uri)).toContain(
+      "visp-hyper://current/context-manifest"
+    );
+    expect(manifest.selectedFiles.length).toBeGreaterThan(0);
   });
 });

@@ -83,6 +83,19 @@ describe("kit context-pack adoption in start", () => {
 
     const handoff = JSON.parse(await readFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "utf8"));
     expect(handoff.session.relevantFiles).toEqual(["src/feature.ts"]);
+
+    const manifest = JSON.parse(
+      await readFile(join(projectPath, ".visp", "hyper", "current", "context-manifest.json"), "utf8")
+    );
+    expect(manifest).toMatchObject({
+      contextSource: "visp-kit context pack (T009)",
+      taskId: "T009",
+      validationCommands: ["pnpm typecheck", "pnpm test"],
+      nextCommand: "visp-hyper checkpoint --task T009"
+    });
+    expect(manifest.selectedFiles).toEqual([
+      expect.objectContaining({ path: "src/feature.ts", reason: "task target", hasContent: true })
+    ]);
   });
 
   it("AC008: falls back to the scanner with byte-identical output when visp is not on PATH", async () => {

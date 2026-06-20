@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Command, Option } from "commander";
+import { buildContextManifest, renderContextManifest } from "../../context/context-manifest.js";
 import { scanRelevantFiles } from "../../context/relevance-scanner.js";
 import { vispPath, writeText } from "../../core/fs-utils.js";
 import { createSession, initializeProject, readConfig } from "../../core/session-manager.js";
@@ -73,6 +74,8 @@ export async function executeStart(
   const contextOptions: ContextPackOptions = adoption
     ? { source: adoption.source, validationCommands: adoption.validationCommands }
     : {};
+  const contextSource = contextOptions.source ?? "visp-hyper relevance scanner";
+  const validationCommands = contextOptions.validationCommands ?? [];
   const contextKit = adoption ? { ...kit, warnings: [...kit.warnings, ...adoption.warnings] } : kit;
   const failurePatterns = await readRelevantFailurePatterns(projectPath, {
     goal,
@@ -90,11 +93,25 @@ export async function executeStart(
     skills: registry.skills.map((skill) => ({ name: skill.name, whenToUse: skill.whenToUse }))
   });
   const protocol = buildHandoffProtocol(session);
+  const contextManifest = buildContextManifest({
+    session,
+    contextSource,
+    taskId: adoption?.taskId,
+    contextFiles,
+    validationCommands,
+    blockedPaths: config.blockedPaths,
+    failurePatterns,
+    nextCommand: adoption?.taskId ? `visp-hyper checkpoint --task ${adoption.taskId}` : "visp-hyper next"
+  });
 
   await writeText(vispPath(projectPath, "hyper", "current", "session.md"), renderSession(session));
   await writeText(
     vispPath(projectPath, "hyper", "current", "context-pack.md"),
     renderContextPack(contextFiles, contextKit, contextOptions)
+  );
+  await writeText(
+    vispPath(projectPath, "hyper", "current", "context-manifest.json"),
+    renderContextManifest(contextManifest)
   );
   await writeText(
     vispPath(projectPath, "hyper", "current", "memory-pack.md"),

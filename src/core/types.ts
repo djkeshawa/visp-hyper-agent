@@ -59,11 +59,19 @@ export type HandoffProtocol = {
   toolProfileLabel: string;
   profileInstructions: string[];
   requiredReads: string[];
+  requiredResources: HandoffResource[];
   workflow: string[];
   hardRules: string[];
   integrationSeams: IntegrationSeam[];
   nextInstruction: string;
   completionInstruction: string;
+};
+
+export type HandoffResource = {
+  path: string;
+  uri: string;
+  title: string;
+  mimeType: string;
 };
 
 export type IntegrationSeam = {
@@ -102,6 +110,35 @@ export type ContextFile = {
 export type ContextPackOptions = {
   source?: string;
   validationCommands?: string[];
+};
+
+export type ContextManifest = {
+  version: "0.1";
+  sessionId: string;
+  goal: string;
+  toolProfile: ToolProfile;
+  generatedAt: string;
+  contextSource: string;
+  taskId?: string;
+  requiredReads: string[];
+  requiredResources: HandoffResource[];
+  selectedFiles: Array<{
+    path: string;
+    reason: string;
+    hasContent: boolean;
+  }>;
+  validationCommands: string[];
+  blockedPaths: string[];
+  failurePatterns: Array<{
+    id: string;
+    taskId: string;
+    taskClass: string;
+    source: "kit" | "local";
+    occurrences: number;
+    relatedFiles: string[];
+    findings: string[];
+  }>;
+  nextCommand: string;
 };
 
 export type RecallOptions = {

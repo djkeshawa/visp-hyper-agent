@@ -20,6 +20,9 @@ describe("renderHandoff", () => {
     expect(handoff).toContain("BEGIN_VISP_AGENT_HANDOFF");
     expect(handoff).toContain("session_id: vh_test");
     expect(handoff).toContain(".visp/hyper/current/context-pack.md");
+    expect(handoff).toContain(".visp/hyper/current/context-manifest.json");
+    expect(handoff).toContain("mcp_resources:");
+    expect(handoff).toContain("visp-hyper://current/context-manifest");
     expect(handoff).toContain("completion_instruction:");
     expect(handoff).toContain("tool_profile_label: Codex");
     expect(handoff).toContain("profile_instructions:");
@@ -54,6 +57,12 @@ describe("renderHandoff", () => {
     expect(handoff).toContain(`session_id: ${protocol.sessionId}`);
     expect(handoff).toContain(`tool_profile: ${protocol.toolProfile}`);
     expect(protocol.requiredReads).toContain(".visp/hyper/current/agent-instructions.md");
+    expect(protocol.requiredResources).toContainEqual(
+      expect.objectContaining({
+        path: ".visp/hyper/current/context-manifest.json",
+        uri: "visp-hyper://current/context-manifest"
+      })
+    );
     expect(protocol.workflow).toHaveLength(8);
     expect(protocol.hardRules).toHaveLength(6);
     expect(protocol.integrationSeams.map((seam) => seam.id)).toEqual(

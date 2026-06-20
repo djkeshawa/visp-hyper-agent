@@ -78,6 +78,7 @@ Proceed on items below **only in response to inbound demand/issues**; otherwise 
 and re-plan from what the downloads and writeup reception say.
 9. Richer resume deltas — `visp-hyper resume` now reprints the handoff, required
    read status, latest checkpoint, current task action, and git diff file list;
+   `context-manifest.json` now gives tools a structured read/resource contract;
    the next step is exact checkpoint-to-current diffing if users ask for it.
 10. `visp-hyper doctor` — one-command validation of the enforcement chain.
 11. Hardening: live-binary contract tests against pinned visp-kit in CI, telemetry/

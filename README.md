@@ -49,7 +49,7 @@ visp-hyper remember --summary "Implemented offline note sync"
 |---|---|
 | `visp-hyper init [--tool <tool>] [--force-assets] [--with-hooks]` | Creates `.visp/hyper/` config and state. With `--tool` it also installs native assets for that coding tool (subagent fleet, slash commands, instructions) and, for `claude-code` projects with a real Visp Kit, surfaces or installs the `visp hooks claude` PreToolUse gate. |
 | `visp-hyper run "<goal>" [--tool <tool>]` | The one-command pipeline. In a Visp Kit project: validates policy, evaluates gates, and prints either a per-task handoff + bounded action block, or a `BEGIN_VISP_PIPELINE_BLOCKED` block naming the exact next allowed `visp` command. Kit-less projects get the plain `start` behavior. |
-| `visp-hyper start "<goal>" [--tool <tool>]` | Starts a guided session, writes the session files, and prints `BEGIN_VISP_AGENT_HANDOFF`. Prefers the active Visp Kit task's context pack; falls back to the deterministic relevance scanner. Fuses recalled llm-memory entries into the memory pack when enabled. |
+| `visp-hyper start "<goal>" [--tool <tool>]` | Starts a guided session, writes the session files, and prints `BEGIN_VISP_AGENT_HANDOFF`. Prefers the active Visp Kit task's context pack; falls back to the deterministic relevance scanner. Writes `context-manifest.json` as the machine-readable contract for required reads, MCP resources, selected files, validation commands, and known failure patterns. Fuses recalled llm-memory entries into the memory pack when enabled. |
 | `visp-hyper next` | Prints the next bounded action: the current pipeline task's action block (with model-routing advice) when a task DAG is active, otherwise the generic next-step block. |
 | `visp-hyper resume [--json]` | Reprints the active handoff, current task action, required read status, latest checkpoint, and current git diff file list after a context reset. |
 | `visp-hyper checkpoint [--task <id>] [--tier <tier>]` | Appends git diff evidence to `checkpoints.md`. With `--task`: runs Visp Kit verify + review through the bridge, records the attempt in telemetry, and advances the pipeline only when both pass. Failures escalate model routing and quarantine the task class. |
@@ -79,7 +79,12 @@ Tools:
 
 Resources:
 
+- `visp-hyper://current/session`
 - `visp-hyper://current/context-pack`
+- `visp-hyper://current/context-manifest`
+- `visp-hyper://current/memory-pack`
+- `visp-hyper://current/quality-gates`
+- `visp-hyper://current/agent-instructions`
 - `visp-hyper://current/handoff-json`
 - `visp-hyper://current/checkpoints`
 - `visp-hyper://current/review-report`
@@ -216,8 +221,9 @@ Runtime files:
     skills.json          # installed-skill registry
     skill-proposals/     # incoming/ staged/ rejected/
     current/
-      session.md  context-pack.md  memory-pack.md  quality-gates.md
-      agent-instructions.md  handoff.json  checkpoints.md  review-report.md
+      session.md  context-pack.md  context-manifest.json  memory-pack.md
+      quality-gates.md  agent-instructions.md  handoff.json
+      checkpoints.md  review-report.md
   memory/
     project-summary.md  architecture-decisions.md  known-risks.md
     session-history/
@@ -252,7 +258,7 @@ Supported profiles: `generic`, `codex`, `claude-code`, `copilot`, `opencode`.
 
 ## Roadmap
 
-- Exact checkpoint-to-current resume deltas and richer MCP resource annotations.
+- Exact checkpoint-to-current resume deltas.
 - ArcadeDB-backed semantic recall behind the `SemanticMemoryProvider` seam.
 - Cross-project telemetry and skill sharing.
 
