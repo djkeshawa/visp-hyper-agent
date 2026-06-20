@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Command, Option } from "commander";
 import { packageVersion } from "../../core/package-version.js";
@@ -408,11 +409,25 @@ async function checkMcp(projectPath: string): Promise<DoctorCheck> {
         detail: "MCP surface manifest is missing a valid sha256 surface hash."
       };
     }
+    const toolsResponse = await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/list"
+    }) as { result?: { tools?: unknown[] } } | null;
+    const contractProblem = validateMcpToolContracts(manifest.tools, toolsResponse?.result?.tools);
+    if (contractProblem) {
+      return {
+        id: "mcp",
+        label: "MCP server",
+        status: "fail",
+        detail: contractProblem
+      };
+    }
     return {
       id: "mcp",
       label: "MCP server",
       status: "pass",
-      detail: `MCP initialize responds with version ${version}; surface hash ${surfaceHash.slice(0, 12)} covers ${manifest.tools?.length ?? 0} tools.`
+      detail: `MCP initialize responds with version ${version}; surface hash ${surfaceHash.slice(0, 12)} covers ${manifest.tools?.length ?? 0} tools with input/output schemas.`
     };
   } catch (error) {
     return {
@@ -442,6 +457,92 @@ function parseSurfaceManifest(text: string | undefined): {
   } catch {
     return null;
   }
+}
+
+function validateMcpToolContracts(manifestTools: unknown[] | undefined, listedTools: unknown[] | undefined): string | null {
+  if (!Array.isArray(manifestTools) || manifestTools.length === 0) {
+    return "MCP surface manifest does not list any tools.";
+  }
+  if (!Array.isArray(listedTools) || listedTools.length === 0) {
+    return "MCP tools/list did not return any tools.";
+  }
+
+  const listedByName = new Map<string, Record<string, unknown>>();
+  for (const tool of listedTools) {
+    if (!tool || typeof tool !== "object") {
+      return "MCP tools/list returned a malformed tool entry.";
+    }
+    const record = tool as Record<string, unknown>;
+    if (typeof record.name !== "string" || record.name.length === 0) {
+      return "MCP tools/list returned a tool without a valid name.";
+    }
+    listedByName.set(record.name, record);
+  }
+
+  for (const tool of manifestTools) {
+    if (!tool || typeof tool !== "object") {
+      return "MCP surface manifest contains a malformed tool entry.";
+    }
+    const record = tool as Record<string, unknown>;
+    if (typeof record.name !== "string" || record.name.length === 0) {
+      return "MCP surface manifest contains a tool without a valid name.";
+    }
+    if (!isSha256(record.inputSchemaHash) || !isSha256(record.outputSchemaHash)) {
+      return `MCP surface manifest tool ${record.name} is missing valid input/output schema hashes.`;
+    }
+    const listed = listedByName.get(record.name);
+    if (!listed) {
+      return `MCP surface manifest tool ${record.name} is not advertised by tools/list.`;
+    }
+    if (!listed.inputSchema || typeof listed.inputSchema !== "object") {
+      return `MCP tool ${record.name} does not advertise an input schema.`;
+    }
+    if (!listed.outputSchema || typeof listed.outputSchema !== "object") {
+      return `MCP tool ${record.name} does not advertise an output schema.`;
+    }
+    if (hashStable(listed.inputSchema) !== record.inputSchemaHash) {
+      return `MCP tool ${record.name} input schema hash does not match the surface manifest.`;
+    }
+    if (hashStable(listed.outputSchema) !== record.outputSchemaHash) {
+      return `MCP tool ${record.name} output schema hash does not match the surface manifest.`;
+    }
+  }
+
+  const manifestNames = new Set(
+    manifestTools
+      .filter((tool): tool is Record<string, unknown> => Boolean(tool) && typeof tool === "object")
+      .map((tool) => tool.name)
+      .filter((name): name is string => typeof name === "string")
+  );
+  for (const name of listedByName.keys()) {
+    if (!manifestNames.has(name)) {
+      return `MCP tools/list advertises ${name}, but the surface manifest does not include it.`;
+    }
+  }
+
+  return null;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+}
+
+function hashStable(value: unknown): string {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 async function checkGitHook(projectPath: string): Promise<DoctorCheck> {
