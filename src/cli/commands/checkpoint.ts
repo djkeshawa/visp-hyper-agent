@@ -7,6 +7,7 @@ import { getActiveSession, readConfig, readState, updateActiveSession } from "..
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import type { KitReviewSummary, KitVerifySummary } from "../../kit/kit-schemas.js";
 import { recordFailurePattern } from "../../memory/failure-patterns.js";
+import { createCheckpointSnapshot, writeCheckpointSnapshot } from "../../quality/checkpoint-snapshot.js";
 import { collectLocalEvidence } from "../../quality/local-evidence.js";
 import { harvestSkillProposals } from "./remember.js";
 import { advance, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
@@ -38,7 +39,7 @@ export function checkpointCommand(): Command {
         throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
       }
 
-      await writeCheckpointMarkdown(projectPath, session.id, session.goal);
+      await writeCheckpointMarkdown(projectPath, session.id, session.goal, options.task);
 
       if (!options.task) {
         console.log("Checkpoint written to .visp/hyper/current/checkpoints.md");
@@ -281,16 +282,23 @@ function stringifyFinding(value: unknown): string {
   return JSON.stringify(value) ?? String(value);
 }
 
-async function writeCheckpointMarkdown(projectPath: string, sessionId: string, goal: string): Promise<void> {
-  const [{ stdout: stat }, { stdout: names }] = await Promise.all([
+async function writeCheckpointMarkdown(
+  projectPath: string,
+  sessionId: string,
+  goal: string,
+  taskId?: string
+): Promise<void> {
+  const [{ stdout: stat }, snapshot] = await Promise.all([
     execFileAsync("git", ["diff", "--stat", "HEAD"], { cwd: projectPath }),
-    execFileAsync("git", ["diff", "--name-only", "HEAD"], { cwd: projectPath })
+    createCheckpointSnapshot(projectPath, { sessionId, goal, taskId })
   ]);
+  const files = snapshot.files.map((file) => file.path);
   const content = [
-    `## Checkpoint ${new Date().toISOString()}`,
+    `## Checkpoint ${snapshot.checkpointAt}`,
     "",
     `Session: ${sessionId}`,
     `Goal: ${goal}`,
+    ...(taskId ? [`Task: ${taskId}`] : []),
     "",
     "## Git Diff Stat",
     "",
@@ -298,10 +306,19 @@ async function writeCheckpointMarkdown(projectPath: string, sessionId: string, g
     "",
     "## Changed Files",
     "",
-    ...(names.trim() ? names.trim().split("\n").map((file) => `- ${file}`) : ["_No changed files._"]),
+    ...(files.length > 0 ? files.map((file) => `- ${file}`) : ["_No changed files._"]),
+    ...(snapshot.warnings.length > 0
+      ? [
+          "",
+          "## Snapshot Warnings",
+          "",
+          ...snapshot.warnings.map((warning) => `- ${warning}`)
+        ]
+      : []),
     ""
   ].join("\n");
   const path = vispPath(projectPath, "hyper", "current", "checkpoints.md");
   const previous = await readTextIfExists(path);
   await writeText(path, previous ? `${previous.trimEnd()}\n\n${content}` : `# Checkpoints\n\n${content}`);
+  await writeCheckpointSnapshot(projectPath, snapshot);
 }

@@ -51,7 +51,7 @@ visp-hyper remember --summary "Implemented offline note sync"
 | `visp-hyper run "<goal>" [--tool <tool>]` | The one-command pipeline. In a Visp Kit project: validates policy, evaluates gates, and prints either a per-task handoff + bounded action block, or a `BEGIN_VISP_PIPELINE_BLOCKED` block naming the exact next allowed `visp` command. Kit-less projects get the plain `start` behavior. |
 | `visp-hyper start "<goal>" [--tool <tool>]` | Starts a guided session, writes the session files, and prints `BEGIN_VISP_AGENT_HANDOFF`. Prefers the active Visp Kit task's context pack; falls back to the deterministic relevance scanner. Writes `context-manifest.json` as the machine-readable contract for required reads, MCP resources, selected files, validation commands, and known failure patterns. Fuses recalled llm-memory entries into the memory pack when enabled. |
 | `visp-hyper next` | Prints the next bounded action: the current pipeline task's action block (with model-routing advice) when a task DAG is active, otherwise the generic next-step block. |
-| `visp-hyper resume [--json]` | Reprints the active handoff, current task action, required read status, latest checkpoint, and current git diff file list after a context reset. |
+| `visp-hyper resume [--json]` | Reprints the active handoff, current task action, required read status, latest checkpoint, current git diff file list, and exact checkpoint-to-current file deltas after a context reset. |
 | `visp-hyper checkpoint [--task <id>] [--tier <tier>]` | Appends git diff evidence to `checkpoints.md`. With `--task`: runs Visp Kit verify + review through the bridge, confirms the pinned Kit context artifact has not changed since handoff, records the attempt in telemetry, and advances the pipeline only when all checks pass. Failures escalate model routing and quarantine the task class. |
 | `visp-hyper review` | Writes `review-report.md` and prints `BEGIN_VISP_REVIEW_RESULT` (deterministic path-based warnings from `git diff`). |
 | `visp-hyper remember [--summary <s>] [--decision <d>...] [--follow-up <f>...] [--used-skill <name>...] [--input-tokens <n>] [--output-tokens <n>] [--model <m>]` | Persists the session: always writes `.visp/memory/session-history/`; additionally writes to llm-memory (session record, decisions, follow-ups) when enabled, records token usage in telemetry and forwards it to `visp budget`, harvests pending skill proposals, and tracks skill usage. |
@@ -224,7 +224,7 @@ Runtime files:
     current/
       session.md  context-pack.md  context-manifest.json  memory-pack.md
       quality-gates.md  agent-instructions.md  handoff.json
-      checkpoints.md  review-report.md
+      checkpoints.md  checkpoint-snapshot.json  review-report.md
   memory/
     project-summary.md  architecture-decisions.md  known-risks.md
     session-history/
@@ -240,7 +240,7 @@ Source modules:
 - `src/routing/`, `src/telemetry/` — quality-first routing engine and its evidence stores.
 - `src/skills/` — skill proposal parsing, registry, and installer.
 - `src/install/` — tool asset installer over the versioned `templates/` directory.
-- `src/quality/` — git-diff review warnings and the allowlisted validation-command runner.
+- `src/quality/` — git-diff review warnings, checkpoint snapshots, and the allowlisted validation-command runner.
 - `src/handoff/`, `src/output/` — protocol and markdown rendering.
 
 ## Tool Profiles
@@ -259,7 +259,6 @@ Supported profiles: `generic`, `codex`, `claude-code`, `copilot`, `opencode`.
 
 ## Roadmap
 
-- Exact checkpoint-to-current resume deltas.
 - ArcadeDB-backed semantic recall behind the `SemanticMemoryProvider` seam.
 - Cross-project telemetry and skill sharing.
 

@@ -6,6 +6,7 @@ import { getActiveSession } from "../../core/session-manager.js";
 import type { SessionRecord } from "../../core/types.js";
 import { requiredReads, renderHandoff } from "../../handoff/handoff-protocol.js";
 import { buildActionBlock, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
+import { compareCurrentToCheckpoint, emptyDelta, type CheckpointDelta } from "../../quality/checkpoint-snapshot.js";
 import { contextPackPathIfExists, resolveProjectPath } from "./shared.js";
 
 const execFileAsync = promisify(execFile);
@@ -31,6 +32,7 @@ type ResumeSummary = {
   readonly artifacts: readonly ResumeFileStatus[];
   readonly latestCheckpoint: string | null;
   readonly changedFiles: readonly string[];
+  readonly checkpointDelta: CheckpointDelta;
   readonly warnings: readonly string[];
   readonly nextCommand: string;
   readonly handoff?: string;
@@ -74,27 +76,34 @@ export async function buildResumeSummary(projectPath: string): Promise<ResumeSum
       artifacts: [],
       latestCheckpoint: null,
       changedFiles: [],
+      checkpointDelta: emptyDelta(),
       warnings: ["No active Visp Hyper session."],
       nextCommand: "visp-hyper run \"<goal>\""
     };
   }
 
-  const [readStatuses, artifactStatuses, checkpointText, changed] = await Promise.all([
+  const [readStatuses, artifactStatuses, checkpointText, changed, checkpointDelta] = await Promise.all([
     fileStatuses(projectPath, requiredReads),
     fileStatuses(projectPath, artifactPaths),
     readTextIfExists(vispPath(projectPath, "hyper", "current", "checkpoints.md")),
-    changedFiles(projectPath)
+    changedFiles(projectPath),
+    compareCurrentToCheckpoint(projectPath)
   ]);
   const actionBlock = await currentActionBlock(projectPath, session);
   const handoff = await handoffText(projectPath, session);
   const warnings: string[] = [];
+  const latest = latestCheckpoint(checkpointText);
   if (readStatuses.some((status) => !status.present)) {
     warnings.push("One or more required read files are missing; run `visp-hyper run \"<goal>\"` to regenerate them.");
   }
   if (!actionBlock && session.pipeline?.currentTaskId) {
     warnings.push("Pipeline state exists, but the current task graph could not be resolved.");
   }
+  if (latest && !checkpointDelta.checkpointAt) {
+    warnings.push("Latest checkpoint has no machine-readable snapshot; run `visp-hyper checkpoint` again to enable exact resume deltas.");
+  }
   warnings.push(...changed.warnings);
+  warnings.push(...checkpointDelta.warnings);
 
   return {
     success: true,
@@ -106,8 +115,9 @@ export async function buildResumeSummary(projectPath: string): Promise<ResumeSum
     completedTasks: session.pipeline?.completed ?? [],
     requiredReads: readStatuses,
     artifacts: artifactStatuses,
-    latestCheckpoint: latestCheckpoint(checkpointText),
+    latestCheckpoint: latest,
     changedFiles: changed.files,
+    checkpointDelta,
     warnings,
     nextCommand: session.pipeline?.currentTaskId
       ? `visp-hyper checkpoint --task ${session.pipeline.currentTaskId}`
@@ -142,7 +152,18 @@ function formatResumeSummary(summary: ResumeSummary): string {
     ...summary.artifacts.map((status) => `  - ${status.path}: ${status.present ? "present" : "missing"}`),
     "",
     "changed_files:",
-    ...(summary.changedFiles.length > 0 ? summary.changedFiles.map((file) => `  - ${file}`) : ["  - none"])
+    ...(summary.changedFiles.length > 0 ? summary.changedFiles.map((file) => `  - ${file}`) : ["  - none"]),
+    "",
+    "checkpoint_delta:",
+    `  snapshot: ${summary.checkpointDelta.checkpointAt ?? "missing"}`,
+    "  added_since_checkpoint:",
+    ...formatFileList(summary.checkpointDelta.addedSinceCheckpoint, "    "),
+    "  changed_since_checkpoint:",
+    ...formatFileList(summary.checkpointDelta.changedSinceCheckpoint, "    "),
+    "  cleared_since_checkpoint:",
+    ...formatFileList(summary.checkpointDelta.clearedSinceCheckpoint, "    "),
+    "  unchanged_since_checkpoint:",
+    ...formatFileList(summary.checkpointDelta.unchangedSinceCheckpoint, "    ")
   ];
 
   if (summary.completedTasks && summary.completedTasks.length > 0) {
@@ -163,6 +184,10 @@ function formatResumeSummary(summary: ResumeSummary): string {
   }
 
   return lines.join("\n");
+}
+
+function formatFileList(files: readonly string[], indent: string): string[] {
+  return files.length > 0 ? files.map((file) => `${indent}- ${file}`) : [`${indent}- none`];
 }
 
 async function fileStatuses(projectPath: string, paths: readonly string[]): Promise<ResumeFileStatus[]> {

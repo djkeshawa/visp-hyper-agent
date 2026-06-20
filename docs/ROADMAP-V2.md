@@ -80,7 +80,8 @@ and re-plan from what the downloads and writeup reception say.
    read status, latest checkpoint, current task action, and git diff file list;
    `context-manifest.json` now gives tools a structured read/resource contract
    and pins the adopted Kit context artifact hash for checkpoint freshness checks;
-   the next step is exact checkpoint-to-current diffing if users ask for it.
+   checkpoint snapshots now let resume report exact added/changed/cleared/unchanged
+   file deltas since the latest checkpoint.
 10. `visp-hyper doctor` — one-command validation of the enforcement chain.
 11. Hardening: live-binary contract tests against pinned visp-kit in CI, telemetry/
     registry pruning, Windows audit.

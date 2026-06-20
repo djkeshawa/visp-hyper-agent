@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -77,9 +77,35 @@ describe("CLI workflow", () => {
     expect(output).toContain("BEGIN_VISP_AGENT_HANDOFF");
     expect(output).toContain(".visp/hyper/current/context-pack.md: present");
     expect(output).toContain("latest_checkpoint:");
+    expect(output).toContain("checkpoint_delta:");
+    expect(output).toContain("unchanged_since_checkpoint:");
     expect(output).toContain("src/feature.ts");
     expect(output).toContain("src/new-file.ts");
     expect(output).toContain("next: visp-hyper next");
+  });
+
+  it("reports exact file deltas since the latest checkpoint", async () => {
+    const projectPath = await createProject();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => logs.push(String(message)));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement feature", "--tool", "codex"]);
+    await writeFile(join(projectPath, "src", "feature.ts"), "export const value = 4;\n", "utf8");
+    await writeFile(join(projectPath, "src", "new-file.ts"), "export const created = true;\n", "utf8");
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint"]);
+
+    await writeFile(join(projectPath, "src", "feature.ts"), "export const value = 5;\n", "utf8");
+    await writeFile(join(projectPath, "src", "after-checkpoint.ts"), "export const later = true;\n", "utf8");
+    await rm(join(projectPath, "src", "new-file.ts"));
+
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", projectPath, "resume", "--json"]);
+
+    const summary = JSON.parse(logs.join("\n"));
+    expect(summary.checkpointDelta.addedSinceCheckpoint).toContain("src/after-checkpoint.ts");
+    expect(summary.checkpointDelta.changedSinceCheckpoint).toContain("src/feature.ts");
+    expect(summary.checkpointDelta.clearedSinceCheckpoint).toContain("src/new-file.ts");
+    expect(summary.checkpointDelta.unchangedSinceCheckpoint).not.toContain("src/feature.ts");
   });
 
   it("rejects unsupported tool values", async () => {
