@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { runCli } from "../cli/index.js";
 import type { McpBridge } from "../core/types.js";
 import { packageVersion } from "../core/package-version.js";
@@ -258,6 +259,7 @@ const SPEC_BY_NAME = new Map(TOOL_SPECS.map((spec) => [spec.name, spec]));
 
 type ResourceSpec = McpResourceDef & {
   path: string[];
+  priority?: number;
 };
 
 const RESOURCE_SPECS: ResourceSpec[] = [
@@ -267,7 +269,8 @@ const RESOURCE_SPECS: ResourceSpec[] = [
     title: "Current Session",
     description: "Human-readable current session summary.",
     mimeType: "text/markdown",
-    path: ["hyper", "current", "session.md"]
+    path: ["hyper", "current", "session.md"],
+    priority: 0.8
   },
   {
     uri: "visp-hyper://current/context-pack",
@@ -275,7 +278,8 @@ const RESOURCE_SPECS: ResourceSpec[] = [
     title: "Current Context Pack",
     description: "Task-scoped files, reasons, validation commands, and Kit warnings.",
     mimeType: "text/markdown",
-    path: ["hyper", "current", "context-pack.md"]
+    path: ["hyper", "current", "context-pack.md"],
+    priority: 1
   },
   {
     uri: "visp-hyper://current/context-manifest",
@@ -283,7 +287,8 @@ const RESOURCE_SPECS: ResourceSpec[] = [
     title: "Current Context Manifest",
     description: "Machine-readable required reads, MCP resources, files, validation, and failure-pattern context.",
     mimeType: "application/json",
-    path: ["hyper", "current", "context-manifest.json"]
+    path: ["hyper", "current", "context-manifest.json"],
+    priority: 1
   },
   {
     uri: "visp-hyper://current/memory-pack",
@@ -291,7 +296,8 @@ const RESOURCE_SPECS: ResourceSpec[] = [
     title: "Current Memory Pack",
     description: "Recalled local or llm-memory entries for the active session.",
     mimeType: "text/markdown",
-    path: ["hyper", "current", "memory-pack.md"]
+    path: ["hyper", "current", "memory-pack.md"],
+    priority: 0.7
   },
   {
     uri: "visp-hyper://current/quality-gates",
@@ -299,7 +305,8 @@ const RESOURCE_SPECS: ResourceSpec[] = [
     title: "Current Quality Gates",
     description: "Validation, review, and scope gate guidance for the active session.",
     mimeType: "text/markdown",
-    path: ["hyper", "current", "quality-gates.md"]
+    path: ["hyper", "current", "quality-gates.md"],
+    priority: 0.9
   },
   {
     uri: "visp-hyper://current/agent-instructions",
@@ -315,7 +322,8 @@ const RESOURCE_SPECS: ResourceSpec[] = [
     title: "Current Handoff JSON",
     description: "Structured handoff metadata for the active session.",
     mimeType: "application/json",
-    path: ["hyper", "current", "handoff.json"]
+    path: ["hyper", "current", "handoff.json"],
+    priority: 0.9
   },
   {
     uri: "visp-hyper://current/checkpoints",
@@ -323,7 +331,17 @@ const RESOURCE_SPECS: ResourceSpec[] = [
     title: "Current Checkpoints",
     description: "Checkpoint evidence and verify/review history for the active session.",
     mimeType: "text/markdown",
-    path: ["hyper", "current", "checkpoints.md"]
+    path: ["hyper", "current", "checkpoints.md"],
+    priority: 0.8
+  },
+  {
+    uri: "visp-hyper://current/checkpoint-snapshot",
+    name: "checkpoint-snapshot.json",
+    title: "Current Checkpoint Snapshot",
+    description: "Machine-readable hashed file snapshot captured at the latest checkpoint.",
+    mimeType: "application/json",
+    path: ["hyper", "current", "checkpoint-snapshot.json"],
+    priority: 0.8
   },
   {
     uri: "visp-hyper://current/review-report",
@@ -342,6 +360,18 @@ const RESOURCE_SPECS: ResourceSpec[] = [
     path: ["prompts", "visp-hyper-handoff.prompt.md"]
   }
 ];
+
+const SURFACE_MANIFEST_RESOURCE: McpResourceDef = {
+  uri: "visp-hyper://meta/surface-manifest",
+  name: "surface-manifest.json",
+  title: "MCP Surface Manifest",
+  description: "Stable, hashed declaration of Visp Hyper MCP tools, resources, prompts, and safety posture.",
+  mimeType: "application/json",
+  annotations: {
+    audience: ["user", "assistant"],
+    priority: 1
+  }
+};
 
 const PROMPTS: McpPromptDef[] = [
   {
@@ -442,24 +472,26 @@ function toolDefs(): McpToolDef[] {
 }
 
 async function resourceDefs(projectPath: string): Promise<McpResourceDef[]> {
-  const defs: McpResourceDef[] = [];
+  const defs: McpResourceDef[] = [SURFACE_MANIFEST_RESOURCE];
   for (const spec of RESOURCE_SPECS) {
     const content = await readTextIfExists(vispPath(projectPath, ...spec.path));
     if (content === undefined) {
       continue;
     }
-    defs.push({
-      uri: spec.uri,
-      name: spec.name,
-      title: spec.title,
-      description: spec.description,
-      mimeType: spec.mimeType
-    });
+    defs.push(resourceDefFromSpec(spec));
   }
   return defs;
 }
 
 async function readResource(projectPath: string, uri: string): Promise<McpResourceContent | null> {
+  if (uri === SURFACE_MANIFEST_RESOURCE.uri) {
+    return {
+      uri,
+      mimeType: SURFACE_MANIFEST_RESOURCE.mimeType,
+      text: `${JSON.stringify(buildSurfaceManifest(), null, 2)}\n`
+    };
+  }
+
   const spec = RESOURCE_SPECS.find((candidate) => candidate.uri === uri);
   if (!spec) {
     return null;
@@ -473,6 +505,95 @@ async function readResource(projectPath: string, uri: string): Promise<McpResour
     mimeType: spec.mimeType,
     text
   };
+}
+
+function resourceDefFromSpec(spec: ResourceSpec): McpResourceDef {
+  return {
+    uri: spec.uri,
+    name: spec.name,
+    title: spec.title,
+    description: spec.description,
+    mimeType: spec.mimeType,
+    ...(spec.priority === undefined
+      ? {}
+      : {
+          annotations: {
+            audience: ["user", "assistant"] as Array<"user" | "assistant">,
+            priority: spec.priority
+          }
+        })
+  };
+}
+
+function buildSurfaceManifest(): object {
+  const surface = {
+    protocolVersion: "2025-06-18",
+    serverInfo: { name: "visp-hyper", version: SERVER_VERSION },
+    capabilities: {
+      tools: true,
+      resources: true,
+      prompts: true,
+      sampling: false,
+      elicitation: false,
+      dynamicToolRegistration: false
+    },
+    tools: toolDefs().map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchemaHash: hashStable(tool.inputSchema)
+    })),
+    resources: [
+      SURFACE_MANIFEST_RESOURCE,
+      ...RESOURCE_SPECS.map((resource) => ({
+        uri: resource.uri,
+        name: resource.name,
+        title: resource.title,
+        mimeType: resource.mimeType,
+        description: resource.description,
+        projectLocalPath: `.visp/${resource.path.join("/")}`
+      }))
+    ],
+    prompts: PROMPTS.map((prompt) => ({
+      name: prompt.name,
+      title: prompt.title,
+      description: prompt.description,
+      arguments: prompt.arguments ?? []
+    })),
+    safetyPosture: {
+      noLlmCalls: true,
+      projectLocal: true,
+      fixedToolTable: true,
+      fixedResourceTable: true,
+      fixedPromptTable: true,
+      commandExecution: "MCP tools map to fixed local visp-hyper subcommands with typed argument validation.",
+      networkPolicy: "No network calls from the MCP bridge; invoked commands may only contact a configured local llm-memory endpoint when memoryMode is enabled."
+    }
+  };
+  return {
+    version: "0.1",
+    generatedAt: new Date().toISOString(),
+    surfaceHashAlgorithm: "sha256",
+    surfaceHash: hashStable(surface),
+    ...surface
+  };
+}
+
+function hashStable(value: unknown): string {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 async function getPrompt(

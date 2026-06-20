@@ -360,7 +360,8 @@ async function checkMemory(
 
 async function checkMcp(projectPath: string): Promise<DoctorCheck> {
   try {
-    const response = await handleMessage(createToolContext(projectPath), {
+    const ctx = createToolContext(projectPath);
+    const response = await handleMessage(ctx, {
       jsonrpc: "2.0",
       id: 1,
       method: "initialize",
@@ -375,11 +376,43 @@ async function checkMcp(projectPath: string): Promise<DoctorCheck> {
         detail: `MCP server version ${version ?? "unknown"} does not match package version ${packageVersion()}.`
       };
     }
+    const manifestResponse = await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "resources/read",
+      params: { uri: "visp-hyper://meta/surface-manifest" }
+    }) as { result?: { contents?: Array<{ text?: string }> } } | null;
+    const manifest = parseSurfaceManifest(manifestResponse?.result?.contents?.[0]?.text);
+    if (!manifest) {
+      return {
+        id: "mcp",
+        label: "MCP server",
+        status: "fail",
+        detail: "MCP initialize passed, but the surface manifest could not be read or parsed."
+      };
+    }
+    if (manifest.serverInfo?.version !== packageVersion()) {
+      return {
+        id: "mcp",
+        label: "MCP server",
+        status: "fail",
+        detail: `MCP surface manifest version ${manifest.serverInfo?.version ?? "unknown"} does not match package version ${packageVersion()}.`
+      };
+    }
+    const surfaceHash = manifest.surfaceHash;
+    if (typeof surfaceHash !== "string" || !/^[a-f0-9]{64}$/u.test(surfaceHash)) {
+      return {
+        id: "mcp",
+        label: "MCP server",
+        status: "fail",
+        detail: "MCP surface manifest is missing a valid sha256 surface hash."
+      };
+    }
     return {
       id: "mcp",
       label: "MCP server",
       status: "pass",
-      detail: `MCP initialize responds with version ${version}.`
+      detail: `MCP initialize responds with version ${version}; surface hash ${surfaceHash.slice(0, 12)} covers ${manifest.tools?.length ?? 0} tools.`
     };
   } catch (error) {
     return {
@@ -388,6 +421,26 @@ async function checkMcp(projectPath: string): Promise<DoctorCheck> {
       status: "fail",
       detail: error instanceof Error ? error.message : String(error)
     };
+  }
+}
+
+function parseSurfaceManifest(text: string | undefined): {
+  surfaceHash?: string;
+  serverInfo?: { version?: string };
+  tools?: unknown[];
+} | null {
+  if (!text) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text) as {
+      surfaceHash?: string;
+      serverInfo?: { version?: string };
+      tools?: unknown[];
+    };
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
   }
 }
 

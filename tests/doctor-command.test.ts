@@ -112,6 +112,7 @@ describe("doctor command", () => {
     expect(summary.success).toBe(true);
     expect(summary.checks.find((check) => check.id === "hyper-version")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "mcp")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "mcp")?.detail).toContain("surface hash");
     expect(summary.checks.find((check) => check.id === "kit-binary")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-contract")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("fail-closed gates");

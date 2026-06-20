@@ -140,6 +140,7 @@ The toolchain should get better at *this project* the more it's used. When a ses
 - **Context manifest**: implemented as `.visp/hyper/current/context-manifest.json`; it gives weaker agents and MCP clients one machine-readable contract for required reads, resource URIs, selected files, validation commands, blocked paths, relevant failure patterns, and the pinned Kit context artifact hash. `checkpoint --task` fails closed when that artifact changes before validation.
 - **`visp-hyper doctor`**: one command validating the whole triad — visp binary, kit init state, llm-memory server health, hook installation, tool assets freshness.
 - **Session resume protocol**: implemented as `visp-hyper resume`; it re-prints the current handoff, required read status, latest checkpoint, active task action, current git diff file list, and exact added/changed/cleared/unchanged file deltas since the latest checkpoint for cheap re-grounding after context-window resets.
+- **MCP surface manifest**: implemented as `visp-hyper://meta/surface-manifest`; it exposes a stable SHA-256 over the fixed tool/resource/prompt surface, per-tool input-schema hashes, and safety posture so MCP clients and enterprise reviewers can detect unexpected orchestration drift.
 - **Packaging for adoption**: publish `visp-hyper` to npm; document a `docker compose` (or systemd user unit) for `llm-memory serve`; quickstart that goes from zero → gated, memory-backed Claude Code session in <5 minutes.
 
 ## Sequencing & dependency notes

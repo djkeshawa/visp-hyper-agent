@@ -13,6 +13,11 @@ export type McpResourceDef = {
   title?: string;
   description?: string;
   mimeType?: string;
+  annotations?: {
+    audience?: Array<"user" | "assistant">;
+    priority?: number;
+    lastModified?: string;
+  };
 };
 
 /** The textual body returned by `resources/read`. */

@@ -238,6 +238,11 @@ describe("handleMessage resources and prompts surface", () => {
       "{\"version\":\"0.1\",\"sessionId\":\"vh_test\"}\n",
       "utf8"
     );
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "current", "checkpoint-snapshot.json"),
+      "{\"version\":\"0.1\",\"surface\":\"checkpoint\"}\n",
+      "utf8"
+    );
     const ctx = createToolContext(projectPath);
 
     const listed = (await handleMessage(ctx, {
@@ -246,10 +251,16 @@ describe("handleMessage resources and prompts surface", () => {
       method: "resources/list"
     })) as { result: { resources: Array<{ uri: string; name: string }> } };
     expect(listed.result.resources.map((resource) => resource.uri)).toContain(
+      "visp-hyper://meta/surface-manifest"
+    );
+    expect(listed.result.resources.map((resource) => resource.uri)).toContain(
       "visp-hyper://current/context-pack"
     );
     expect(listed.result.resources.map((resource) => resource.uri)).toContain(
       "visp-hyper://current/context-manifest"
+    );
+    expect(listed.result.resources.map((resource) => resource.uri)).toContain(
+      "visp-hyper://current/checkpoint-snapshot"
     );
 
     const read = (await handleMessage(ctx, {
@@ -275,6 +286,44 @@ describe("handleMessage resources and prompts surface", () => {
       mimeType: "application/json",
       text: "{\"version\":\"0.1\",\"sessionId\":\"vh_test\"}\n"
     });
+
+    const snapshotRead = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 5,
+      method: "resources/read",
+      params: { uri: "visp-hyper://current/checkpoint-snapshot" }
+    })) as { result: { contents: Array<{ uri: string; mimeType: string; text: string }> } };
+    expect(snapshotRead.result.contents[0]).toMatchObject({
+      uri: "visp-hyper://current/checkpoint-snapshot",
+      mimeType: "application/json",
+      text: "{\"version\":\"0.1\",\"surface\":\"checkpoint\"}\n"
+    });
+  });
+
+  it("surface manifest hashes the advertised MCP tools, resources, prompts, and safety posture", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-surface-"));
+    const ctx = createToolContext(projectPath);
+
+    const read = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "resources/read",
+      params: { uri: "visp-hyper://meta/surface-manifest" }
+    })) as { result: { contents: Array<{ mimeType: string; text: string }> } };
+    const manifest = JSON.parse(read.result.contents[0]?.text ?? "{}");
+
+    expect(read.result.contents[0]?.mimeType).toBe("application/json");
+    expect(manifest.surfaceHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(manifest.capabilities.dynamicToolRegistration).toBe(false);
+    expect(manifest.safetyPosture.noLlmCalls).toBe(true);
+    expect(manifest.tools.map((tool: { name: string }) => tool.name)).toContain("hyper_checkpoint");
+    expect(manifest.resources.map((resource: { uri: string }) => resource.uri)).toContain(
+      "visp-hyper://current/checkpoint-snapshot"
+    );
+    expect(manifest.prompts.map((prompt: { name: string }) => prompt.name)).toEqual([
+      "hyper_resume",
+      "hyper_run_goal"
+    ]);
   });
 
   it("resources/read rejects unknown resources", async () => {
