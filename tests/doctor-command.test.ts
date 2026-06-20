@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,6 +34,10 @@ async function writeKitArtifacts(projectPath: string): Promise<void> {
 async function writeHyperGitHook(projectPath: string): Promise<void> {
   await mkdir(join(projectPath, ".git", "hooks"), { recursive: true });
   await writeFile(join(projectPath, ".git", "hooks", "pre-commit"), "# visp-hyper-guard hook\n", "utf8");
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function prependToPath(dir: string): void {
@@ -211,6 +216,53 @@ describe("doctor command", () => {
     expect(summary.success).toBe(true);
     expect(summary.checks.find((check) => check.id === "kit-artifacts")?.status).toBe("warn");
     expect(summary.nextCommand).toContain("visp init");
+  });
+
+  it("fails when the active context artifact is stale", async () => {
+    const projectPath = await createProject();
+    const contextDir = join(projectPath, ".visp", "features", "001-demo", "context");
+    const contextPath = join(contextDir, "T001.context.json");
+    const originalContext = JSON.stringify({
+      taskId: "T001",
+      includedFiles: [{ path: "src/feature.ts", reason: "task target" }]
+    });
+    await mkdir(contextDir, { recursive: true });
+    await writeFile(contextPath, originalContext, "utf8");
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "current", "context-manifest.json"),
+      JSON.stringify({
+        version: "0.1",
+        sessionId: "vh_test",
+        contextArtifact: {
+          path: ".visp/features/001-demo/context/T001.context.json",
+          hash: sha256(originalContext),
+          hashAlgorithm: "sha256"
+        }
+      }),
+      "utf8"
+    );
+    await writeFile(
+      contextPath,
+      JSON.stringify({
+        taskId: "T001",
+        includedFiles: [{ path: "src/feature.ts", reason: "changed after handoff" }]
+      }),
+      "utf8"
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+      nextCommand: string;
+    };
+    const context = summary.checks.find((check) => check.id === "context-freshness");
+    expect(summary.success).toBe(false);
+    expect(context?.status).toBe("fail");
+    expect(context?.detail).toContain("context artifact changed since handoff");
+    expect(summary.nextCommand).toContain("visp-hyper run");
+    expect(process.exitCode).toBe(1);
   });
 
   it("fails when Kit artifacts exist but the visp binary cannot be executed", async () => {

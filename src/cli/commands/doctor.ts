@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Command, Option } from "commander";
+import { checkContextFreshness } from "../../context/context-freshness.js";
 import { packageVersion } from "../../core/package-version.js";
 import { fileExists, readTextIfExists, vispPath } from "../../core/fs-utils.js";
 import { planInstall, type ToolName } from "../../install/tool-asset-installer.js";
@@ -56,6 +57,7 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
 
   checks.push(checkPackageVersion());
   checks.push(await checkHyperInitialized(projectPath));
+  checks.push(await checkActiveContextFreshness(projectPath));
 
   const kitArtifactsPresent = await hasKitArtifacts(projectPath);
   checks.push({
@@ -116,6 +118,41 @@ async function checkHyperInitialized(projectPath: string): Promise<DoctorCheck> 
     status: "fail",
     detail: "Visp Hyper has not been initialized in this project.",
     recovery: "Run `visp-hyper init --tool <tool>`."
+  };
+}
+
+async function checkActiveContextFreshness(projectPath: string): Promise<DoctorCheck> {
+  const freshness = await checkContextFreshness(projectPath);
+  const warnings = freshness.warnings.length > 0
+    ? ` Warnings: ${freshness.warnings.join("; ")}`
+    : "";
+
+  if (freshness.blocking) {
+    return {
+      id: "context-freshness",
+      label: "Active context freshness",
+      status: "fail",
+      detail: `${freshness.finding ?? `Context freshness is ${freshness.status}.`}${warnings}`,
+      recovery: "Regenerate the handoff with `visp-hyper run \"<goal>\"`."
+    };
+  }
+
+  if (freshness.status === "current") {
+    return {
+      id: "context-freshness",
+      label: "Active context freshness",
+      status: freshness.warnings.length > 0 ? "warn" : "pass",
+      detail: freshness.warnings.length > 0
+        ? `Current context hashes are fresh, but freshness is degraded.${warnings}`
+        : "Current context artifact and provenance hashes are fresh."
+    };
+  }
+
+  return {
+    id: "context-freshness",
+    label: "Active context freshness",
+    status: "warn",
+    detail: `${freshness.warnings.join("; ") || "No active context freshness metadata is available."}`
   };
 }
 
