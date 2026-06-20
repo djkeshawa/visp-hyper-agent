@@ -135,6 +135,69 @@ describe("doctor command", () => {
     expect(argvLog).toContain('["gate","next","--json"]');
   });
 
+  it("warns when the Kit contract lacks provenance freshness support", async () => {
+    const projectPath = await createProject();
+    await writeKitArtifacts(projectPath);
+    const shim = await createVispShim({
+      status: {
+        stdout: {
+          success: true,
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo" },
+          activeTask: { id: "T001", title: "Demo task", status: "ready" }
+        }
+      },
+      integration: {
+        stdout: {
+          success: true,
+          contractVersion: "1.1",
+          kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.1" },
+          targetPath: projectPath,
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
+          activeTask: { id: "T001", title: "Demo task", status: "ready" },
+          commands: {},
+          capabilities: {
+            governance: { failClosedGates: true },
+            contextGrounding: { taskScopedContextPacks: true },
+            evidence: { verification: true, review: true, reconciliation: true },
+            enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
+          },
+          workflow: {
+            freshnessChecks: [".visp/features/<feature>/context/<task-id>.context.json"]
+          },
+          artifacts: {
+            kitSignals: [".visp/policy.json", ".visp/project.json"],
+            projectStatus: ".visp/status.json",
+            projectProfile: ".visp/project.json",
+            featureRoot: ".visp/features",
+            featureDir: ".visp/features/001-demo",
+            taskGraph: ".visp/features/001-demo/task-graph.json",
+            contextPack: ".visp/features/001-demo/context/T001.context.json",
+            contextPrompt: ".visp/features/001-demo/context/T001.prompt.md"
+          },
+          warnings: []
+        }
+      },
+      policy: { stdout: { success: true, errors: [] } },
+      gate: { stdout: { success: true, stage: "next", allowed: true, failedRules: [] } }
+    });
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+      nextCommand: string;
+    };
+    const contract = summary.checks.find((check) => check.id === "kit-contract");
+    expect(summary.success).toBe(true);
+    expect(contract?.status).toBe("warn");
+    expect(contract?.detail).toContain("does not advertise provenance freshness");
+    expect(summary.nextCommand).toContain("contract 1.2 provenance freshness");
+  });
+
   it("warns, but does not fail, when the strict Kit backend is absent", async () => {
     const projectPath = await createProject();
 

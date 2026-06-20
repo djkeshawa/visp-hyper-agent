@@ -3,6 +3,7 @@ import { readState, updateActiveSession } from "../../core/session-manager.js";
 import type { ToolProfile } from "../../core/types.js";
 import type { KitGateResult, KitStatus } from "../../kit/kit-schemas.js";
 import type { KitTask } from "../../kit/kit-schemas.js";
+import { provenanceFreshnessContractWarning } from "../../kit/kit-contract-compat.js";
 import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
 import {
   buildActionBlock,
@@ -38,6 +39,13 @@ export function runCommand(): Command {
       printWarnings(kit.warnings);
 
       const bridge = new KitCommandBridge({ projectPath });
+      const contract = await bridge.integrationContract({ quiet: true });
+      if (contract) {
+        const contractWarning = provenanceFreshnessContractWarning(contract);
+        if (contractWarning) {
+          console.log(`warning: ${contractWarning}`);
+        }
+      }
 
       const policy = await bridge.policyValidate();
       printWarnings(bridge.warnings);

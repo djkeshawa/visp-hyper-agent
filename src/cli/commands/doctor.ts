@@ -4,6 +4,7 @@ import { Command, Option } from "commander";
 import { packageVersion } from "../../core/package-version.js";
 import { fileExists, readTextIfExists, vispPath } from "../../core/fs-utils.js";
 import { planInstall, type ToolName } from "../../install/tool-asset-installer.js";
+import { provenanceFreshnessContractWarning } from "../../kit/kit-contract-compat.js";
 import { detectVisp, hasKitArtifacts, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { handleMessage } from "../../mcp/mcp-server.js";
 import { createToolContext } from "../../mcp/tool-bridge.js";
@@ -144,22 +145,29 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
 
   const contract = await bridge.integrationContract();
   addWarnings(checks, drainWarnings(bridge.warnings), "kit-contract-warning");
-  checks.push(
-    contract === null
-      ? {
-          id: "kit-contract",
-          label: "Kit integration contract",
-          status: "warn",
-          detail: "visp integration contract could not be read; falling back to legacy status and artifact probing.",
-          recovery: "Upgrade or link a Visp Kit version that supports `visp integration contract --json`."
-        }
-      : {
-          id: "kit-contract",
-          label: "Kit integration contract",
-          status: "pass",
-          detail: `Contract ${contract.contractVersion} from ${contract.kit.packageName} ${contract.kit.version}; ${formatContractCapabilities(contract)}.`
-        }
-  );
+  if (contract === null) {
+    checks.push({
+      id: "kit-contract",
+      label: "Kit integration contract",
+      status: "warn",
+      detail: "visp integration contract could not be read; falling back to legacy status and artifact probing.",
+      recovery: "Upgrade or link a Visp Kit version that supports `visp integration contract --json`."
+    });
+  } else {
+    const provenanceWarning = provenanceFreshnessContractWarning(contract);
+    checks.push({
+      id: "kit-contract",
+      label: "Kit integration contract",
+      status: provenanceWarning ? "warn" : "pass",
+      detail: [
+        `Contract ${contract.contractVersion} from ${contract.kit.packageName} ${contract.kit.version}; ${formatContractCapabilities(contract)}.`,
+        provenanceWarning
+      ].filter((line): line is string => typeof line === "string").join(" "),
+      recovery: provenanceWarning
+        ? "Upgrade or link a Visp Kit version that supports integration contract 1.2 provenance freshness."
+        : undefined
+    });
+  }
 
   const policy = await bridge.policyValidate();
   addWarnings(checks, drainWarnings(bridge.warnings), "kit-policy-warning");

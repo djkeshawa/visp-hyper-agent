@@ -163,6 +163,59 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect(pipeline.currentTaskId).toBe("T001");
   });
 
+  it("warns when strict Kit mode uses a contract without provenance freshness", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        integration: {
+          stdout: {
+            success: true,
+            contractVersion: "1.1",
+            kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.1" },
+            targetPath: projectPath,
+            initialized: true,
+            activeFeature: { id: "001", slug: "pipeline", key: FEATURE_DIR, path: `.visp/features/${FEATURE_DIR}` },
+            activeTask: { id: "T001", title: "First task", status: "ready" },
+            commands: {},
+            capabilities: {
+              governance: { failClosedGates: true },
+              contextGrounding: { taskScopedContextPacks: true },
+              evidence: { verification: true, review: true, reconciliation: true },
+              enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
+            },
+            workflow: {
+              freshnessChecks: [`.visp/features/<feature>/context/<task-id>.context.json`]
+            },
+            artifacts: {
+              kitSignals: [".visp/policy.json", ".visp/project.json"],
+              projectStatus: ".visp/status.json",
+              projectProfile: ".visp/project.json",
+              featureRoot: ".visp/features",
+              featureDir: `.visp/features/${FEATURE_DIR}`,
+              taskGraph: `.visp/features/${FEATURE_DIR}/task-graph.json`,
+              contextPack: `.visp/features/${FEATURE_DIR}/context/T001.context.json`,
+              contextPrompt: `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`
+            },
+            warnings: []
+          }
+        },
+        policy: { stdout: { success: true, errors: [] } },
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("warning: Kit integration contract 1.1 does not advertise provenance freshness");
+    expect(output).toContain("BEGIN_VISP_TASK_ACTION");
+  });
+
   it("FAIL_CLOSED: checkpoint fails when Kit provenance changes after handoff", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
