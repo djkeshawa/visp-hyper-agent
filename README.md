@@ -51,6 +51,7 @@ visp-hyper remember --summary "Implemented offline note sync"
 | `visp-hyper run "<goal>" [--tool <tool>]` | The one-command pipeline. In a Visp Kit project: validates policy, evaluates gates, and prints either a per-task handoff + bounded action block, or a `BEGIN_VISP_PIPELINE_BLOCKED` block naming the exact next allowed `visp` command. Kit-less projects get the plain `start` behavior. |
 | `visp-hyper start "<goal>" [--tool <tool>]` | Starts a guided session, writes the session files, and prints `BEGIN_VISP_AGENT_HANDOFF`. Prefers the active Visp Kit task's context pack; falls back to the deterministic relevance scanner. Fuses recalled llm-memory entries into the memory pack when enabled. |
 | `visp-hyper next` | Prints the next bounded action: the current pipeline task's action block (with model-routing advice) when a task DAG is active, otherwise the generic next-step block. |
+| `visp-hyper resume [--json]` | Reprints the active handoff, current task action, required read status, latest checkpoint, and current git diff file list after a context reset. |
 | `visp-hyper checkpoint [--task <id>] [--tier <tier>]` | Appends git diff evidence to `checkpoints.md`. With `--task`: runs Visp Kit verify + review through the bridge, records the attempt in telemetry, and advances the pipeline only when both pass. Failures escalate model routing and quarantine the task class. |
 | `visp-hyper review` | Writes `review-report.md` and prints `BEGIN_VISP_REVIEW_RESULT` (deterministic path-based warnings from `git diff`). |
 | `visp-hyper remember [--summary <s>] [--decision <d>...] [--follow-up <f>...] [--used-skill <name>...] [--input-tokens <n>] [--output-tokens <n>] [--model <m>]` | Persists the session: always writes `.visp/memory/session-history/`; additionally writes to llm-memory (session record, decisions, follow-ups) when enabled, records token usage in telemetry and forwards it to `visp budget`, harvests pending skill proposals, and tracks skill usage. |
@@ -67,6 +68,7 @@ Tools:
 - `hyper_quick`
 - `hyper_run`
 - `hyper_next`
+- `hyper_resume`
 - `hyper_status`
 - `hyper_doctor`
 - `hyper_checkpoint`
@@ -248,7 +250,7 @@ Supported profiles: `generic`, `codex`, `claude-code`, `copilot`, `opencode`.
 
 ## Roadmap
 
-- Richer MCP resources and prompts for tool-native context browsing.
+- Exact checkpoint-to-current resume deltas and richer MCP resource annotations.
 - ArcadeDB-backed semantic recall behind the `SemanticMemoryProvider` seam.
 - Cross-project telemetry and skill sharing.
 

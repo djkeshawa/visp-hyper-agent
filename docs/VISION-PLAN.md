@@ -138,7 +138,7 @@ The toolchain should get better at *this project* the more it's used. When a ses
 
 - **Failure-pattern memory**: when verify/review fails, store the failure signature as a semantic `antipattern` memory; future context packs for similar files surface it proactively (llm-memory's `memory_before_change` concept, driven from hyper).
 - **`visp-hyper doctor`**: one command validating the whole triad — visp binary, kit init state, llm-memory server health, hook installation, tool assets freshness.
-- **Session resume protocol**: `visp-hyper resume` re-prints the current task's handoff with delta context (what changed since last checkpoint) — cheap re-grounding after context-window resets, a chronic pain for long agent sessions.
+- **Session resume protocol**: implemented as `visp-hyper resume`; it re-prints the current handoff, required read status, latest checkpoint, active task action, and current git diff file list for cheap re-grounding after context-window resets.
 - **Packaging for adoption**: publish `visp-hyper` to npm; document a `docker compose` (or systemd user unit) for `llm-memory serve`; quickstart that goes from zero → gated, memory-backed Claude Code session in <5 minutes.
 
 ## Sequencing & dependency notes

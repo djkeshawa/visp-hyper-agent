@@ -9,6 +9,7 @@ import { nextCommand } from "./commands/next.js";
 import { quickCommand } from "./commands/quick.js";
 import { rememberCommand } from "./commands/remember.js";
 import { reportCommand } from "./commands/report.js";
+import { resumeCommand } from "./commands/resume.js";
 import { reviewCommand } from "./commands/review.js";
 import { runCommand } from "./commands/run.js";
 import { serveCommand } from "./commands/serve.js";
@@ -29,6 +30,7 @@ export async function runCli(argv: string[]): Promise<void> {
   program.addCommand(runCommand());
   program.addCommand(quickCommand());
   program.addCommand(nextCommand());
+  program.addCommand(resumeCommand());
   program.addCommand(statusCommand());
   program.addCommand(doctorCommand());
   program.addCommand(checkpointCommand());

@@ -59,6 +59,29 @@ describe("CLI workflow", () => {
     expect(memory).toContain("Functional workflow covered.");
   });
 
+  it("resumes an active session with handoff and current diff context", async () => {
+    const projectPath = await createProject();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => logs.push(String(message)));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement feature", "--tool", "codex"]);
+    await writeFile(join(projectPath, "src", "feature.ts"), "export const value = 3;\n", "utf8");
+    await writeFile(join(projectPath, "src", "new-file.ts"), "export const created = true;\n", "utf8");
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint"]);
+
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", projectPath, "resume"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_RESUME");
+    expect(output).toContain("BEGIN_VISP_AGENT_HANDOFF");
+    expect(output).toContain(".visp/hyper/current/context-pack.md: present");
+    expect(output).toContain("latest_checkpoint:");
+    expect(output).toContain("src/feature.ts");
+    expect(output).toContain("src/new-file.ts");
+    expect(output).toContain("next: visp-hyper next");
+  });
+
   it("rejects unsupported tool values", async () => {
     const command = startCommand();
     command.exitOverride();

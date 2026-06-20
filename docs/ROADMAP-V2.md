@@ -76,8 +76,9 @@ Contents (consolidates A1/B1/C1/C3 from the pre-debate draft):
 
 Proceed on items below **only in response to inbound demand/issues**; otherwise stop
 and re-plan from what the downloads and writeup reception say.
-9. `visp-hyper resume` — delta re-grounding after context resets (cheap, fits the
-   deterministic state design).
+9. Richer resume deltas — `visp-hyper resume` now reprints the handoff, required
+   read status, latest checkpoint, current task action, and git diff file list;
+   the next step is exact checkpoint-to-current diffing if users ask for it.
 10. `visp-hyper doctor` — one-command validation of the enforcement chain.
 11. Hardening: live-binary contract tests against pinned visp-kit in CI, telemetry/
     registry pruning, Windows audit.

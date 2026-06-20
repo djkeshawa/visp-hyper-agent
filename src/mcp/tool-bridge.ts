@@ -108,6 +108,18 @@ const TOOL_SPECS: ToolSpec[] = [
     toArgv: () => ["next"]
   },
   {
+    name: "hyper_resume",
+    description: "Reprint the active handoff plus current delta context after a context reset.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        json: { type: "boolean" }
+      }
+    },
+    validate: (args) => optional(args, "json", (v) => typeof v === "boolean", "a boolean"),
+    toArgv: (args) => (args.json === false ? ["resume"] : ["resume", "--json"])
+  },
+  {
     name: "hyper_status",
     description: "Show the active Visp Hyper session status and generated artifact state.",
     inputSchema: { type: "object", properties: {} },

@@ -355,6 +355,7 @@ describe("tool bridge execution", () => {
       "hyper_quick",
       "hyper_run",
       "hyper_next",
+      "hyper_resume",
       "hyper_status",
       "hyper_doctor",
       "hyper_checkpoint",
