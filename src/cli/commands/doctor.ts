@@ -156,7 +156,7 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
           id: "kit-contract",
           label: "Kit integration contract",
           status: "pass",
-          detail: `Contract ${contract.contractVersion} from ${contract.kit.packageName} ${contract.kit.version}.`
+          detail: `Contract ${contract.contractVersion} from ${contract.kit.packageName} ${contract.kit.version}; ${formatContractCapabilities(contract)}.`
         }
   );
 
@@ -426,6 +426,32 @@ function drainWarnings(warnings: string[]): string[] {
   const copy = [...warnings];
   warnings.length = 0;
   return copy;
+}
+
+function formatContractCapabilities(contract: {
+  capabilities?: {
+    governance?: { failClosedGates?: boolean };
+    contextGrounding?: { taskScopedContextPacks?: boolean };
+    evidence?: { verification?: boolean; review?: boolean; reconciliation?: boolean };
+    enforcementSurfaces?: { gitPreCommitHook?: boolean; ciPolicyGate?: boolean };
+  };
+}): string {
+  const capabilities = contract.capabilities;
+  if (!capabilities) {
+    return "legacy capability metadata unavailable";
+  }
+  const labels = [
+    capabilities.governance?.failClosedGates ? "fail-closed gates" : null,
+    capabilities.contextGrounding?.taskScopedContextPacks ? "task context packs" : null,
+    capabilities.evidence?.verification && capabilities.evidence.review && capabilities.evidence.reconciliation
+      ? "verify/review/reconcile"
+      : null,
+    capabilities.enforcementSurfaces?.gitPreCommitHook && capabilities.enforcementSurfaces.ciPolicyGate
+      ? "git+CI enforcement"
+      : null
+  ].filter((label): label is string => label !== null);
+
+  return labels.length > 0 ? `capabilities: ${labels.join(", ")}` : "no strict capabilities advertised";
 }
 
 function addWarnings(checks: DoctorCheck[], warnings: readonly string[], prefix: string): void {

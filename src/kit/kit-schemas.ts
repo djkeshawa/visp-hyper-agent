@@ -117,6 +117,68 @@ const kitIntegrationContractTaskSchema = z.object({
   status: z.string()
 });
 
+const kitIntegrationCapabilitiesSchema = z
+  .object({
+    deterministic: z
+      .object({
+        noLlmCalls: z.boolean().optional(),
+        localArtifacts: z.boolean().optional(),
+        jsonOutput: z.boolean().optional()
+      })
+      .optional(),
+    governance: z
+      .object({
+        policyAsCode: z.boolean().optional(),
+        failClosedGates: z.boolean().optional(),
+        overrideAuditTrail: z.boolean().optional(),
+        sourceEditsRequireImplementGate: z.boolean().optional(),
+        contextPackRequiredForImplementation: z.boolean().optional()
+      })
+      .optional(),
+    contextGrounding: z
+      .object({
+        phaseLevelArtifacts: z.boolean().optional(),
+        taskScopedContextPacks: z.boolean().optional(),
+        currentTaskPrompt: z.boolean().optional(),
+        implementationChecklist: z.boolean().optional()
+      })
+      .optional(),
+    evidence: z
+      .object({
+        verification: z.boolean().optional(),
+        review: z.boolean().optional(),
+        reconciliation: z.boolean().optional(),
+        traceability: z.boolean().optional(),
+        budgetTelemetry: z.boolean().optional(),
+        prReadiness: z.boolean().optional()
+      })
+      .optional(),
+    enforcementSurfaces: z
+      .object({
+        claudePreToolUseHook: z.boolean().optional(),
+        gitPreCommitHook: z.boolean().optional(),
+        ciPolicyGate: z.boolean().optional()
+      })
+      .optional()
+  })
+  .optional();
+
+const kitIntegrationWorkflowSchema = z
+  .object({
+    strictSequence: z.array(z.string()).optional(),
+    implementationReadSet: z.array(z.string()).optional(),
+    checkpointSequence: z.array(z.string()).optional(),
+    failClosedOn: z.array(z.string()).optional(),
+    humanOverride: z
+      .object({
+        requiresReason: z.boolean().optional(),
+        command: z.array(z.string()).optional(),
+        artifact: z.string().optional()
+      })
+      .optional()
+  })
+  .optional();
+
 export const kitIntegrationContractSchema = z
   .object({
     success: z.boolean(),
@@ -131,6 +193,8 @@ export const kitIntegrationContractSchema = z
     activeFeature: kitIntegrationContractFeatureSchema.nullable(),
     activeTask: kitIntegrationContractTaskSchema.nullable(),
     commands: z.record(z.array(z.string())),
+    capabilities: kitIntegrationCapabilitiesSchema,
+    workflow: kitIntegrationWorkflowSchema,
     artifacts: z.object({
       kitSignals: z.array(z.string()),
       projectStatus: z.string(),

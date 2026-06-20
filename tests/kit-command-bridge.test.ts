@@ -254,13 +254,24 @@ describe("KitCommandBridge", () => {
       integration: {
         stdout: {
           success: true,
-          contractVersion: "1.0",
+          contractVersion: "1.1",
           kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
           targetPath: "/repo",
           initialized: true,
           activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
           activeTask: { id: "T001", title: "Demo", status: "ready" },
           commands: { status: ["status", "--json"] },
+          capabilities: {
+            governance: { failClosedGates: true, sourceEditsRequireImplementGate: true },
+            contextGrounding: { taskScopedContextPacks: true },
+            evidence: { verification: true, review: true, reconciliation: true },
+            enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
+          },
+          workflow: {
+            strictSequence: ["status", "policyValidate", "gateNext", "context", "gateImplement"],
+            failClosedOn: ["policyValidate", "gateImplement"],
+            humanOverride: { requiresReason: true, artifact: ".visp/overrides.json" }
+          },
           artifacts: {
             kitSignals: [".visp/policy.json", ".visp/project.json"],
             projectStatus: ".visp/status.json",
@@ -279,8 +290,10 @@ describe("KitCommandBridge", () => {
 
     const contract = await bridge.integrationContract();
 
-    expect(contract?.contractVersion).toBe("1.0");
+    expect(contract?.contractVersion).toBe("1.1");
     expect(contract?.kit.version).toBe("0.1.2");
+    expect(contract?.capabilities?.governance?.failClosedGates).toBe(true);
+    expect(contract?.workflow?.failClosedOn).toContain("gateImplement");
     const argv = JSON.parse((await readFile(shim.argvLogPath, "utf8")).trim()) as string[];
     expect(argv).toEqual(["integration", "contract", "--json"]);
   });

@@ -72,13 +72,19 @@ describe("doctor command", () => {
       integration: {
         stdout: {
           success: true,
-          contractVersion: "1.0",
+          contractVersion: "1.1",
           kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
           targetPath: projectPath,
           initialized: true,
           activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
           activeTask: { id: "T001", title: "Demo task", status: "ready" },
           commands: {},
+          capabilities: {
+            governance: { failClosedGates: true },
+            contextGrounding: { taskScopedContextPacks: true },
+            evidence: { verification: true, review: true, reconciliation: true },
+            enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
+          },
           artifacts: {
             kitSignals: [".visp/policy.json", ".visp/project.json"],
             projectStatus: ".visp/status.json",
@@ -108,6 +114,8 @@ describe("doctor command", () => {
     expect(summary.checks.find((check) => check.id === "mcp")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-binary")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-contract")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("fail-closed gates");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("git+CI enforcement");
     expect(summary.checks.find((check) => check.id === "kit-policy")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-context-pack")?.detail).toContain("T001");
     expect(summary.checks.find((check) => check.id === "git-hook")?.status).toBe("pass");
