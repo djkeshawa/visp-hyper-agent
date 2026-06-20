@@ -148,6 +148,7 @@ const kitIntegrationCapabilitiesSchema = z
       .object({
         phaseLevelArtifacts: z.boolean().optional(),
         taskScopedContextPacks: z.boolean().optional(),
+        artifactProvenance: z.boolean().optional(),
         currentTaskPrompt: z.boolean().optional(),
         implementationChecklist: z.boolean().optional()
       })
@@ -178,6 +179,7 @@ const kitIntegrationWorkflowSchema = z
     implementationReadSet: z.array(z.string()).optional(),
     checkpointSequence: z.array(z.string()).optional(),
     failClosedOn: z.array(z.string()).optional(),
+    freshnessChecks: z.array(z.string()).optional(),
     humanOverride: z
       .object({
         requiresReason: z.boolean().optional(),

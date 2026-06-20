@@ -81,9 +81,15 @@ describe("doctor command", () => {
           commands: {},
           capabilities: {
             governance: { failClosedGates: true },
-            contextGrounding: { taskScopedContextPacks: true },
+            contextGrounding: { taskScopedContextPacks: true, artifactProvenance: true },
             evidence: { verification: true, review: true, reconciliation: true },
             enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
+          },
+          workflow: {
+            freshnessChecks: [
+              ".visp/features/<feature>/context/<task-id>.context.json",
+              "contextPack.artifactProvenance[]"
+            ]
           },
           artifacts: {
             kitSignals: [".visp/policy.json", ".visp/project.json"],
@@ -117,6 +123,8 @@ describe("doctor command", () => {
     expect(summary.checks.find((check) => check.id === "kit-binary")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-contract")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("fail-closed gates");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("artifact provenance");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("provenance freshness");
     expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("git+CI enforcement");
     expect(summary.checks.find((check) => check.id === "kit-policy")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-context-pack")?.detail).toContain("T001");

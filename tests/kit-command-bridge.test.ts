@@ -254,7 +254,7 @@ describe("KitCommandBridge", () => {
       integration: {
         stdout: {
           success: true,
-          contractVersion: "1.1",
+          contractVersion: "1.2",
           kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
           targetPath: "/repo",
           initialized: true,
@@ -263,13 +263,17 @@ describe("KitCommandBridge", () => {
           commands: { status: ["status", "--json"] },
           capabilities: {
             governance: { failClosedGates: true, sourceEditsRequireImplementGate: true },
-            contextGrounding: { taskScopedContextPacks: true },
+            contextGrounding: { taskScopedContextPacks: true, artifactProvenance: true },
             evidence: { verification: true, review: true, reconciliation: true },
             enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
           },
           workflow: {
             strictSequence: ["status", "policyValidate", "gateNext", "context", "gateImplement"],
             failClosedOn: ["policyValidate", "gateImplement"],
+            freshnessChecks: [
+              ".visp/features/<feature>/context/<task-id>.context.json",
+              "contextPack.artifactProvenance[]"
+            ],
             humanOverride: { requiresReason: true, artifact: ".visp/overrides.json" }
           },
           artifacts: {
@@ -290,10 +294,12 @@ describe("KitCommandBridge", () => {
 
     const contract = await bridge.integrationContract();
 
-    expect(contract?.contractVersion).toBe("1.1");
+    expect(contract?.contractVersion).toBe("1.2");
     expect(contract?.kit.version).toBe("0.1.2");
     expect(contract?.capabilities?.governance?.failClosedGates).toBe(true);
+    expect(contract?.capabilities?.contextGrounding?.artifactProvenance).toBe(true);
     expect(contract?.workflow?.failClosedOn).toContain("gateImplement");
+    expect(contract?.workflow?.freshnessChecks).toContain("contextPack.artifactProvenance[]");
     const argv = JSON.parse((await readFile(shim.argvLogPath, "utf8")).trim()) as string[];
     expect(argv).toEqual(["integration", "contract", "--json"]);
   });

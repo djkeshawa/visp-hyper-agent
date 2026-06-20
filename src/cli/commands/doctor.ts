@@ -585,9 +585,12 @@ function drainWarnings(warnings: string[]): string[] {
 function formatContractCapabilities(contract: {
   capabilities?: {
     governance?: { failClosedGates?: boolean };
-    contextGrounding?: { taskScopedContextPacks?: boolean };
+    contextGrounding?: { taskScopedContextPacks?: boolean; artifactProvenance?: boolean };
     evidence?: { verification?: boolean; review?: boolean; reconciliation?: boolean };
     enforcementSurfaces?: { gitPreCommitHook?: boolean; ciPolicyGate?: boolean };
+  };
+  workflow?: {
+    freshnessChecks?: string[];
   };
 }): string {
   const capabilities = contract.capabilities;
@@ -597,8 +600,12 @@ function formatContractCapabilities(contract: {
   const labels = [
     capabilities.governance?.failClosedGates ? "fail-closed gates" : null,
     capabilities.contextGrounding?.taskScopedContextPacks ? "task context packs" : null,
+    capabilities.contextGrounding?.artifactProvenance ? "artifact provenance" : null,
     capabilities.evidence?.verification && capabilities.evidence.review && capabilities.evidence.reconciliation
       ? "verify/review/reconcile"
+      : null,
+    contract.workflow?.freshnessChecks?.includes("contextPack.artifactProvenance[]")
+      ? "provenance freshness"
       : null,
     capabilities.enforcementSurfaces?.gitPreCommitHook && capabilities.enforcementSurfaces.ciPolicyGate
       ? "git+CI enforcement"
