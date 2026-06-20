@@ -3,8 +3,16 @@ import { createInterface } from "node:readline";
 /**
  * A single MCP tool advertised over `tools/list` and invocable via `tools/call`.
  * `inputSchema` is a JSON Schema object describing the tool's `arguments`.
+ * `outputSchema`, when present, describes the returned `structuredContent`.
  */
-export type McpToolDef = { name: string; description: string; inputSchema: object };
+export type McpToolDef = { name: string; description: string; inputSchema: object; outputSchema?: object };
+
+/** Text plus optional structured output returned by a local MCP tool executor. */
+export type McpToolExecution = {
+  text: string;
+  isError: boolean;
+  structuredContent?: Record<string, unknown>;
+};
 
 /** A read-only MCP resource exposed by Visp Hyper. */
 export type McpResourceDef = {
@@ -47,7 +55,7 @@ export type McpPromptMessage = {
  */
 export type McpContext = {
   tools: McpToolDef[];
-  execute: (name: string, args: Record<string, unknown>) => Promise<{ text: string; isError: boolean }>;
+  execute: (name: string, args: Record<string, unknown>) => Promise<McpToolExecution>;
   resources?: () => Promise<McpResourceDef[]>;
   readResource?: (uri: string) => Promise<McpResourceContent | null>;
   prompts?: McpPromptDef[];
@@ -82,6 +90,46 @@ function capabilities(ctx: McpContext): Record<string, object> {
     ...(ctx.resources && ctx.readResource ? { resources: {} } : {}),
     ...(ctx.prompts && ctx.getPrompt ? { prompts: {} } : {})
   };
+}
+
+function structuredContentFor(
+  toolName: string,
+  execution: McpToolExecution
+): Record<string, unknown> {
+  return {
+    tool: toolName,
+    isError: execution.isError,
+    status: extractStatus(execution.text, execution.isError),
+    frames: extractFrames(execution.text),
+    resourceUris: extractResourceUris(execution.text),
+    text: execution.text
+  };
+}
+
+function extractStatus(text: string, isError: boolean): string {
+  const status = text.match(/\bstatus:\s*([A-Z_]+)/iu)?.[1];
+  if (status) {
+    return status.toUpperCase();
+  }
+  return isError ? "ERROR" : "OK";
+}
+
+function extractFrames(text: string): Array<{ name: string; boundary: "begin" | "end" }> {
+  const frames: Array<{ name: string; boundary: "begin" | "end" }> = [];
+  const pattern = /\b(BEGIN|END)_([A-Z0-9_]+)\b|\b(VISP_HYPER_REPORT)\b/gu;
+  for (const match of text.matchAll(pattern)) {
+    if (match[3]) {
+      frames.push({ name: match[3], boundary: "begin" });
+      continue;
+    }
+    const boundary = match[1] === "BEGIN" ? "begin" : "end";
+    frames.push({ name: match[2] ?? "", boundary });
+  }
+  return frames;
+}
+
+function extractResourceUris(text: string): string[] {
+  return [...new Set(text.match(/\bvisp-hyper:\/\/[^\s)]+/gu) ?? [])];
 }
 
 /**
@@ -120,11 +168,21 @@ export async function handleMessage(ctx: McpContext, msg: JsonRpcMessage): Promi
     case "tools/call": {
       const name = msg.params?.name;
       const args = (msg.params?.arguments ?? {}) as Record<string, unknown>;
-      if (!ctx.tools.some((tool) => tool.name === name)) {
+      const tool = ctx.tools.find((candidate) => candidate.name === name);
+      if (!tool) {
         return error(id, -32602, `Unknown tool: ${name}`);
       }
-      const { text, isError } = await ctx.execute(name, args);
-      return result(id, { content: [{ type: "text", text }], isError });
+      const execution = await ctx.execute(name, args);
+      const response: Record<string, unknown> = {
+        content: [{ type: "text", text: execution.text }],
+        isError: execution.isError
+      };
+      const structuredContent =
+        execution.structuredContent ?? (tool.outputSchema ? structuredContentFor(name, execution) : undefined);
+      if (structuredContent) {
+        response.structuredContent = structuredContent;
+      }
+      return result(id, response);
     }
     case "resources/list": {
       if (!ctx.resources || !ctx.readResource) {

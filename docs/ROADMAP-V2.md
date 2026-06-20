@@ -86,8 +86,9 @@ and re-plan from what the downloads and writeup reception say.
 10. `visp-hyper doctor` — one-command validation of the enforcement chain.
 11. Hardening: live-binary contract tests against pinned visp-kit in CI, telemetry/
     registry pruning, Windows audit. MCP surface hardening has started with a
-    hashed `visp-hyper://meta/surface-manifest` that doctor validates, reducing
-    silent tool/resource/prompt drift for MCP-capable hosts.
+    hashed `visp-hyper://meta/surface-manifest` plus per-tool output schemas and
+    structured tool results, reducing silent tool/resource/prompt/result drift for
+    MCP-capable hosts.
 12. Memory backend adapter (Mem0/OpenMemory) — **only if inbound demand names it**;
     the deterministic firing points (task-scoped recall, before-change warnings,
     failure → gotcha distillation) remain the differentiated layer and are

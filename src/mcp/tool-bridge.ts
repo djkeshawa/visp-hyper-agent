@@ -26,6 +26,31 @@ type ToolSpec = {
   toArgv: (args: ToolArgs) => string[];
 };
 
+const HYPER_TOOL_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    tool: { type: "string" },
+    isError: { type: "boolean" },
+    status: { type: "string" },
+    frames: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          name: { type: "string" },
+          boundary: { type: "string", enum: ["begin", "end"] }
+        },
+        required: ["name", "boundary"]
+      }
+    },
+    resourceUris: { type: "array", items: { type: "string" } },
+    text: { type: "string" }
+  },
+  required: ["tool", "isError", "status", "frames", "resourceUris", "text"]
+};
+
 function isString(value: unknown): value is string {
   return typeof value === "string";
 }
@@ -467,7 +492,8 @@ function toolDefs(): McpToolDef[] {
   return TOOL_SPECS.map((spec) => ({
     name: spec.name,
     description: spec.description,
-    inputSchema: spec.inputSchema
+    inputSchema: spec.inputSchema,
+    outputSchema: HYPER_TOOL_OUTPUT_SCHEMA
   }));
 }
 
@@ -540,7 +566,8 @@ function buildSurfaceManifest(): object {
     tools: toolDefs().map((tool) => ({
       name: tool.name,
       description: tool.description,
-      inputSchemaHash: hashStable(tool.inputSchema)
+      inputSchemaHash: hashStable(tool.inputSchema),
+      outputSchemaHash: tool.outputSchema ? hashStable(tool.outputSchema) : undefined
     })),
     resources: [
       SURFACE_MANIFEST_RESOURCE,
@@ -566,6 +593,7 @@ function buildSurfaceManifest(): object {
       fixedResourceTable: true,
       fixedPromptTable: true,
       commandExecution: "MCP tools map to fixed local visp-hyper subcommands with typed argument validation.",
+      structuredToolResults: "Each MCP tool advertises an outputSchema and returns structuredContent alongside the human-readable block.",
       networkPolicy: "No network calls from the MCP bridge; invoked commands may only contact a configured local llm-memory endpoint when memoryMode is enabled."
     }
   };

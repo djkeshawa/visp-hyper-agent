@@ -63,6 +63,11 @@ visp-hyper remember --summary "Implemented offline note sync"
 
 `visp-hyper serve --mcp` exposes the same orchestration surface over stdio JSON-RPC for MCP-capable tools.
 
+Each tool advertises JSON Schema for both inputs and outputs. Calls still return
+the human-readable Visp blocks, and also include `structuredContent` with status,
+frame, resource URI, and raw text fields so MCP hosts and weaker coding models do
+not need to scrape prose to understand whether a gate passed.
+
 Tools:
 
 - `hyper_quick`
@@ -92,6 +97,7 @@ Resources:
 - `visp-hyper://current/review-report`
 
 `visp-hyper://meta/surface-manifest` is always available. It declares the fixed MCP tool/resource/prompt surface, per-tool input schema hashes, the server version, and a stable SHA-256 `surfaceHash` so MCP hosts and enterprise reviewers can detect unexpected surface drift.
+It also hashes each tool output schema, making text-only regressions and schema drift visible to integration checks.
 
 Prompts:
 

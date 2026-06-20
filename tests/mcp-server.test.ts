@@ -189,6 +189,20 @@ describe("handleMessage tools surface (AC003)", () => {
     expect(response.result.tools).toEqual(ctx.tools);
   });
 
+  it("tools/list advertises output schemas for Hyper tools", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-output-schema-"));
+    const response = (await handleMessage(createToolContext(projectPath), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list"
+    })) as { result: { tools: Array<{ name: string; outputSchema?: { properties?: Record<string, unknown> } }> } };
+    const report = response.result.tools.find((tool) => tool.name === "hyper_report");
+
+    expect(report?.outputSchema?.properties).toHaveProperty("status");
+    expect(report?.outputSchema?.properties).toHaveProperty("frames");
+    expect(report?.outputSchema?.properties).toHaveProperty("resourceUris");
+  });
+
   it("tools/call routes name+arguments to execute and wraps the result", async () => {
     const calls: Array<{ name: string; args: object }> = [];
     const ctx = stubContext(async (name, args) => {
@@ -204,6 +218,41 @@ describe("handleMessage tools surface (AC003)", () => {
     expect(calls).toEqual([{ name: "alpha", args: { goal: "x" } }]);
     expect(response.result.content).toEqual([{ type: "text", text: "captured output" }]);
     expect(response.result.isError).toBe(false);
+  });
+
+  it("tools/call returns structuredContent when a Hyper tool declares an output schema", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-structured-output-"));
+    const response = (await handleMessage(createToolContext(projectPath), {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "hyper_report", arguments: { json: false } }
+    })) as {
+      result: {
+        content: Array<{ type: string; text: string }>;
+        isError: boolean;
+        structuredContent: {
+          tool: string;
+          isError: boolean;
+          status: string;
+          frames: Array<{ name: string; boundary: string }>;
+          text: string;
+        };
+      };
+    };
+
+    expect(response.result.isError).toBe(false);
+    expect(response.result.content[0]?.text).toContain("VISP_HYPER_REPORT");
+    expect(response.result.structuredContent).toMatchObject({
+      tool: "hyper_report",
+      isError: false,
+      status: "OK"
+    });
+    expect(response.result.structuredContent.frames).toContainEqual({
+      name: "VISP_HYPER_REPORT",
+      boundary: "begin"
+    });
+    expect(response.result.structuredContent.text).toBe(response.result.content[0]?.text);
   });
 
   it("tools/call for an unknown tool is an invalid-params error and does not execute", async () => {
@@ -316,7 +365,15 @@ describe("handleMessage resources and prompts surface", () => {
     expect(manifest.surfaceHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(manifest.capabilities.dynamicToolRegistration).toBe(false);
     expect(manifest.safetyPosture.noLlmCalls).toBe(true);
+    expect(manifest.safetyPosture.structuredToolResults).toContain("structuredContent");
     expect(manifest.tools.map((tool: { name: string }) => tool.name)).toContain("hyper_checkpoint");
+    expect(
+      manifest.tools.every(
+        (tool: { inputSchemaHash?: string; outputSchemaHash?: string }) =>
+          /^[a-f0-9]{64}$/u.test(tool.inputSchemaHash ?? "") &&
+          /^[a-f0-9]{64}$/u.test(tool.outputSchemaHash ?? "")
+      )
+    ).toBe(true);
     expect(manifest.resources.map((resource: { uri: string }) => resource.uri)).toContain(
       "visp-hyper://current/checkpoint-snapshot"
     );
