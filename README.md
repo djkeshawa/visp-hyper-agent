@@ -75,6 +75,18 @@ Tools:
 - `hyper_remember`
 - `hyper_report`
 
+Resources:
+
+- `visp-hyper://current/context-pack`
+- `visp-hyper://current/handoff-json`
+- `visp-hyper://current/checkpoints`
+- `visp-hyper://current/review-report`
+
+Prompts:
+
+- `hyper_resume`
+- `hyper_run_goal`
+
 ## Develop Locally
 
 Prerequisites:

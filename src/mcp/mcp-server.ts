@@ -6,6 +6,35 @@ import { createInterface } from "node:readline";
  */
 export type McpToolDef = { name: string; description: string; inputSchema: object };
 
+/** A read-only MCP resource exposed by Visp Hyper. */
+export type McpResourceDef = {
+  uri: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+};
+
+/** The textual body returned by `resources/read`. */
+export type McpResourceContent = {
+  uri: string;
+  mimeType?: string;
+  text: string;
+};
+
+/** A user-selectable MCP prompt template. */
+export type McpPromptDef = {
+  name: string;
+  title?: string;
+  description?: string;
+  arguments?: Array<{ name: string; description?: string; required?: boolean }>;
+};
+
+export type McpPromptMessage = {
+  role: "user" | "assistant";
+  content: { type: "text"; text: string };
+};
+
 /**
  * Everything the protocol core needs to answer requests: the tool table, an
  * executor that runs a named tool and returns its captured text, and the
@@ -14,6 +43,13 @@ export type McpToolDef = { name: string; description: string; inputSchema: objec
 export type McpContext = {
   tools: McpToolDef[];
   execute: (name: string, args: Record<string, unknown>) => Promise<{ text: string; isError: boolean }>;
+  resources?: () => Promise<McpResourceDef[]>;
+  readResource?: (uri: string) => Promise<McpResourceContent | null>;
+  prompts?: McpPromptDef[];
+  getPrompt?: (
+    name: string,
+    args: Record<string, unknown>
+  ) => Promise<{ description?: string; messages: McpPromptMessage[] } | null>;
   serverInfo: { name: string; version: string };
 };
 
@@ -33,6 +69,14 @@ function result(id: number | string | null, value: object): object {
 
 function error(id: number | string | null, code: number, message: string): object {
   return { jsonrpc: "2.0", id, error: { code, message } };
+}
+
+function capabilities(ctx: McpContext): Record<string, object> {
+  return {
+    tools: {},
+    ...(ctx.resources && ctx.readResource ? { resources: {} } : {}),
+    ...(ctx.prompts && ctx.getPrompt ? { prompts: {} } : {})
+  };
 }
 
 /**
@@ -60,7 +104,7 @@ export async function handleMessage(ctx: McpContext, msg: JsonRpcMessage): Promi
       const protocolVersion = msg.params?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
       return result(id, {
         protocolVersion,
-        capabilities: { tools: {} },
+        capabilities: capabilities(ctx),
         serverInfo: ctx.serverInfo
       });
     }
@@ -76,6 +120,50 @@ export async function handleMessage(ctx: McpContext, msg: JsonRpcMessage): Promi
       }
       const { text, isError } = await ctx.execute(name, args);
       return result(id, { content: [{ type: "text", text }], isError });
+    }
+    case "resources/list": {
+      if (!ctx.resources || !ctx.readResource) {
+        return id === null ? null : error(id, -32601, "Method not found");
+      }
+      return result(id, { resources: await ctx.resources() });
+    }
+    case "resources/read": {
+      if (!ctx.resources || !ctx.readResource) {
+        return id === null ? null : error(id, -32601, "Method not found");
+      }
+      const uri = msg.params?.uri;
+      if (typeof uri !== "string" || uri.length === 0) {
+        return error(id, -32602, "Resource uri must be a non-empty string");
+      }
+      const content = await ctx.readResource(uri);
+      if (!content) {
+        return error(id, -32602, `Unknown resource: ${uri}`);
+      }
+      return result(id, { contents: [content] });
+    }
+    case "prompts/list": {
+      if (!ctx.prompts || !ctx.getPrompt) {
+        return id === null ? null : error(id, -32601, "Method not found");
+      }
+      return result(id, { prompts: ctx.prompts });
+    }
+    case "prompts/get": {
+      if (!ctx.prompts || !ctx.getPrompt) {
+        return id === null ? null : error(id, -32601, "Method not found");
+      }
+      const name = msg.params?.name;
+      const args = (msg.params?.arguments ?? {}) as Record<string, unknown>;
+      if (typeof name !== "string" || name.length === 0) {
+        return error(id, -32602, "Prompt name must be a non-empty string");
+      }
+      if (!ctx.prompts.some((prompt) => prompt.name === name)) {
+        return error(id, -32602, `Unknown prompt: ${name}`);
+      }
+      const prompt = await ctx.getPrompt(name, args);
+      if (!prompt) {
+        return error(id, -32602, `Invalid arguments for prompt: ${name}`);
+      }
+      return result(id, prompt);
     }
     default:
       // Unknown method: answer addressable requests, ignore notifications.

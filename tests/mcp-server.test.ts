@@ -120,6 +120,21 @@ describe("handleMessage protocol core (AC001)", () => {
     expect(response.result.protocolVersion).toBe("2025-06-18");
   });
 
+  it("initialize advertises resources and prompts when the context supports them", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-capabilities-"));
+    const response = (await handleMessage(createToolContext(projectPath), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize"
+    })) as { result: { capabilities: Record<string, object> } };
+
+    expect(response.result.capabilities).toEqual({
+      tools: {},
+      resources: {},
+      prompts: {}
+    });
+  });
+
   it("notifications/initialized yields no response", async () => {
     const response = await handleMessage(stubContext(), {
       jsonrpc: "2.0",
@@ -206,6 +221,77 @@ describe("handleMessage tools surface (AC003)", () => {
     expect(response.error.code).toBe(-32602);
     expect(response.error.message).toContain("Unknown tool: missing");
     expect(executed).toBe(false);
+  });
+});
+
+describe("handleMessage resources and prompts surface", () => {
+  it("resources/list and resources/read expose generated Visp Hyper artifacts", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-resources-"));
+    await initializeProject(projectPath);
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "current", "context-pack.md"),
+      "# Context\n\n- src/feature.ts\n",
+      "utf8"
+    );
+    const ctx = createToolContext(projectPath);
+
+    const listed = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "resources/list"
+    })) as { result: { resources: Array<{ uri: string; name: string }> } };
+    expect(listed.result.resources.map((resource) => resource.uri)).toContain(
+      "visp-hyper://current/context-pack"
+    );
+
+    const read = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "resources/read",
+      params: { uri: "visp-hyper://current/context-pack" }
+    })) as { result: { contents: Array<{ uri: string; mimeType: string; text: string }> } };
+    expect(read.result.contents[0]).toMatchObject({
+      uri: "visp-hyper://current/context-pack",
+      mimeType: "text/markdown",
+      text: "# Context\n\n- src/feature.ts\n"
+    });
+  });
+
+  it("resources/read rejects unknown resources", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-missing-resource-"));
+    const response = (await handleMessage(createToolContext(projectPath), {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "resources/read",
+      params: { uri: "visp-hyper://current/missing" }
+    })) as { error: { code: number; message: string } };
+
+    expect(response.error.code).toBe(-32602);
+    expect(response.error.message).toContain("Unknown resource");
+  });
+
+  it("prompts/list and prompts/get expose safe workflow prompts", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-prompts-"));
+    const ctx = createToolContext(projectPath);
+
+    const listed = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "prompts/list"
+    })) as { result: { prompts: Array<{ name: string }> } };
+    expect(listed.result.prompts.map((prompt) => prompt.name)).toEqual([
+      "hyper_resume",
+      "hyper_run_goal"
+    ]);
+
+    const prompt = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "prompts/get",
+      params: { name: "hyper_run_goal", arguments: { goal: "ship the audit trail" } }
+    })) as { result: { messages: Array<{ content: { text: string } }> } };
+    expect(prompt.result.messages[0]?.content.text).toContain("hyper_run");
+    expect(prompt.result.messages[0]?.content.text).toContain("ship the audit trail");
   });
 });
 
