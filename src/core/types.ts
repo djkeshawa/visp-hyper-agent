@@ -135,6 +135,7 @@ export type ContextManifest = {
     hashAlgorithm: "sha256";
     source: "visp-kit";
   }>;
+  freshnessWarnings?: string[];
   requiredReads: string[];
   requiredResources: HandoffResource[];
   selectedFiles: Array<{

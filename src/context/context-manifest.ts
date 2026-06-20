@@ -8,6 +8,7 @@ export type BuildContextManifestInput = {
   taskId?: string;
   contextArtifact?: ContextManifest["contextArtifact"];
   artifactProvenance?: ContextManifest["artifactProvenance"];
+  freshnessWarnings?: string[];
   contextFiles: ContextFile[];
   validationCommands: string[];
   blockedPaths: string[];
@@ -27,6 +28,9 @@ export function buildContextManifest(input: BuildContextManifestInput): ContextM
     ...(input.contextArtifact ? { contextArtifact: input.contextArtifact } : {}),
     ...(input.artifactProvenance && input.artifactProvenance.length > 0
       ? { artifactProvenance: input.artifactProvenance }
+      : {}),
+    ...(input.freshnessWarnings && input.freshnessWarnings.length > 0
+      ? { freshnessWarnings: [...input.freshnessWarnings] }
       : {}),
     requiredReads: [...requiredReads],
     requiredResources: cloneResources(requiredResourceReads),

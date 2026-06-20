@@ -25,8 +25,9 @@ async function createProject(): Promise<string> {
   return projectPath;
 }
 
-async function writeContextPack(projectPath: string): Promise<void> {
+async function writeContextPack(projectPath: string, options: { provenance?: boolean } = {}): Promise<void> {
   const contextDir = join(projectPath, ".visp", "features", "001-x", "context");
+  const includeProvenance = options.provenance ?? true;
   await mkdir(contextDir, { recursive: true });
   await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
   await writeFile(
@@ -37,14 +38,18 @@ async function writeContextPack(projectPath: string): Promise<void> {
         { path: "src/feature.ts", reason: "task target", hash: "abc123" },
         { path: ".env", reason: "secrets file" }
       ],
-      artifactProvenance: [
-        {
-          label: "spec",
-          path: ".visp/features/001-x/spec.json",
-          hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-          hashAlgorithm: "sha256"
-        }
-      ],
+      ...(includeProvenance
+        ? {
+            artifactProvenance: [
+              {
+                label: "spec",
+                path: ".visp/features/001-x/spec.json",
+                hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                hashAlgorithm: "sha256"
+              }
+            ]
+          }
+        : {}),
       validationCommands: ["pnpm typecheck", "pnpm test"]
     }),
     "utf8"
@@ -115,6 +120,7 @@ describe("kit context-pack adoption in start", () => {
         source: "visp-kit"
       }
     ]);
+    expect(manifest).not.toHaveProperty("freshnessWarnings");
     expect(manifest.selectedFiles).toEqual([
       expect.objectContaining({
         path: "src/feature.ts",
@@ -124,6 +130,40 @@ describe("kit context-pack adoption in start", () => {
         sourceHashAlgorithm: "sha256",
         sourceHashSource: "visp-kit"
       })
+    ]);
+  });
+
+  it("surfaces a freshness warning when an adopted Kit context pack has no provenance", async () => {
+    const projectPath = await createProject();
+    await writeContextPack(projectPath, { provenance: false });
+
+    const shim = await createVispShim({
+      status: {
+        stdout: {
+          success: true,
+          initialized: true,
+          activeFeature: { id: "001", slug: "x" },
+          activeTask: { id: "T009", title: "Adopt context pack", status: "ready" }
+        }
+      }
+    });
+    prependToPath(dirname(shim.binary));
+
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement feature", "--tool", "codex"]);
+
+    const contextPack = await readFile(join(projectPath, ".visp", "hyper", "current", "context-pack.md"), "utf8");
+    expect(contextPack).toContain("has no artifactProvenance");
+    expect(contextPack).toContain("checkpoint can pin only the context-pack file");
+
+    const manifest = JSON.parse(
+      await readFile(join(projectPath, ".visp", "hyper", "current", "context-manifest.json"), "utf8")
+    );
+    expect(manifest).not.toHaveProperty("artifactProvenance");
+    expect(manifest.freshnessWarnings).toEqual([
+      expect.stringContaining("has no artifactProvenance")
     ]);
   });
 

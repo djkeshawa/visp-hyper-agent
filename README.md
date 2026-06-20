@@ -196,6 +196,7 @@ Enable in `.visp/hyper/config.json`:
 - Failed checkpoints are deduped into `.visp/hyper/failure-patterns.json`; future `start`/`run` handoffs surface related gotchas in `memory-pack.md`.
 - Kit-backed handoffs pin the adopted context artifact hash and Kit provenance hashes in `context-manifest.json`; `checkpoint --task` fails closed if the context pack or any grounded spec/task/plan/policy artifact changes before validation.
 - When Kit context packs include artifact provenance, Hyper copies those SHA-256 hashes into `context-manifest.json` so MCP clients can audit which spec/task/plan/policy artifacts grounded the handoff.
+- If an adopted Kit context pack has no artifact provenance, Hyper records a `freshnessWarnings` entry in `context-manifest.json` and mirrors it in `context-pack.md`.
 - `remember` writes the session record, decisions (episodic), and follow-ups (intent) back; installed skills mirror as semantic patterns.
 - Auth: set `VISP_HYPER_MEMORY_API_KEY` (sent as `X-API-KEY`); keys never live in config files.
 - The server being down is never an error: commands warn and fall back to file memory.

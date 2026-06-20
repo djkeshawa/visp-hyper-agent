@@ -99,6 +99,7 @@ export async function executeStart(
     taskId: adoption?.taskId,
     contextArtifact: adoption?.contextArtifact,
     artifactProvenance: adoption?.artifactProvenance,
+    freshnessWarnings: adoption?.freshnessWarnings,
     contextFiles,
     validationCommands,
     blockedPaths: config.blockedPaths,
@@ -182,6 +183,7 @@ type KitAdoption = {
     hashAlgorithm: "sha256";
     source: "visp-kit";
   }>;
+  freshnessWarnings: string[];
   validationCommands: string[];
   warnings: string[];
 };
@@ -213,6 +215,15 @@ async function adoptKitContextPack(projectPath: string, config: HyperConfig): Pr
     return undefined;
   }
 
+  const artifactProvenance = (artifact.pack.artifactProvenance ?? []).map((entry) => ({
+    ...entry,
+    source: "visp-kit" as const
+  }));
+  const freshnessWarnings =
+    artifactProvenance.length === 0
+      ? [missingProvenanceWarning(activeTaskId)]
+      : [];
+
   return {
     files,
     source: `visp-kit context pack (${activeTaskId})`,
@@ -222,12 +233,10 @@ async function adoptKitContextPack(projectPath: string, config: HyperConfig): Pr
       hash: artifact.sha256,
       hashAlgorithm: "sha256"
     },
-    artifactProvenance: (artifact.pack.artifactProvenance ?? []).map((entry) => ({
-      ...entry,
-      source: "visp-kit" as const
-    })),
+    artifactProvenance,
+    freshnessWarnings,
     validationCommands: artifact.pack.validationCommands ?? [],
-    warnings: [...kit.warnings, ...bridge.warnings]
+    warnings: [...kit.warnings, ...bridge.warnings, ...freshnessWarnings]
   };
 }
 
@@ -265,4 +274,8 @@ async function readPackFile(path: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+function missingProvenanceWarning(taskId: string): string {
+  return `Kit context pack for ${taskId} has no artifactProvenance; checkpoint can pin only the context-pack file, not the spec/task/plan/policy artifacts that grounded the handoff. Regenerate the context pack with a Visp Kit that emits artifact provenance.`;
 }
