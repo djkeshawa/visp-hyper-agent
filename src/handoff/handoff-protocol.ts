@@ -5,44 +5,56 @@ export const requiredResourceReads: readonly HandoffResource[] = [
     path: ".visp/hyper/current/session.md",
     uri: "visp-hyper://current/session",
     title: "Current Session",
-    mimeType: "text/markdown"
+    mimeType: "text/markdown",
+    source: "file"
   },
   {
     path: ".visp/hyper/current/context-pack.md",
     uri: "visp-hyper://current/context-pack",
     title: "Current Context Pack",
-    mimeType: "text/markdown"
+    mimeType: "text/markdown",
+    source: "file"
   },
   {
     path: ".visp/hyper/current/context-manifest.json",
     uri: "visp-hyper://current/context-manifest",
     title: "Current Context Manifest",
-    mimeType: "application/json"
+    mimeType: "application/json",
+    source: "file"
+  },
+  {
+    uri: "visp-hyper://current/context-freshness",
+    title: "Current Context Freshness",
+    mimeType: "application/json",
+    source: "computed"
   },
   {
     path: ".visp/hyper/current/memory-pack.md",
     uri: "visp-hyper://current/memory-pack",
     title: "Current Memory Pack",
-    mimeType: "text/markdown"
+    mimeType: "text/markdown",
+    source: "file"
   },
   {
     path: ".visp/hyper/current/quality-gates.md",
     uri: "visp-hyper://current/quality-gates",
     title: "Current Quality Gates",
-    mimeType: "text/markdown"
+    mimeType: "text/markdown",
+    source: "file"
   },
   {
     path: ".visp/hyper/current/agent-instructions.md",
     uri: "visp-hyper://current/agent-instructions",
     title: "Current Agent Instructions",
-    mimeType: "text/markdown"
+    mimeType: "text/markdown",
+    source: "file"
   }
 ] as const;
 
-export const requiredReads = requiredResourceReads.map((resource) => resource.path);
+export const requiredReads = requiredResourceReads.flatMap((resource) => resource.path ? [resource.path] : []);
 
 const workflow = [
-  "Read the required files.",
+  "Read the required files and MCP resources when available.",
   "Inspect only the relevant files listed in the context pack.",
   "Create a concise implementation plan.",
   "Implement the smallest safe change.",
@@ -165,7 +177,7 @@ export function renderHandoff(session: SessionRecord, options?: RenderHandoffOpt
     ...handoff.requiredReads.map((path) => `  - ${path}`),
     "",
     "mcp_resources:",
-    ...handoff.requiredResources.map((resource) => `  - ${resource.uri} (${resource.path})`),
+    ...handoff.requiredResources.map((resource) => `  - ${resource.uri} (${resource.path ?? "computed"})`),
     "",
     "workflow:",
     ...handoff.workflow.map((step, index) => `  ${index + 1}. ${step}`),

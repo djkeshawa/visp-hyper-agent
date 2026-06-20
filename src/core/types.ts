@@ -68,10 +68,11 @@ export type HandoffProtocol = {
 };
 
 export type HandoffResource = {
-  path: string;
+  path?: string;
   uri: string;
   title: string;
   mimeType: string;
+  source: "file" | "computed";
 };
 
 export type IntegrationSeam = {

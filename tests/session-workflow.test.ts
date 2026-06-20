@@ -69,6 +69,7 @@ describe("local session workflow", () => {
     expect(stdout).toContain("completion_instruction:");
     expect(stdout).toContain("mcp_resources:");
     expect(stdout).toContain("visp-hyper://current/context-manifest");
+    expect(stdout).toContain("visp-hyper://current/context-freshness (computed)");
     expect(stdout).toContain(`session_id: ${handoff.sessionId}`);
     expect(stdout).toContain(`goal: ${handoff.goal}`);
     expect(stdout).toContain(`tool_profile: ${handoff.toolProfile}`);
@@ -94,6 +95,12 @@ describe("local session workflow", () => {
     expect(handoff.requiredResources.map((resource: { uri: string }) => resource.uri)).toContain(
       "visp-hyper://current/context-manifest"
     );
+    expect(handoff.requiredResources).toContainEqual(
+      expect.objectContaining({
+        uri: "visp-hyper://current/context-freshness",
+        source: "computed"
+      })
+    );
     expect(manifest).toMatchObject({
       version: "0.1",
       sessionId: handoff.sessionId,
@@ -105,6 +112,12 @@ describe("local session workflow", () => {
     expect(manifest.requiredReads).toEqual(handoff.requiredReads);
     expect(manifest.requiredResources.map((resource: { uri: string }) => resource.uri)).toContain(
       "visp-hyper://current/context-manifest"
+    );
+    expect(manifest.requiredResources).toContainEqual(
+      expect.objectContaining({
+        uri: "visp-hyper://current/context-freshness",
+        source: "computed"
+      })
     );
     expect(manifest.selectedFiles.length).toBeGreaterThan(0);
   });

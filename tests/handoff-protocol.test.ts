@@ -23,6 +23,7 @@ describe("renderHandoff", () => {
     expect(handoff).toContain(".visp/hyper/current/context-manifest.json");
     expect(handoff).toContain("mcp_resources:");
     expect(handoff).toContain("visp-hyper://current/context-manifest");
+    expect(handoff).toContain("visp-hyper://current/context-freshness (computed)");
     expect(handoff).toContain("completion_instruction:");
     expect(handoff).toContain("tool_profile_label: Codex");
     expect(handoff).toContain("profile_instructions:");
@@ -57,10 +58,18 @@ describe("renderHandoff", () => {
     expect(handoff).toContain(`session_id: ${protocol.sessionId}`);
     expect(handoff).toContain(`tool_profile: ${protocol.toolProfile}`);
     expect(protocol.requiredReads).toContain(".visp/hyper/current/agent-instructions.md");
+    expect(protocol.requiredReads).not.toContain(".visp/hyper/current/context-freshness.json");
     expect(protocol.requiredResources).toContainEqual(
       expect.objectContaining({
         path: ".visp/hyper/current/context-manifest.json",
-        uri: "visp-hyper://current/context-manifest"
+        uri: "visp-hyper://current/context-manifest",
+        source: "file"
+      })
+    );
+    expect(protocol.requiredResources).toContainEqual(
+      expect.objectContaining({
+        uri: "visp-hyper://current/context-freshness",
+        source: "computed"
       })
     );
     expect(protocol.workflow).toHaveLength(8);

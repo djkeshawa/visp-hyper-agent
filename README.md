@@ -165,7 +165,7 @@ The same flow works tool-agnostically: `--tool codex` writes `AGENTS.visp-hyper.
 
 All orchestration output is deterministic, delimited text designed for LLM consumption:
 
-- `BEGIN_VISP_AGENT_HANDOFF` — session contract: required reads, workflow, hard rules, installed project skills, and the skill-proposal protocol.
+- `BEGIN_VISP_AGENT_HANDOFF` — session contract: required file reads, MCP resources including computed context freshness, workflow, hard rules, installed project skills, and the skill-proposal protocol.
 - `BEGIN_VISP_TASK_ACTION` — one bounded task: goal, allowed/forbidden files, acceptance criteria, validation commands, done criteria.
 - `BEGIN_VISP_PIPELINE_BLOCKED` — a gate refused: failed rules and the exact next allowed `visp` command. Unparseable gate results fail closed.
 - `BEGIN_VISP_CHECKPOINT_RESULT` — verify/review outcomes and the next task (or `pipeline_complete`).
