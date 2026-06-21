@@ -7,6 +7,7 @@ import { fileExists, readTextIfExists, vispPath } from "../../core/fs-utils.js";
 import { planInstall, type ToolName } from "../../install/tool-asset-installer.js";
 import { provenanceFreshnessContractWarning } from "../../kit/kit-contract-compat.js";
 import { detectVisp, hasKitArtifacts, KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import type { KitIntegrationContract } from "../../kit/kit-schemas.js";
 import { handleMessage } from "../../mcp/mcp-server.js";
 import { createToolContext } from "../../mcp/tool-bridge.js";
 import { contextPackPathIfExists, resolveProjectPath } from "./shared.js";
@@ -204,6 +205,10 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
         ? "Upgrade or link a Visp Kit version that supports integration contract 1.2 provenance freshness."
         : undefined
     });
+    const activeReadContract = await checkActiveKitReadContract(projectPath, contract);
+    if (activeReadContract) {
+      checks.push(activeReadContract);
+    }
   }
 
   const policy = await bridge.policyValidate();
@@ -625,6 +630,103 @@ function drainWarnings(warnings: string[]): string[] {
   const copy = [...warnings];
   warnings.length = 0;
   return copy;
+}
+
+async function checkActiveKitReadContract(
+  projectPath: string,
+  contract: KitIntegrationContract
+): Promise<DoctorCheck | null> {
+  if (!kitAdvertisesReadContract(contract)) {
+    return null;
+  }
+
+  const recovery = "Regenerate the active handoff with `visp-hyper run \"<goal>\"`.";
+  const manifestPath = vispPath(projectPath, "hyper", "current", "context-manifest.json");
+  const manifestText = await readTextIfExists(manifestPath);
+
+  if (!manifestText) {
+    return {
+      id: "kit-read-contract",
+      label: "Active Kit read contract",
+      status: "warn",
+      detail: "Kit advertises orchestrator read contracts, but the active Hyper handoff has no context manifest yet.",
+      recovery
+    };
+  }
+
+  let manifest: { kitReadContract?: unknown };
+  try {
+    manifest = JSON.parse(manifestText) as { kitReadContract?: unknown };
+  } catch {
+    return {
+      id: "kit-read-contract",
+      label: "Active Kit read contract",
+      status: "warn",
+      detail: "Active context manifest is unreadable; cannot confirm the Kit read contract.",
+      recovery
+    };
+  }
+
+  if (!manifest.kitReadContract || typeof manifest.kitReadContract !== "object") {
+    return {
+      id: "kit-read-contract",
+      label: "Active Kit read contract",
+      status: "warn",
+      detail: "Kit advertises orchestrator read contracts, but the active Hyper handoff does not carry kitReadContract.",
+      recovery
+    };
+  }
+
+  const active = manifest.kitReadContract as Record<string, unknown>;
+  const activeContractVersion = typeof active.contractVersion === "string" ? active.contractVersion : undefined;
+  const activeReadVersion = typeof active.readContractVersion === "string" ? active.readContractVersion : undefined;
+  const requiredArtifacts = Array.isArray(active.requiredArtifacts) ? active.requiredArtifacts : undefined;
+  const expectedReadVersion = contract.orchestrator?.readContractVersion;
+
+  if (!activeContractVersion || !activeReadVersion || !requiredArtifacts) {
+    return {
+      id: "kit-read-contract",
+      label: "Active Kit read contract",
+      status: "warn",
+      detail: "Active Hyper handoff carries an incomplete kitReadContract record.",
+      recovery
+    };
+  }
+
+  if (activeContractVersion !== contract.contractVersion) {
+    return {
+      id: "kit-read-contract",
+      label: "Active Kit read contract",
+      status: "warn",
+      detail: `Active handoff was generated from Kit contract ${activeContractVersion}, but the current Kit contract is ${contract.contractVersion}.`,
+      recovery
+    };
+  }
+
+  if (expectedReadVersion && activeReadVersion !== expectedReadVersion) {
+    return {
+      id: "kit-read-contract",
+      label: "Active Kit read contract",
+      status: "warn",
+      detail: `Active handoff carries Kit read contract ${activeReadVersion}, but the current Kit read contract is ${expectedReadVersion}.`,
+      recovery
+    };
+  }
+
+  return {
+    id: "kit-read-contract",
+    label: "Active Kit read contract",
+    status: "pass",
+    detail: `Active handoff carries Kit read contract ${activeReadVersion} with ${requiredArtifacts.length} required artifacts.`
+  };
+}
+
+function kitAdvertisesReadContract(contract: KitIntegrationContract): boolean {
+  return Boolean(
+    contract.capabilities?.contextGrounding?.orchestratorReadContract &&
+      contract.orchestrator?.readContractVersion &&
+      Array.isArray(contract.orchestrator.requiredArtifacts)
+  );
 }
 
 function formatContractCapabilities(contract: {

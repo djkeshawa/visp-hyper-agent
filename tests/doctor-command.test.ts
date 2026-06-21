@@ -36,6 +36,101 @@ async function writeHyperGitHook(projectPath: string): Promise<void> {
   await writeFile(join(projectPath, ".git", "hooks", "pre-commit"), "# visp-hyper-guard hook\n", "utf8");
 }
 
+function kitReadContractArtifacts(): Array<Record<string, unknown>> {
+  return [
+    {
+      id: "context-pack",
+      path: ".visp/features/001-demo/context/T001.context.json",
+      role: "context-pack",
+      mimeType: "application/json",
+      requiredFor: ["handoff", "implementation", "checkpoint"],
+      freshness: "hash-pinned"
+    },
+    {
+      id: "implementation-checklist",
+      path: ".visp/features/001-demo/context/T001.implementation-checklist.json",
+      role: "checklist",
+      mimeType: "application/json",
+      requiredFor: ["implementation", "pr"],
+      freshness: "gate-validated"
+    }
+  ];
+}
+
+function kit13IntegrationContract(
+  projectPath: string,
+  requiredArtifacts: Array<Record<string, unknown>> = kitReadContractArtifacts()
+): Record<string, unknown> {
+  return {
+    success: true,
+    contractVersion: "1.3",
+    kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
+    targetPath: projectPath,
+    initialized: true,
+    activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
+    activeTask: { id: "T001", title: "Demo task", status: "ready" },
+    commands: {},
+    capabilities: {
+      governance: { failClosedGates: true },
+      contextGrounding: {
+        taskScopedContextPacks: true,
+        artifactProvenance: true,
+        orchestratorReadContract: true
+      },
+      evidence: { verification: true, review: true, reconciliation: true },
+      enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
+    },
+    workflow: {
+      freshnessChecks: [
+        ".visp/features/<feature>/context/<task-id>.context.json",
+        "contextPack.artifactProvenance[]"
+      ]
+    },
+    artifacts: {
+      kitSignals: [".visp/policy.json", ".visp/project.json"],
+      projectStatus: ".visp/status.json",
+      projectProfile: ".visp/project.json",
+      featureRoot: ".visp/features",
+      featureDir: ".visp/features/001-demo",
+      taskGraph: ".visp/features/001-demo/task-graph.json",
+      contextPack: ".visp/features/001-demo/context/T001.context.json",
+      contextPrompt: ".visp/features/001-demo/context/T001.prompt.md"
+    },
+    orchestrator: {
+      readContractVersion: "0.1",
+      requiredArtifacts,
+      freshnessPolicy: {
+        contextPackHashPinned: true,
+        provenanceArtifactsHashPinned: true,
+        staleContextBlocks: ["implementation", "checkpoint", "pr"]
+      }
+    },
+    warnings: []
+  };
+}
+
+async function writeActiveKitReadContract(projectPath: string): Promise<void> {
+  await mkdir(join(projectPath, ".visp", "hyper", "current"), { recursive: true });
+  await writeFile(
+    join(projectPath, ".visp", "hyper", "current", "context-manifest.json"),
+    JSON.stringify({
+      version: "0.1",
+      sessionId: "vh_test",
+      kitReadContract: {
+        contractVersion: "1.3",
+        readContractVersion: "0.1",
+        requiredArtifacts: kitReadContractArtifacts(),
+        freshnessPolicy: {
+          contextPackHashPinned: true,
+          provenanceArtifactsHashPinned: true,
+          staleContextBlocks: ["implementation", "checkpoint", "pr"]
+        }
+      }
+    }),
+    "utf8"
+  );
+}
+
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -64,6 +159,7 @@ describe("doctor command", () => {
   it("checks the healthy Visp Kit bridge path", async () => {
     const projectPath = await createProject();
     await writeKitArtifacts(projectPath);
+    await writeActiveKitReadContract(projectPath);
     await writeHyperGitHook(projectPath);
     const shim = await createVispShim({
       status: {
@@ -75,69 +171,7 @@ describe("doctor command", () => {
         }
       },
       integration: {
-        stdout: {
-          success: true,
-          contractVersion: "1.3",
-          kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
-          targetPath: projectPath,
-          initialized: true,
-          activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
-          activeTask: { id: "T001", title: "Demo task", status: "ready" },
-          commands: {},
-          capabilities: {
-            governance: { failClosedGates: true },
-            contextGrounding: {
-              taskScopedContextPacks: true,
-              artifactProvenance: true,
-              orchestratorReadContract: true
-            },
-            evidence: { verification: true, review: true, reconciliation: true },
-            enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
-          },
-          workflow: {
-            freshnessChecks: [
-              ".visp/features/<feature>/context/<task-id>.context.json",
-              "contextPack.artifactProvenance[]"
-            ]
-          },
-          artifacts: {
-            kitSignals: [".visp/policy.json", ".visp/project.json"],
-            projectStatus: ".visp/status.json",
-            projectProfile: ".visp/project.json",
-            featureRoot: ".visp/features",
-            featureDir: ".visp/features/001-demo",
-            taskGraph: ".visp/features/001-demo/task-graph.json",
-            contextPack: ".visp/features/001-demo/context/T001.context.json",
-            contextPrompt: ".visp/features/001-demo/context/T001.prompt.md"
-          },
-          orchestrator: {
-            readContractVersion: "0.1",
-            requiredArtifacts: [
-              {
-                id: "context-pack",
-                path: ".visp/features/001-demo/context/T001.context.json",
-                role: "context-pack",
-                mimeType: "application/json",
-                requiredFor: ["handoff", "implementation", "checkpoint"],
-                freshness: "hash-pinned"
-              },
-              {
-                id: "implementation-checklist",
-                path: ".visp/features/001-demo/context/T001.implementation-checklist.json",
-                role: "checklist",
-                mimeType: "application/json",
-                requiredFor: ["implementation", "pr"],
-                freshness: "gate-validated"
-              }
-            ],
-            freshnessPolicy: {
-              contextPackHashPinned: true,
-              provenanceArtifactsHashPinned: true,
-              staleContextBlocks: ["implementation", "checkpoint", "pr"]
-            }
-          },
-          warnings: []
-        }
+        stdout: kit13IntegrationContract(projectPath)
       },
       policy: { stdout: { success: true, errors: [] } },
       gate: { stdout: { success: true, stage: "next", allowed: true, failedRules: [] } }
@@ -162,6 +196,8 @@ describe("doctor command", () => {
     expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("orchestrator read contract");
     expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("provenance freshness");
     expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("git+CI enforcement");
+    expect(summary.checks.find((check) => check.id === "kit-read-contract")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "kit-read-contract")?.detail).toContain("2 required artifacts");
     expect(summary.checks.find((check) => check.id === "kit-policy")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-context-pack")?.detail).toContain("T001");
     expect(summary.checks.find((check) => check.id === "git-hook")?.status).toBe("pass");
@@ -169,6 +205,41 @@ describe("doctor command", () => {
     const argvLog = await readFile(shim.argvLogPath, "utf8");
     expect(argvLog).toContain('["policy","validate","--json"]');
     expect(argvLog).toContain('["gate","next","--json"]');
+  });
+
+  it("warns when the active handoff lacks the Kit read contract", async () => {
+    const projectPath = await createProject();
+    await writeKitArtifacts(projectPath);
+    await writeHyperGitHook(projectPath);
+    const shim = await createVispShim({
+      status: {
+        stdout: {
+          success: true,
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo" },
+          activeTask: { id: "T001", title: "Demo task", status: "ready" }
+        }
+      },
+      integration: {
+        stdout: kit13IntegrationContract(projectPath, kitReadContractArtifacts().slice(0, 1))
+      },
+      policy: { stdout: { success: true, errors: [] } },
+      gate: { stdout: { success: true, stage: "next", allowed: true, failedRules: [] } }
+    });
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+      nextCommand: string;
+    };
+    const readContract = summary.checks.find((check) => check.id === "kit-read-contract");
+    expect(summary.success).toBe(true);
+    expect(readContract?.status).toBe("warn");
+    expect(readContract?.detail).toContain("no context manifest");
+    expect(summary.nextCommand).toContain("visp-hyper run");
   });
 
   it("warns when the Kit contract lacks provenance freshness support", async () => {
