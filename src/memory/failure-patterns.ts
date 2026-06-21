@@ -47,6 +47,11 @@ export type FailurePatternQuery = {
   limit?: number;
 };
 
+type ScoredFailurePatternQuery = Omit<FailurePatternQuery, "files"> & {
+  files: Set<string>;
+  terms: string[];
+};
+
 const STORE_PATH = ["hyper", "failure-patterns.json"];
 const MAX_PATTERNS = 100;
 
@@ -149,7 +154,7 @@ function trimStore(store: FailurePatternStore): FailurePatternStore {
 
 function relevanceScore(
   pattern: FailurePattern,
-  query: FailurePatternQuery & { files: Set<string>; terms: string[] }
+  query: ScoredFailurePatternQuery
 ): number {
   let score = 0;
   if (query.taskId && pattern.taskId === query.taskId) {

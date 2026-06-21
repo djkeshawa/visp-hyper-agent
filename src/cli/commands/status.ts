@@ -41,7 +41,7 @@ export function statusCommand(): Command {
 }
 
 function formatContextFreshness(freshness: ContextFreshness): string {
-  const parts = [freshness.status];
+  const parts: string[] = [freshness.status];
   if (freshness.blocking && freshness.finding) {
     parts.push(`- ${freshness.finding}`);
   }

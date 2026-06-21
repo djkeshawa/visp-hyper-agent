@@ -220,7 +220,7 @@ function formatContextFreshness(freshness: ResumeContextFreshness | undefined): 
   if (!freshness) {
     return "unknown";
   }
-  const parts = [freshness.status];
+  const parts: string[] = [freshness.status];
   if (freshness.blocking && freshness.finding) {
     parts.push(`- ${freshness.finding}`);
   }
