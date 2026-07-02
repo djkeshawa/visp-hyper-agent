@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
 import { parseJsonStore } from "../core/json-store.js";
+import { withStoreLock } from "../core/store-lock.js";
 
 export const routingQuarantineSchema = z.object({
   taskClass: z.string(),
@@ -55,6 +56,22 @@ export async function writeRoutingState(projectPath: string, state: RoutingState
   await writeText(routingPath(projectPath), `${JSON.stringify(state, null, 2)}\n`);
 }
 
+/**
+ * Locked read-modify-write over the routing state, so concurrent visp-hyper
+ * invocations (fan-out subagents, MCP calls) cannot drop each other's updates.
+ */
+export async function updateRoutingState(
+  projectPath: string,
+  updater: (state: RoutingState) => RoutingState | Promise<RoutingState>
+): Promise<RoutingState> {
+  return withStoreLock(projectPath, async () => {
+    const { state } = await readRoutingState(projectPath);
+    const next = await updater(state);
+    await writeRoutingState(projectPath, next);
+    return next;
+  });
+}
+
 const MAX_DECISIONS = 50;
 
 /**
@@ -66,7 +83,8 @@ export async function recordRoutingDecision(
   projectPath: string,
   decision: RoutingDecision
 ): Promise<void> {
-  const { state } = await readRoutingState(projectPath);
-  const decisions = [...state.decisions, decision].slice(-MAX_DECISIONS);
-  await writeRoutingState(projectPath, { ...state, decisions });
+  await updateRoutingState(projectPath, (state) => ({
+    ...state,
+    decisions: [...state.decisions, decision].slice(-MAX_DECISIONS)
+  }));
 }

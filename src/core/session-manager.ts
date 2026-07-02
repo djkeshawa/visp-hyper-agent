@@ -4,6 +4,7 @@ import { z } from "zod";
 import { defaultConfig } from "./defaults.js";
 import { ensureDir, readTextIfExists, vispPath, writeText } from "./fs-utils.js";
 import { parseJsonStore } from "./json-store.js";
+import { withStoreLock } from "./store-lock.js";
 import { kitTaskSchema } from "../kit/kit-schemas.js";
 import type { HyperConfig, HyperState, SessionRecord, ToolProfile } from "./types.js";
 
@@ -124,23 +125,25 @@ export async function createSession(input: {
   tool: ToolProfile;
   relevantFiles: string[];
 }): Promise<SessionRecord> {
-  const state = await readState(input.projectPath);
-  const now = new Date().toISOString();
-  const session: SessionRecord = {
-    id: `vh_${now.slice(0, 10).replaceAll("-", "")}_${randomUUID().slice(0, 8)}`,
-    goal: input.goal,
-    tool: input.tool,
-    projectPath: input.projectPath,
-    createdAt: now,
-    updatedAt: now,
-    phase: "implementation",
-    relevantFiles: input.relevantFiles
-  };
+  return withStoreLock(input.projectPath, async () => {
+    const state = await readState(input.projectPath);
+    const now = new Date().toISOString();
+    const session: SessionRecord = {
+      id: `vh_${now.slice(0, 10).replaceAll("-", "")}_${randomUUID().slice(0, 8)}`,
+      goal: input.goal,
+      tool: input.tool,
+      projectPath: input.projectPath,
+      createdAt: now,
+      updatedAt: now,
+      phase: "implementation",
+      relevantFiles: input.relevantFiles
+    };
 
-  state.activeSessionId = session.id;
-  state.sessions[session.id] = session;
-  await writeState(input.projectPath, state);
-  return session;
+    state.activeSessionId = session.id;
+    state.sessions[session.id] = session;
+    await writeState(input.projectPath, state);
+    return session;
+  });
 }
 
 export async function getActiveSession(projectPath: string): Promise<SessionRecord | null> {
@@ -152,17 +155,19 @@ export async function updateActiveSession(
   projectPath: string,
   updater: (session: SessionRecord) => SessionRecord
 ): Promise<SessionRecord | null> {
-  const state = await readState(projectPath);
-  if (!state.activeSessionId || !state.sessions[state.activeSessionId]) {
-    return null;
-  }
-  const next = updater({
-    ...state.sessions[state.activeSessionId],
-    updatedAt: new Date().toISOString()
+  return withStoreLock(projectPath, async () => {
+    const state = await readState(projectPath);
+    if (!state.activeSessionId || !state.sessions[state.activeSessionId]) {
+      return null;
+    }
+    const next = updater({
+      ...state.sessions[state.activeSessionId],
+      updatedAt: new Date().toISOString()
+    });
+    state.sessions[next.id] = next;
+    await writeState(projectPath, state);
+    return next;
   });
-  state.sessions[next.id] = next;
-  await writeState(projectPath, state);
-  return next;
 }
 
 export function currentDir(projectPath: string): string {

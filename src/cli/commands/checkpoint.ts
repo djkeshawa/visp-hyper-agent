@@ -15,7 +15,7 @@ import {
   escalate,
   renderModelRouting
 } from "../../routing/routing-engine.js";
-import { readRoutingState, writeRoutingState } from "../../routing/routing-state.js";
+import { readRoutingState, updateRoutingState } from "../../routing/routing-state.js";
 import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
 import { printWarnings, resolveProjectPath } from "./shared.js";
 import { collectChangedFiles } from "../../governance/scope-guard.js";
@@ -153,16 +153,16 @@ export function checkpointCommand(): Command {
       // task class so future routing forces the strongest tier until it expires.
       if (!passed) {
         try {
-          const { state } = await readRoutingState(projectPath);
           const hyperState = await readState(projectPath);
-          const escalated = escalate({
-            state,
-            taskId,
-            taskClass,
-            sessionCount: Object.keys(hyperState.sessions).length,
-            now: new Date().toISOString()
-          });
-          await writeRoutingState(projectPath, escalated);
+          await updateRoutingState(projectPath, (state) =>
+            escalate({
+              state,
+              taskId,
+              taskClass,
+              sessionCount: Object.keys(hyperState.sessions).length,
+              now: new Date().toISOString()
+            })
+          );
         } catch (error) {
           console.log(`warning: routing escalation was not recorded: ${error instanceof Error ? error.message : String(error)}`);
         }
