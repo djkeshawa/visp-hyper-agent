@@ -33,7 +33,11 @@ export function checkpointCommand(): Command {
       const projectPath = resolveProjectPath(this);
       const session = await getActiveSession(projectPath);
       if (!session) {
-        throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
+        // Degrade, never crash: a thrown stack trace mid-orchestration derails
+        // the coding agent's loop; a clean message + exit code does not.
+        console.log("No active Visp Hyper session. Run `visp-hyper start` first.");
+        process.exitCode = 1;
+        return;
       }
 
       await writeCheckpointMarkdown(projectPath, session.id, session.goal, options.task);

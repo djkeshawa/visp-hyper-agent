@@ -44,7 +44,10 @@ export function rememberCommand(): Command {
       const projectPath = resolveProjectPath(this);
       const session = await getActiveSession(projectPath);
       if (!session) {
-        throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
+        // Degrade, never crash: match guard/resume rather than throwing.
+        console.log("No active Visp Hyper session. Run `visp-hyper start` first.");
+        process.exitCode = 1;
+        return;
       }
       const reviewSummary = await readTextIfExists(join(projectPath, ".visp", "hyper", "current", "review-report.md"));
       const record = {
