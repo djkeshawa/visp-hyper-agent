@@ -172,7 +172,11 @@ All orchestration output is deterministic, delimited text designed for LLM consu
 - `BEGIN_VISP_PIPELINE_BLOCKED` — a gate refused: failed rules and the exact next allowed `visp` command. Unparseable gate results fail closed.
 - `BEGIN_VISP_CHECKPOINT_RESULT` — verify/review outcomes and the next task (or `pipeline_complete`).
 - `BEGIN_VISP_MODEL_ROUTING` — advisory tier suggestion with its evidence (samples, pass rate).
+- `BEGIN_VISP_ADAPTATION` — deterministic reaction to repeated checkpoint failures: after 2 consecutive failures a scoped remediation task (`R-<task>-<n>`, findings verbatim, same file scope) is injected and made current; a failing remediation or a 3-failure streak issues an escalation directive instead. All rule-driven — no LLM.
+- `BEGIN_VISP_WORKFLOW_DIRECTIVE` — advisory fan-out plan, printed only when the remaining DAG has ≥ 2 independent `parallelizable` tasks with disjoint `allowedFiles` scopes. claude-code is told to dispatch parallel tasks to native subagents (see the `hyper-fanout` command); every other tool gets an explicitly sequential interpretation. Checkpoints always stay sequential.
 - `VISP_HYPER_REPORT` — the aggregate cost/accuracy report.
+
+Existing installs predating these blocks should re-run `visp-hyper init --tool <tool> --force-assets` to refresh the per-tool agent assets (installs never overwrite without `--force-assets`).
 
 ## Adaptive Model Routing (quality-first)
 
