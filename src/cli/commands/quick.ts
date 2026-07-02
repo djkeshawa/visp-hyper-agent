@@ -1,7 +1,7 @@
 import { isAbsolute, relative } from "node:path";
 import { Command, Option } from "commander";
 import { toPosixPath } from "../../core/fs-utils.js";
-import { readState, updateActiveSession } from "../../core/session-manager.js";
+import { readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
 import type { ToolProfile } from "../../core/types.js";
 import { detectVisp } from "../../kit/kit-command-bridge.js";
 import type { KitTask } from "../../kit/kit-schemas.js";
@@ -28,7 +28,10 @@ export function quickCommand(): Command {
       const projectPath = resolveProjectPath(this);
 
       const files = normalizeFiles(options.files ?? [], projectPath);
-      const detected = await new ProjectValidationRunner().detect(projectPath);
+      const config = await readConfig(projectPath);
+      const detected = await new ProjectValidationRunner({
+        configCommands: config.validationCommands
+      }).detect(projectPath);
 
       const task: KitTask = {
         id: QUICK_TASK_ID,

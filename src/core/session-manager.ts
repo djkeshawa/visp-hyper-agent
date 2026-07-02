@@ -17,7 +17,9 @@ const configSchema = z.object({
   memoryRepoId: z.string().optional(),
   contextMode: z.literal("deterministic"),
   blockedPaths: z.array(z.string()),
-  skillMode: z.enum(["auto", "review"]).default("auto")
+  skillMode: z.enum(["auto", "review"]).default("auto"),
+  // Optional so legacy config files without it keep parsing.
+  validationCommands: z.array(z.string()).optional()
 });
 
 const pipelineStepRecordSchema = z.object({

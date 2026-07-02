@@ -40,6 +40,38 @@ describe("ProjectValidationRunner", () => {
       expect(result).toEqual(["pnpm run test", "pnpm run build"]);
     });
 
+    it("config-declared commands extend the detected allowlist (deduped)", async () => {
+      const runner = new ProjectValidationRunner({
+        configCommands: ["pnpm run lint", "pnpm run test"]
+      });
+      const dir = await mkdtemp(join(tmpdir(), "visp-val-"));
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ scripts: { test: "vitest", lint: "eslint ." } }),
+        "utf8"
+      );
+      await writeFile(join(dir, "pnpm-lock.yaml"), "", "utf8");
+
+      expect(await runner.detect(dir)).toEqual(["pnpm run test", "pnpm run lint"]);
+    });
+
+    it("config-declared commands survive a project without package.json", async () => {
+      const runner = new ProjectValidationRunner({ configCommands: ["make check"] });
+      const dir = await mkdtemp(join(tmpdir(), "visp-val-"));
+
+      expect(await runner.detect(dir)).toEqual(["make check"]);
+    });
+
+    it("kitCommands still win over config-declared commands", async () => {
+      const runner = new ProjectValidationRunner({
+        kitCommands: ["pnpm exec vitest run tests/x.test.ts"],
+        configCommands: ["pnpm run lint"]
+      });
+      const dir = await mkdtemp(join(tmpdir(), "visp-val-"));
+
+      expect(await runner.detect(dir)).toEqual(["pnpm exec vitest run tests/x.test.ts"]);
+    });
+
     it("AC001c: no package.json → empty array", async () => {
       const runner = new ProjectValidationRunner();
       const dir = await mkdtemp(join(tmpdir(), "visp-val-empty-"));

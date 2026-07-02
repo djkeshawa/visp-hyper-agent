@@ -6,10 +6,12 @@ import type { ValidationCommandRunner } from "../core/types.js";
 export class ProjectValidationRunner implements ValidationCommandRunner {
   private readonly timeoutMs: number;
   private readonly kitCommands: string[] | undefined;
+  private readonly configCommands: string[];
 
-  constructor(options?: { timeoutMs?: number; kitCommands?: string[] }) {
+  constructor(options?: { timeoutMs?: number; kitCommands?: string[]; configCommands?: string[] }) {
     this.timeoutMs = options?.timeoutMs ?? 120_000;
     this.kitCommands = options?.kitCommands;
+    this.configCommands = options?.configCommands ?? [];
   }
 
   async detect(projectPath: string): Promise<string[]> {
@@ -38,7 +40,7 @@ export class ProjectValidationRunner implements ValidationCommandRunner {
       const raw = await readFile(join(projectPath, "package.json"), "utf8");
       pkg = JSON.parse(raw);
     } catch {
-      return [];
+      return [...this.configCommands];
     }
 
     if (
@@ -48,7 +50,7 @@ export class ProjectValidationRunner implements ValidationCommandRunner {
       typeof (pkg as Record<string, unknown>).scripts !== "object" ||
       (pkg as Record<string, unknown>).scripts === null
     ) {
-      return [];
+      return [...this.configCommands];
     }
 
     const scripts = (pkg as Record<string, unknown>).scripts as Record<string, unknown>;
@@ -57,6 +59,12 @@ export class ProjectValidationRunner implements ValidationCommandRunner {
     for (const name of ORDERED) {
       if (name in scripts) {
         result.push(`${pm} run ${name}`);
+      }
+    }
+    // Config-declared commands extend the detected allowlist (deduped).
+    for (const command of this.configCommands) {
+      if (!result.includes(command)) {
+        result.push(command);
       }
     }
     return result;

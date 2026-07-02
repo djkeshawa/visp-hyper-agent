@@ -11,6 +11,12 @@ export type HyperConfig = {
   contextMode: "deterministic";
   blockedPaths: string[];
   skillMode: "auto" | "review";
+  /**
+   * Extra validation commands merged into the detected allowlist (e.g.
+   * "pnpm run lint"). Config-provided, so the no-shell-interpolation rule
+   * holds: they run via execFile argument arrays like detected commands.
+   */
+  validationCommands?: string[];
 };
 
 export type HyperState = {

@@ -111,7 +111,8 @@ export function checkpointCommand(): Command {
             allowedFiles: task?.allowedFiles,
             validationCommands: task?.validationCommands
           },
-          blockedPaths: config.blockedPaths
+          blockedPaths: config.blockedPaths,
+          configValidationCommands: config.validationCommands
         });
         verifyPassed = evidence.verifyPassed;
         reviewPassed = evidence.reviewPassed;
