@@ -32,8 +32,20 @@ export type HyperState = {
 
 export type PipelineStepRecord = {
   taskId: string;
-  action: "started" | "checkpoint-passed" | "checkpoint-failed";
+  action: "started" | "checkpoint-passed" | "checkpoint-failed" | "task-injected" | "escalation-issued";
   at: string;
+  detail?: string;
+};
+
+/**
+ * Audit record for a deterministic adaptive decision (remediation injection or
+ * escalation directive) taken after a failed checkpoint.
+ */
+export type AdaptiveDecisionRecord = {
+  at: string;
+  taskId: string;
+  rule: string;
+  action: "inject-remediation" | "escalation-directive";
   detail?: string;
 };
 
@@ -48,6 +60,14 @@ export type PipelineState = {
    * resolves the task graph from these entries instead of `loadTaskGraph`.
    */
   syntheticTasks?: KitTask[];
+  /**
+   * Remediation tasks injected by adaptive rules after repeated checkpoint
+   * failures. Like syntheticTasks they exist nowhere on disk; effectiveGraph
+   * merges them into the graph in-memory. Optional for legacy state files.
+   */
+  injectedTasks?: KitTask[];
+  /** Audit trail of adaptive decisions. Optional for legacy state files. */
+  decisionLog?: AdaptiveDecisionRecord[];
 };
 
 export type SessionRecord = {

@@ -2,6 +2,8 @@ import { Command } from "commander";
 import { getActiveSession, readState } from "../../core/session-manager.js";
 import type { SessionRecord } from "../../core/types.js";
 import type { KitTask } from "../../kit/kit-schemas.js";
+import { readRelevantFailurePatterns } from "../../memory/failure-patterns.js";
+import { effectiveGraph, evidenceRequirements } from "../../pipeline/adaptive-rules.js";
 import { buildActionBlock, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
@@ -27,14 +29,21 @@ export function nextCommand(): Command {
       }
 
       if (session.pipeline?.currentTaskId) {
-        const graph = await loadTaskGraph(projectPath);
+        // Same resolution as checkpoint: disk graph, then the session's
+        // synthetic graph, with injected remediation tasks merged in-memory.
+        const syntheticTasks = session.pipeline.syntheticTasks;
+        const baseGraph =
+          (await loadTaskGraph(projectPath)) ??
+          (syntheticTasks && syntheticTasks.length > 0 ? { tasks: syntheticTasks } : null);
+        const graph = baseGraph ? effectiveGraph(baseGraph, session.pipeline) : null;
         if (!graph) {
           console.log("warning: pipeline state exists but the task graph could not be loaded.");
         } else {
           const task = currentTask(graph, session.pipeline);
           if (task) {
             const contextPackPath = await contextPackPathIfExists(projectPath, task.id);
-            console.log(buildActionBlock(task, { sessionId: session.id, contextPackPath }));
+            const knownFailureModes = await knownFailureModesFor(projectPath, task);
+            console.log(buildActionBlock(task, { sessionId: session.id, contextPackPath, knownFailureModes }));
             await printAndRecordRouting(projectPath, task);
             return;
           }
@@ -57,6 +66,24 @@ function printLegacyNext(session: SessionRecord): void {
       "END_VISP_NEXT_ACTION"
     ].join("\n")
   );
+}
+
+/**
+ * Known failure modes for the task, surfaced as an optional action-block
+ * section. Best-effort: an unreadable pattern store yields none.
+ */
+async function knownFailureModesFor(projectPath: string, task: KitTask): Promise<string[] | undefined> {
+  try {
+    const patterns = await readRelevantFailurePatterns(projectPath, {
+      taskId: task.id,
+      taskClass: task.riskLevel ?? "unknown",
+      files: task.allowedFiles
+    });
+    const { knownFailureModes } = evidenceRequirements(task, patterns);
+    return knownFailureModes.length > 0 ? knownFailureModes : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

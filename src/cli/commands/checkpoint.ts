@@ -5,11 +5,19 @@ import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import type { KitReviewSummary, KitVerifySummary } from "../../kit/kit-schemas.js";
-import { recordFailurePattern } from "../../memory/failure-patterns.js";
+import { readRelevantFailurePatterns, recordFailurePattern } from "../../memory/failure-patterns.js";
 import { createCheckpointSnapshot, writeCheckpointSnapshot } from "../../quality/checkpoint-snapshot.js";
 import { collectLocalEvidence } from "../../quality/local-evidence.js";
 import { harvestSkillProposals } from "./remember.js";
-import { advance, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
+import {
+  applyAdaptiveDecision,
+  decideAdaptiveAction,
+  effectiveGraph,
+  evidenceRequirements,
+  renderAdaptationBlock,
+  type AdaptiveDecision
+} from "../../pipeline/adaptive-rules.js";
+import { advance, buildActionBlock, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
 import {
   computeSuggestedTier,
   escalate,
@@ -62,11 +70,13 @@ export function checkpointCommand(): Command {
       }
 
       // Disk graph first; fall back to a session's synthetic graph (e.g. a `quick`
-      // session) which exists nowhere on disk.
+      // session) which exists nowhere on disk. Injected remediation tasks are
+      // merged in-memory so they are checkpointable like any other task.
       const syntheticTasks = session.pipeline?.syntheticTasks;
-      const graph =
+      const baseGraph =
         (await loadTaskGraph(projectPath)) ??
         (syntheticTasks && syntheticTasks.length > 0 ? { tasks: syntheticTasks } : null);
+      const graph = baseGraph ? effectiveGraph(baseGraph, session.pipeline) : null;
       if (!graph) {
         console.log(
           [
@@ -132,6 +142,30 @@ export function checkpointCommand(): Command {
         }
       }
 
+      // Tightened evidence for high-risk or repeatedly-failing task classes:
+      // verify may not pass vacuously (with no validation commands at all).
+      // Only ever tightens the gate; failures to compute it are swallowed.
+      try {
+        const patterns = await readRelevantFailurePatterns(projectPath, {
+          taskId,
+          taskClass,
+          files: task?.allowedFiles
+        });
+        const requirements = evidenceRequirements(task, patterns);
+        const vacuousVerify =
+          evidenceSource === "local" &&
+          localFindings.includes("no validation commands detected; verify passed vacuously");
+        if (requirements.strictEvidence && verifyPassed && vacuousVerify) {
+          verifyPassed = false;
+          const finding =
+            "strict evidence: this task class requires real validation evidence; declare validationCommands on the task or in config.json";
+          failureFindings = [...failureFindings, finding];
+          localFindings = [...localFindings, finding];
+        }
+      } catch {
+        // Advisory tightening only; never fail the checkpoint machinery itself.
+      }
+
       const passed = verifyPassed && reviewPassed;
       try {
         await appendAttempt(projectPath, {
@@ -153,6 +187,23 @@ export function checkpointCommand(): Command {
         new Date().toISOString()
       );
       await updateActiveSession(projectPath, (current) => ({ ...current, pipeline: nextState }));
+
+      // Deterministic adaptation: repeated failures inject a scoped remediation
+      // task or issue an escalation directive. Best-effort like routing — a
+      // failure here must never break the checkpoint itself.
+      let adaptiveDecision: AdaptiveDecision = { action: "none" };
+      if (!passed && task) {
+        try {
+          adaptiveDecision = decideAdaptiveAction({ state: nextState, task, findings: failureFindings });
+          if (adaptiveDecision.action !== "none") {
+            const adapted = applyAdaptiveDecision(nextState, adaptiveDecision, taskId, new Date().toISOString());
+            await updateActiveSession(projectPath, (current) => ({ ...current, pipeline: adapted }));
+          }
+        } catch (error) {
+          adaptiveDecision = { action: "none" };
+          console.log(`warning: pipeline adaptation was not recorded: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
 
       // Quality recovers unconditionally: a checkpoint failure quarantines the
       // task class so future routing forces the strongest tier until it expires.
@@ -227,6 +278,16 @@ export function checkpointCommand(): Command {
       }
       lines.push("END_VISP_CHECKPOINT_RESULT");
       console.log(lines.join("\n"));
+
+      const adaptationBlock = renderAdaptationBlock(taskId, adaptiveDecision);
+      if (adaptationBlock) {
+        console.log("");
+        console.log(adaptationBlock);
+        if (adaptiveDecision.action === "inject-remediation") {
+          console.log("");
+          console.log(buildActionBlock(adaptiveDecision.remediationTask, { sessionId: session.id }));
+        }
+      }
 
       // On a pass with a next task, advise the routing tier for that task.
       if (passed && nextState.currentTaskId) {

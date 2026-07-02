@@ -24,8 +24,16 @@ const configSchema = z.object({
 
 const pipelineStepRecordSchema = z.object({
   taskId: z.string(),
-  action: z.enum(["started", "checkpoint-passed", "checkpoint-failed"]),
+  action: z.enum(["started", "checkpoint-passed", "checkpoint-failed", "task-injected", "escalation-issued"]),
   at: z.string(),
+  detail: z.string().optional()
+});
+
+const adaptiveDecisionRecordSchema = z.object({
+  at: z.string(),
+  taskId: z.string(),
+  rule: z.string(),
+  action: z.enum(["inject-remediation", "escalation-directive"]),
   detail: z.string().optional()
 });
 
@@ -35,7 +43,10 @@ const pipelineStateSchema = z.object({
   completed: z.array(z.string()),
   stepHistory: z.array(pipelineStepRecordSchema),
   // Optional so legacy state without synthetic graphs still parses.
-  syntheticTasks: z.array(kitTaskSchema).optional()
+  syntheticTasks: z.array(kitTaskSchema).optional(),
+  // Optional so legacy state without adaptive pipeline fields still parses.
+  injectedTasks: z.array(kitTaskSchema).optional(),
+  decisionLog: z.array(adaptiveDecisionRecordSchema).optional()
 });
 
 const stateSchema = z.object({
