@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
+import { GitBranchSessionLocator } from "./branch-session-locator.js";
 import { defaultConfig } from "./defaults.js";
 import { ensureDir, readTextIfExists, vispPath, writeText } from "./fs-utils.js";
 import { parseJsonStore } from "./json-store.js";
@@ -49,7 +50,9 @@ const stateSchema = z.object({
       relevantFiles: z.array(z.string()),
       pipeline: pipelineStateSchema.optional()
     })
-  )
+  ),
+  // Optional so legacy state without branch-keyed sessions still parses.
+  activeSessionByBranch: z.record(z.string()).optional()
 });
 
 export async function initializeProject(projectPath: string, force = false): Promise<void> {
@@ -70,6 +73,27 @@ export async function initializeProject(projectPath: string, force = false): Pro
 
 function emptyState(): HyperState {
   return { activeSessionId: null, sessions: {} };
+}
+
+const branchLocator = new GitBranchSessionLocator();
+
+/** BranchSessionLocator key for the caller's current branch (never throws). */
+async function currentBranchKey(projectPath: string): Promise<string> {
+  const branch = await branchLocator.currentBranch(projectPath);
+  return branchLocator.sessionKey(projectPath, branch);
+}
+
+/**
+ * Resolve the session the current branch should act on: the branch-keyed
+ * entry wins so parallel branches/worktrees stay isolated; a branch with no
+ * session of its own falls back to the legacy global activeSessionId.
+ */
+function resolveActiveSessionId(state: HyperState, branchKey: string): string | null {
+  const branchSessionId = state.activeSessionByBranch?.[branchKey];
+  if (branchSessionId && state.sessions[branchSessionId]) {
+    return branchSessionId;
+  }
+  return state.activeSessionId && state.sessions[state.activeSessionId] ? state.activeSessionId : null;
 }
 
 /**
@@ -125,6 +149,7 @@ export async function createSession(input: {
   tool: ToolProfile;
   relevantFiles: string[];
 }): Promise<SessionRecord> {
+  const branchKey = await currentBranchKey(input.projectPath);
   return withStoreLock(input.projectPath, async () => {
     const state = await readState(input.projectPath);
     const now = new Date().toISOString();
@@ -141,27 +166,31 @@ export async function createSession(input: {
 
     state.activeSessionId = session.id;
     state.sessions[session.id] = session;
+    state.activeSessionByBranch = { ...state.activeSessionByBranch, [branchKey]: session.id };
     await writeState(input.projectPath, state);
     return session;
   });
 }
 
 export async function getActiveSession(projectPath: string): Promise<SessionRecord | null> {
-  const state = await readState(projectPath);
-  return state.activeSessionId ? state.sessions[state.activeSessionId] ?? null : null;
+  const [state, branchKey] = await Promise.all([readState(projectPath), currentBranchKey(projectPath)]);
+  const sessionId = resolveActiveSessionId(state, branchKey);
+  return sessionId ? state.sessions[sessionId] ?? null : null;
 }
 
 export async function updateActiveSession(
   projectPath: string,
   updater: (session: SessionRecord) => SessionRecord
 ): Promise<SessionRecord | null> {
+  const branchKey = await currentBranchKey(projectPath);
   return withStoreLock(projectPath, async () => {
     const state = await readState(projectPath);
-    if (!state.activeSessionId || !state.sessions[state.activeSessionId]) {
+    const sessionId = resolveActiveSessionId(state, branchKey);
+    if (!sessionId) {
       return null;
     }
     const next = updater({
-      ...state.sessions[state.activeSessionId],
+      ...state.sessions[sessionId]!,
       updatedAt: new Date().toISOString()
     });
     state.sessions[next.id] = next;

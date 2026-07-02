@@ -16,6 +16,12 @@ export type HyperConfig = {
 export type HyperState = {
   activeSessionId: string | null;
   sessions: Record<string, SessionRecord>;
+  /**
+   * Active session per BranchSessionLocator key, so parallel branches or
+   * worktrees each resume their own session. Optional: legacy state files
+   * without it keep parsing, and resolution falls back to activeSessionId.
+   */
+  activeSessionByBranch?: Record<string, string>;
 };
 
 export type PipelineStepRecord = {
