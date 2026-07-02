@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
-import { basename, dirname, extname, join, relative } from "node:path";
+import { basename, extname, join, posix, relative } from "node:path";
+import { toPosixPath } from "../core/fs-utils.js";
 import { isBlockedPath } from "../governance/blocked-files.js";
 import type { ContextFile } from "../core/types.js";
 
@@ -91,7 +92,7 @@ async function listFiles(projectPath: string, blockedPaths: string[]): Promise<s
     }
     for (const entry of entries) {
       const absolute = join(dir, entry.name);
-      const path = relative(projectPath, absolute);
+      const path = toPosixPath(relative(projectPath, absolute));
       if (isBlockedPath(path, blockedPaths)) {
         continue;
       }
@@ -187,11 +188,12 @@ function likelyTestFiles(path: string, fileSet: Set<string>): string[] {
 
   const ext = extname(path);
   const name = basename(path, ext);
+  // Scanned paths are canonical forward-slash, so candidates must be too.
   const candidates = [
-    join("tests", `${name}.test${ext}`),
-    join("tests", `${name}.spec${ext}`),
-    join(dirname(path), `${name}.test${ext}`),
-    join(dirname(path), `${name}.spec${ext}`)
+    posix.join("tests", `${name}.test${ext}`),
+    posix.join("tests", `${name}.spec${ext}`),
+    posix.join(posix.dirname(path), `${name}.test${ext}`),
+    posix.join(posix.dirname(path), `${name}.spec${ext}`)
   ];
 
   return candidates.filter((candidate) => fileSet.has(candidate));

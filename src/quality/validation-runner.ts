@@ -1,10 +1,7 @@
-import { execFile } from "node:child_process";
 import { readFile, access } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { execFileCrossPlatform } from "../core/exec.js";
 import type { ValidationCommandRunner } from "../core/types.js";
-
-const execFileAsync = promisify(execFile);
 
 export class ProjectValidationRunner implements ValidationCommandRunner {
   private readonly timeoutMs: number;
@@ -82,7 +79,7 @@ export class ProjectValidationRunner implements ValidationCommandRunner {
       const [first, ...rest] = parts;
 
       try {
-        const { stdout, stderr } = await execFileAsync(first!, rest, {
+        const { stdout, stderr } = await execFileCrossPlatform(first!, rest, {
           cwd: projectPath,
           timeout: this.timeoutMs
         });

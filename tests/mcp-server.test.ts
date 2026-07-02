@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { execFileCrossPlatform } from "../src/core/exec.js";
 import { initializeProject } from "../src/core/session-manager.js";
 import {
   handleMessage,
@@ -683,7 +684,7 @@ describe("serve --mcp stdio integration (AC002/AC005)", () => {
       ? (await readFile(distIndex, "utf8")).includes('"serve"')
       : false;
     if (!built) {
-      await execFileAsync("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
+      await execFileCrossPlatform("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
     }
   }, 320_000);
 

@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { initializeProject } from "../src/core/session-manager.js";
 import { checkScope, collectChangedFiles } from "../src/governance/scope-guard.js";
+import { createToolOnlyPathDir } from "./helpers/tool-path-dir.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -44,11 +45,7 @@ async function stage(projectPath: string, file: string): Promise<void> {
  * branch is exercised (mirrors local-evidence.test.ts technique).
  */
 async function gitNodeOnlyPath(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "visp-nokit-"));
-  const { stdout: gitPath } = await execFileAsync("which", ["git"]);
-  await symlink(gitPath.trim(), join(dir, "git"));
-  await symlink(process.execPath, join(dir, "node"));
-  return dir;
+  return createToolOnlyPathDir(["git", "node"]);
 }
 
 /**

@@ -1,5 +1,6 @@
 import { isAbsolute, relative } from "node:path";
 import { Command, Option } from "commander";
+import { toPosixPath } from "../../core/fs-utils.js";
 import { readState, updateActiveSession } from "../../core/session-manager.js";
 import type { ToolProfile } from "../../core/types.js";
 import { detectVisp } from "../../kit/kit-command-bridge.js";
@@ -74,7 +75,7 @@ export function quickCommand(): Command {
  */
 function normalizeFiles(files: string[], projectPath: string): string[] {
   return files.map((file) => {
-    const rel = isAbsolute(file) ? relative(projectPath, file) : file;
+    const rel = isAbsolute(file) ? toPosixPath(relative(projectPath, file)) : file;
     return rel.replace(/^\.\//, "");
   });
 }

@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
-import { dirname, join } from "node:path";
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { delimiter, dirname, join } from "node:path";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
+import { execFileCrossPlatform } from "../src/core/exec.js";
 import { readState } from "../src/core/session-manager.js";
+import { createToolOnlyPathDir } from "./helpers/tool-path-dir.js";
 import { createVispShim } from "./helpers/visp-shim.js";
 
 const execFileAsync = promisify(execFile);
@@ -13,9 +15,11 @@ const execFileAsync = promisify(execFile);
 const originalPath = process.env.PATH;
 
 async function gitInit(projectPath: string): Promise<void> {
-  await execFileAsync("git", ["init", "-b", "main"], { cwd: projectPath });
-  await execFileAsync("git", ["add", "."], { cwd: projectPath });
-  await execFileAsync(
+  // execFileCrossPlatform, not execFile: AC007 re-creates a repo while PATH is
+  // constrained to the tool-only dir (Windows .cmd wrappers).
+  await execFileCrossPlatform("git", ["init", "-b", "main"], { cwd: projectPath });
+  await execFileCrossPlatform("git", ["add", "."], { cwd: projectPath });
+  await execFileCrossPlatform(
     "git",
     ["-c", "user.name=Visp Test", "-c", "user.email=visp@example.test", "commit", "-m", "init"],
     { cwd: projectPath }
@@ -41,7 +45,9 @@ async function createRepo(): Promise<string> {
 }
 
 async function stage(projectPath: string, file: string): Promise<void> {
-  await execFileAsync("git", ["add", file], { cwd: projectPath });
+  // Runs after PATH is constrained to the tool-only dir, whose Windows entries
+  // are .cmd wrappers — resolvable by execFileCrossPlatform but not execFile.
+  await execFileCrossPlatform("git", ["add", file], { cwd: projectPath });
 }
 
 /**
@@ -50,21 +56,9 @@ async function stage(projectPath: string, file: string): Promise<void> {
  * the kit-less branch is exercised.
  */
 async function gitNodeOnlyPath(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "visp-nokit-"));
-  const { stdout: gitPath } = await execFileAsync("which", ["git"]);
-  await symlink(gitPath.trim(), join(dir, "git"));
-  await symlink(process.execPath, join(dir, "node"));
   // npm shells out via `sh` and resolves `node` itself, so both must be present
   // for the detected `npm run test` validation command to execute.
-  for (const tool of ["npm", "sh"]) {
-    try {
-      const { stdout: toolPath } = await execFileAsync("which", [tool]);
-      await symlink(toolPath.trim(), join(dir, tool));
-    } catch {
-      // Tool absent in the host environment; tests relying on it will surface it.
-    }
-  }
-  return dir;
+  return createToolOnlyPathDir(["git", "node", "npm", "sh"], { optional: ["npm", "sh"] });
 }
 
 async function pipeline(projectPath: string): Promise<any> {
@@ -174,7 +168,7 @@ describe("quick command", () => {
         }
       }
     });
-    process.env.PATH = `${dirname(shim.binary)}:${originalPath ?? ""}`;
+    process.env.PATH = `${dirname(shim.binary)}${delimiter}${originalPath ?? ""}`;
 
     logs = [];
     await runCli(["node", "visp-hyper", "--project", kitProject, "quick", "fix the parser"]);

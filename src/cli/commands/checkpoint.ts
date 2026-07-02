@@ -1,6 +1,5 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { Command, Option } from "commander";
+import { execFileCrossPlatform } from "../../core/exec.js";
 import { checkContextFreshness } from "../../context/context-freshness.js";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
@@ -20,8 +19,6 @@ import { readRoutingState, writeRoutingState } from "../../routing/routing-state
 import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
 import { printWarnings, resolveProjectPath } from "./shared.js";
 import { collectChangedFiles } from "../../governance/scope-guard.js";
-
-const execFileAsync = promisify(execFile);
 
 // Default tier recorded in telemetry when the orchestrator does not report
 // which tier actually executed the task via `--tier`.
@@ -294,7 +291,7 @@ async function writeCheckpointMarkdown(
   taskId?: string
 ): Promise<void> {
   const [{ stdout: stat }, snapshot] = await Promise.all([
-    execFileAsync("git", ["diff", "--stat", "HEAD"], { cwd: projectPath }),
+    execFileCrossPlatform("git", ["diff", "--stat", "HEAD"], { cwd: projectPath }),
     createCheckpointSnapshot(projectPath, { sessionId, goal, taskId })
   ]);
   const files = snapshot.files.map((file) => file.path);

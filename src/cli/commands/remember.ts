@@ -1,8 +1,7 @@
-import { execFile } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { promisify } from "node:util";
 import { Command } from "commander";
+import { execFileCrossPlatform } from "../../core/exec.js";
 import { readTextIfExists } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
 import type { HyperConfig, MemoryRecord, SessionRecord } from "../../core/types.js";
@@ -19,8 +18,6 @@ import {
 import { installSkill, isDuplicate, readSkillRegistry, recordUsage } from "../../skills/skill-registry.js";
 import { appendUsage } from "../../telemetry/telemetry-store.js";
 import { resolveProjectPath } from "./shared.js";
-
-const execFileAsync = promisify(execFile);
 
 export function rememberCommand(): Command {
   return new Command("remember")
@@ -300,7 +297,7 @@ async function writeBackRemoteMemory(
 
 async function changedFiles(projectPath: string): Promise<string[]> {
   try {
-    const { stdout } = await execFileAsync("git", ["diff", "--name-only"], { cwd: projectPath });
+    const { stdout } = await execFileCrossPlatform("git", ["diff", "--name-only"], { cwd: projectPath });
     return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   } catch {
     return [];

@@ -330,6 +330,7 @@ describe("doctor command", () => {
     });
     await mkdir(contextDir, { recursive: true });
     await writeFile(contextPath, originalContext, "utf8");
+    await mkdir(join(projectPath, ".visp", "hyper", "current"), { recursive: true });
     await writeFile(
       join(projectPath, ".visp", "hyper", "current", "context-manifest.json"),
       JSON.stringify({

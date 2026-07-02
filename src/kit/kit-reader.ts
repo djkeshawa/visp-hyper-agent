@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { toPosixPath } from "../core/fs-utils.js";
 import type { ArtifactFile, KitArtifacts } from "../core/types.js";
 
 export async function readKitArtifacts(projectPath: string): Promise<KitArtifacts> {
@@ -37,7 +38,7 @@ async function readMarkdownDir(projectPath: string, dir: string, warnings: strin
     for (const file of files) {
       const path = join(absolute, file.name);
       const content = await readFile(path, "utf8");
-      result.push({ path: relative(projectPath, path), content, summary: summarize(content) });
+      result.push({ path: toPosixPath(relative(projectPath, path)), content, summary: summarize(content) });
     }
     return result;
   } catch {
