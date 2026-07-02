@@ -19,3 +19,11 @@ prints an Agent Handoff Protocol describing how to run a disciplined session.
 Spend the fewest tokens for the most accurate result. Reserve the strongest model for
 net-new logic and design decisions; lean on cheaper contexts for scanning and
 mechanical edits.
+
+## Workflow directives
+
+If a `BEGIN_VISP_WORKFLOW_DIRECTIVE` block prints, treat its `parallel:` grouping as
+safe-to-reorder, not as a concurrency requirement: execute the tasks in the listed
+order and run `visp-hyper checkpoint --task <id>` after each before starting the
+next. If a `BEGIN_VISP_ADAPTATION` block prints after a failed checkpoint, follow
+its instruction — a remediation task (`R-...`) becomes the current task.

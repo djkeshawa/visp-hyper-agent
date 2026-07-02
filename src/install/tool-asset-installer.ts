@@ -45,7 +45,8 @@ const MANIFEST: Record<ToolName, AssetSpec[]> = {
     { templatePath: "commands/hyper-next.md", destination: ".claude/commands/hyper-next.md" },
     { templatePath: "commands/hyper-checkpoint.md", destination: ".claude/commands/hyper-checkpoint.md" },
     { templatePath: "commands/hyper-review.md", destination: ".claude/commands/hyper-review.md" },
-    { templatePath: "commands/hyper-remember.md", destination: ".claude/commands/hyper-remember.md" }
+    { templatePath: "commands/hyper-remember.md", destination: ".claude/commands/hyper-remember.md" },
+    { templatePath: "commands/hyper-fanout.md", destination: ".claude/commands/hyper-fanout.md" }
   ],
   codex: [
     { templatePath: "AGENTS.visp-hyper.md", destination: "AGENTS.visp-hyper.md" },

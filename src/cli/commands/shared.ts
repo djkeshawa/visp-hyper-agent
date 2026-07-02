@@ -1,6 +1,9 @@
 import type { Command } from "commander";
 import { readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type { PipelineState, ToolProfile } from "../../core/types.js";
+import type { KitTaskGraph } from "../../kit/kit-schemas.js";
+import { computeExecutionTiers, renderWorkflowDirective } from "../../pipeline/workflow-directive.js";
 
 export function resolveProjectPath(command: Command): string {
   const options = command.optsWithGlobals<{ project: string }>();
@@ -48,3 +51,29 @@ export async function contextPackPathIfExists(
   return undefined;
 }
 
+
+/**
+ * Print the advisory fan-out directive when the remaining DAG has independent
+ * parallelizable tasks. Best-effort and silent otherwise — sequential graphs
+ * and single-task pipelines produce no extra output.
+ */
+export function printWorkflowDirectiveIfAny(
+  graph: KitTaskGraph,
+  pipeline: PipelineState,
+  tool: ToolProfile,
+  sessionId: string
+): void {
+  try {
+    const directive = renderWorkflowDirective({
+      tiers: computeExecutionTiers(graph, pipeline),
+      tool,
+      sessionId
+    });
+    if (directive) {
+      console.log("");
+      console.log(directive);
+    }
+  } catch {
+    // Advisory only; never fail the command because the directive could not be computed.
+  }
+}

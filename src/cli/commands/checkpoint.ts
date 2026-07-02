@@ -25,7 +25,7 @@ import {
 } from "../../routing/routing-engine.js";
 import { readRoutingState, updateRoutingState } from "../../routing/routing-state.js";
 import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
-import { printWarnings, resolveProjectPath } from "./shared.js";
+import { printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 import { collectChangedFiles } from "../../governance/scope-guard.js";
 
 // Default tier recorded in telemetry when the orchestrator does not report
@@ -289,7 +289,8 @@ export function checkpointCommand(): Command {
         }
       }
 
-      // On a pass with a next task, advise the routing tier for that task.
+      // On a pass with a next task, advise the routing tier for that task and
+      // print the fan-out directive for the remaining DAG when it applies.
       if (passed && nextState.currentTaskId) {
         const nextTask = graph.tasks.find((entry) => entry.id === nextState.currentTaskId);
         if (nextTask) {
@@ -308,6 +309,7 @@ export function checkpointCommand(): Command {
           } catch {
             // Advisory only; never fail the checkpoint because routing could not be computed.
           }
+          printWorkflowDirectiveIfAny(graph, nextState, session.tool, session.id);
         }
       }
 

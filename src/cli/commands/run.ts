@@ -15,7 +15,7 @@ import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { executeStart } from "./start.js";
-import { contextPackPathIfExists, printWarnings, resolveProjectPath } from "./shared.js";
+import { contextPackPathIfExists, printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 
 export function runCommand(): Command {
   return new Command("run")
@@ -111,6 +111,7 @@ export function runCommand(): Command {
       console.log("");
       console.log(buildActionBlock(task, { contextPackPath, sessionId: session.id }));
       await printAndRecordRouting(projectPath, task);
+      printWorkflowDirectiveIfAny(graph, pipeline, session.tool, session.id);
     });
 }
 

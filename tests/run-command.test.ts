@@ -166,6 +166,65 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const pipeline = activePipeline(await readState(projectPath));
     expect(pipeline.currentTaskId).toBe("T001");
+    // A sequential graph prints no fan-out directive.
+    expect(output).not.toContain("BEGIN_VISP_WORKFLOW_DIRECTIVE");
+  });
+
+  it("prints a workflow directive when the graph has parallelizable disjoint tasks", async () => {
+    const projectPath = await createProject();
+    const featureDir = join(projectPath, ".visp", "features", FEATURE_DIR);
+    await mkdir(join(featureDir, "context"), { recursive: true });
+    await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+    await writeFile(
+      join(featureDir, "task-graph.json"),
+      JSON.stringify({
+        featureId: "001",
+        featureSlug: "pipeline",
+        tasks: [
+          {
+            id: "T001",
+            title: "First task",
+            dependsOn: [],
+            parallelizable: true,
+            allowedFiles: ["src/feature.ts"],
+            status: "ready"
+          },
+          {
+            id: "T002",
+            title: "Second task",
+            dependsOn: [],
+            parallelizable: true,
+            allowedFiles: ["src/other.ts"]
+          },
+          { id: "T003", title: "Third task", dependsOn: ["T001", "T002"], allowedFiles: ["src"] }
+        ]
+      }),
+      "utf8"
+    );
+    await writeFile(
+      join(featureDir, "context", "T001.context.json"),
+      JSON.stringify({ taskId: "T001", includedFiles: [{ path: "src/feature.ts", reason: "task target" }] }),
+      "utf8"
+    );
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement", "--tool", "claude-code"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_WORKFLOW_DIRECTIVE");
+    expect(output).toContain("1. parallel: T001, T002 (disjoint file scopes, parallelizable)");
+    expect(output).toContain("2. sequential: T003");
+    expect(output).toContain("subagent via the Task tool");
+    expect(output).toContain("END_VISP_WORKFLOW_DIRECTIVE");
   });
 
   it("warns when strict Kit mode uses a contract without provenance freshness", async () => {

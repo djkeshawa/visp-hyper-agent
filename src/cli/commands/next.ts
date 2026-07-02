@@ -8,7 +8,7 @@ import { buildActionBlock, currentTask, loadTaskGraph } from "../../pipeline/pip
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
-import { contextPackPathIfExists, resolveProjectPath } from "./shared.js";
+import { contextPackPathIfExists, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 
 export function nextCommand(): Command {
   return new Command("next")
@@ -45,6 +45,7 @@ export function nextCommand(): Command {
             const knownFailureModes = await knownFailureModesFor(projectPath, task);
             console.log(buildActionBlock(task, { sessionId: session.id, contextPackPath, knownFailureModes }));
             await printAndRecordRouting(projectPath, task);
+            printWorkflowDirectiveIfAny(graph, session.pipeline, session.tool, session.id);
             return;
           }
           console.log("warning: pipeline state exists but the current task is not in the task graph.");
