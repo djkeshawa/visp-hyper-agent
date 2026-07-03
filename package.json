@@ -1,6 +1,6 @@
 {
   "name": "visp-hyper-agent",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Evidence-gated workflow controller for AI coding tools: scope-guarded commits, verified task advancement, active memory, and model routing — deterministic, local-first, no LLM calls.",
   "type": "module",
   "license": "Apache-2.0",
