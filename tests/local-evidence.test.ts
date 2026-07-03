@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
-import { dirname, join } from "node:path";
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { delimiter, dirname, join } from "node:path";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { collectLocalEvidence } from "../src/quality/local-evidence.js";
+import { createToolOnlyPathDir } from "./helpers/tool-path-dir.js";
 import { createVispShim } from "./helpers/visp-shim.js";
 
 const execFileAsync = promisify(execFile);
@@ -43,11 +44,7 @@ async function stage(projectPath: string, file: string): Promise<void> {
  * so the kit-less branch is exercised.
  */
 async function gitNodeOnlyPath(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "visp-nokit-"));
-  const { stdout: gitPath } = await execFileAsync("which", ["git"]);
-  await symlink(gitPath.trim(), join(dir, "git"));
-  await symlink(process.execPath, join(dir, "node"));
-  return dir;
+  return createToolOnlyPathDir(["git", "node"]);
 }
 
 describe("collectLocalEvidence", () => {
@@ -299,7 +296,7 @@ describe("checkpoint --task local evidence integration", () => {
       verify: { stdout: { success: true } },
       review: { stdout: { success: true } }
     });
-    process.env.PATH = `${dirname(shim.binary)}:${originalPath ?? ""}`;
+    process.env.PATH = `${dirname(shim.binary)}${delimiter}${originalPath ?? ""}`;
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement T001", "--tool", "codex"]);
     await injectPipeline(projectPath);

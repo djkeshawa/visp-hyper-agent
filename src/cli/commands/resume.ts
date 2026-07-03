@@ -1,6 +1,5 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { Command, Option } from "commander";
+import { execFileCrossPlatform } from "../../core/exec.js";
 import { checkContextFreshness } from "../../context/context-freshness.js";
 import type { ContextFreshness, ContextFreshnessStatus } from "../../context/context-freshness.js";
 import { readTextIfExists, vispPath } from "../../core/fs-utils.js";
@@ -10,8 +9,6 @@ import { requiredReads, renderHandoff } from "../../handoff/handoff-protocol.js"
 import { buildActionBlock, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
 import { compareCurrentToCheckpoint, emptyDelta, type CheckpointDelta } from "../../quality/checkpoint-snapshot.js";
 import { contextPackPathIfExists, resolveProjectPath } from "./shared.js";
-
-const execFileAsync = promisify(execFile);
 
 type ResumeOptions = {
   readonly json?: boolean;
@@ -252,7 +249,7 @@ async function changedFiles(projectPath: string): Promise<{ files: string[]; war
   const files = new Set<string>();
   const warnings: string[] = [];
   try {
-    const { stdout } = await execFileAsync("git", ["diff", "--name-only", "HEAD"], { cwd: projectPath });
+    const { stdout } = await execFileCrossPlatform("git", ["diff", "--name-only", "HEAD"], { cwd: projectPath });
     for (const file of splitLines(stdout)) {
       files.add(file);
     }
@@ -261,7 +258,7 @@ async function changedFiles(projectPath: string): Promise<{ files: string[]; war
   }
 
   try {
-    const { stdout } = await execFileAsync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectPath });
+    const { stdout } = await execFileCrossPlatform("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectPath });
     for (const file of splitLines(stdout)) {
       files.add(file);
     }

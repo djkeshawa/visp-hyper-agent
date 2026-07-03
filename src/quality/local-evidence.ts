@@ -21,13 +21,15 @@ export async function collectLocalEvidence(input: {
   projectPath: string;
   task: { id: string; allowedFiles?: string[]; validationCommands?: string[] };
   blockedPaths: string[];
+  configValidationCommands?: string[];
 }): Promise<LocalEvidence> {
   const findings: string[] = [];
   const warnings: string[] = [];
 
   // --- Verify ---------------------------------------------------------------
   const runner = new ProjectValidationRunner({
-    kitCommands: input.task.validationCommands?.length ? input.task.validationCommands : undefined
+    kitCommands: input.task.validationCommands?.length ? input.task.validationCommands : undefined,
+    configCommands: input.configValidationCommands
   });
 
   let verifyPassed: boolean;

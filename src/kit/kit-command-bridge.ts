@@ -1,9 +1,8 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { promisify } from "node:util";
 import type { ZodType, ZodTypeDef } from "zod";
+import { execFileCrossPlatform } from "../core/exec.js";
 import {
   kitBudgetResultSchema,
   kitContextPackSchema,
@@ -24,8 +23,6 @@ import {
   type KitStatus,
   type KitVerifySummary
 } from "./kit-schemas.js";
-
-const execFileAsync = promisify(execFile);
 
 // Schemas with `.transform()` have a different input than output type; allow any input.
 type OutputSchema<T> = ZodType<T, ZodTypeDef, unknown>;
@@ -331,7 +328,7 @@ async function runCommand(
   warnings: string[]
 ): Promise<RunResult | null> {
   try {
-    const { stdout } = await execFileAsync(binary, args, { cwd, timeout });
+    const { stdout } = await execFileCrossPlatform(binary, args, { cwd, timeout });
     return { exitCode: 0, stdout };
   } catch (error) {
     const failure = error as NodeJS.ErrnoException & { code?: string | number; stdout?: string; killed?: boolean; signal?: string };

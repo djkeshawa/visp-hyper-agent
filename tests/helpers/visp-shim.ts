@@ -24,13 +24,17 @@ export interface VispShim {
 /**
  * Writes an executable Node script that switches on its first argument and
  * prints canned JSON. Pass `binary` to KitCommandBridge / detectVisp directly.
+ * On Windows the returned binary is a `visp.cmd` wrapper (shebang scripts are
+ * not executable there); both files always exist so PATH-based lookups work
+ * on either platform.
  */
 export async function createVispShim(spec: ShimSpec): Promise<VispShim> {
   const dir = await mkdtemp(join(tmpdir(), "visp-shim-"));
-  const binary = join(dir, "visp");
+  const script = join(dir, "visp");
+  const binary = process.platform === "win32" ? join(dir, "visp.cmd") : script;
   const argvLogPath = join(dir, "argv.log");
 
-  const script = `#!/usr/bin/env node
+  const source = `#!/usr/bin/env node
 "use strict";
 const { appendFileSync } = require("node:fs");
 
@@ -53,8 +57,9 @@ process.stdout.write(body);
 process.exit(response.exitCode ?? 0);
 `;
 
-  await writeFile(binary, script, "utf8");
-  await chmod(binary, 0o755);
+  await writeFile(script, source, "utf8");
+  await chmod(script, 0o755);
+  await writeFile(join(dir, "visp.cmd"), `@node "%~dp0visp" %*\r\n`, "utf8");
 
   return { binary, argvLogPath };
 }

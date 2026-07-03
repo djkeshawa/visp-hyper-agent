@@ -1,6 +1,6 @@
 {
   "name": "visp-hyper-agent",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Evidence-gated workflow controller for AI coding tools: scope-guarded commits, verified task advancement, active memory, and model routing — deterministic, local-first, no LLM calls.",
   "type": "module",
   "license": "Apache-2.0",
@@ -41,7 +41,7 @@
     "prepack": "pnpm build"
   },
   "engines": {
-    "node": ">=24.0.0",
+    "node": ">=22.0.0",
     "pnpm": ">=11.0.0"
   },
   "packageManager": "pnpm@11.3.0",

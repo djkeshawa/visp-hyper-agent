@@ -53,6 +53,22 @@ When the project uses visp-hyper, drive every task through it:
    send a corrective spec for the reported findings and re-run — do not skip ahead.
 5. If a BLOCKED block prints, run the named next command instead of coding.
 
+### Workflow directives (fan-out)
+
+When a `BEGIN_VISP_WORKFLOW_DIRECTIVE` block prints, the remaining tasks include a
+tier that is safe to implement concurrently:
+- Dispatch each task in a `parallel:` tier to a separate **implementer** subagent,
+  giving each its own `BEGIN_VISP_TASK_ACTION` block verbatim (get it via
+  `visp-hyper next` as tasks become current). Each subagent stays strictly inside
+  its task's allowed_files.
+- Checkpoints stay sequential: after the subagents return, run
+  `visp-hyper checkpoint --task <id>` yourself in exactly the listed order.
+- Never start a later tier until every earlier task reports PASSED.
+
+When a `BEGIN_VISP_ADAPTATION` block prints after a failed checkpoint, follow its
+instruction: a remediation task (`R-...`) becomes the current task — dispatch it
+like any other before re-attempting the original.
+
 ## Validation (your core value)
 
 Every worker result is untrusted until you check it:

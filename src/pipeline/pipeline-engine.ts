@@ -241,7 +241,7 @@ export function advance(
  */
 export function buildActionBlock(
   task: KitTask,
-  options: { contextPackPath?: string; sessionId?: string } = {}
+  options: { contextPackPath?: string; sessionId?: string; knownFailureModes?: string[] } = {}
 ): string {
   const lines: string[] = ["BEGIN_VISP_TASK_ACTION"];
 
@@ -292,6 +292,14 @@ export function buildActionBlock(
   if (options.contextPackPath) {
     lines.push("");
     lines.push(`context_pack: ${options.contextPackPath}`);
+  }
+
+  if (options.knownFailureModes && options.knownFailureModes.length > 0) {
+    lines.push("");
+    lines.push("known_failure_modes:");
+    for (const mode of options.knownFailureModes) {
+      lines.push(`  - ${mode}`);
+    }
   }
 
   lines.push("");

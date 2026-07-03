@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
 import { parseJsonStore } from "../core/json-store.js";
+import { withStoreLock } from "../core/store-lock.js";
 
 export const telemetryAttemptSchema = z.object({
   taskId: z.string(),
@@ -67,18 +68,20 @@ export async function appendAttempt(
   projectPath: string,
   attempt: Omit<TelemetryAttempt, "attempt" | "firstAttempt" | "at">
 ): Promise<TelemetryAttempt> {
-  const { data } = await readTelemetry(projectPath);
-  const priorForTask = data.attempts.filter((entry) => entry.taskId === attempt.taskId).length;
-  const attemptNumber = priorForTask + 1;
-  const record: TelemetryAttempt = {
-    ...attempt,
-    attempt: attemptNumber,
-    firstAttempt: attemptNumber === 1,
-    at: new Date().toISOString()
-  };
-  data.attempts.push(record);
-  await writeTelemetry(projectPath, data);
-  return record;
+  return withStoreLock(projectPath, async () => {
+    const { data } = await readTelemetry(projectPath);
+    const priorForTask = data.attempts.filter((entry) => entry.taskId === attempt.taskId).length;
+    const attemptNumber = priorForTask + 1;
+    const record: TelemetryAttempt = {
+      ...attempt,
+      attempt: attemptNumber,
+      firstAttempt: attemptNumber === 1,
+      at: new Date().toISOString()
+    };
+    data.attempts.push(record);
+    await writeTelemetry(projectPath, data);
+    return record;
+  });
 }
 
 /**
@@ -88,7 +91,9 @@ export async function appendUsage(
   projectPath: string,
   usage: Omit<TelemetryUsage, "at">
 ): Promise<void> {
-  const { data } = await readTelemetry(projectPath);
-  data.usage.push({ ...usage, at: new Date().toISOString() });
-  await writeTelemetry(projectPath, data);
+  await withStoreLock(projectPath, async () => {
+    const { data } = await readTelemetry(projectPath);
+    data.usage.push({ ...usage, at: new Date().toISOString() });
+    await writeTelemetry(projectPath, data);
+  });
 }

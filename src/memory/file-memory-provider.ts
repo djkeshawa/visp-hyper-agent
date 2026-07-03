@@ -10,7 +10,7 @@ import type {
   ProjectMemoryProfile,
   RecallOptions
 } from "../core/types.js";
-import { ensureDir, writeText } from "../core/fs-utils.js";
+import { ensureDir, toPosixPath, writeText } from "../core/fs-utils.js";
 
 export async function readMemoryPack(projectPath: string): Promise<MemoryPack> {
   const provider = new FileMemoryProvider(projectPath);
@@ -144,7 +144,7 @@ async function readMarkdownTree(projectPath: string, dir: string): Promise<Artif
         await walk(absolute);
       } else if (entry.isFile() && entry.name.endsWith(".md")) {
         const content = await readFile(absolute, "utf8");
-        result.push({ path: relative(projectPath, absolute), content, summary: summarize(content) });
+        result.push({ path: toPosixPath(relative(projectPath, absolute)), content, summary: summarize(content) });
       }
     }
   }

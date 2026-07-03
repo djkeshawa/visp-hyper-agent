@@ -1,13 +1,10 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileCrossPlatform } from "./exec.js";
 import type { BranchSessionLocator } from "./types.js";
-
-const execFileAsync = promisify(execFile);
 
 export class GitBranchSessionLocator implements BranchSessionLocator {
   async currentBranch(projectPath: string): Promise<string | null> {
     try {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await execFileCrossPlatform(
         "git",
         ["rev-parse", "--abbrev-ref", "HEAD"],
         { cwd: projectPath, timeout: 5000 }

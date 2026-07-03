@@ -11,7 +11,10 @@ export function reviewCommand(): Command {
       const projectPath = resolveProjectPath(this);
       const session = await getActiveSession(projectPath);
       if (!session) {
-        throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
+        // Degrade, never crash: match guard/resume rather than throwing.
+        console.log("No active Visp Hyper session. Run `visp-hyper start` first.");
+        process.exitCode = 1;
+        return;
       }
       const config = await readConfig(projectPath);
       const result = await analyzeDiff({

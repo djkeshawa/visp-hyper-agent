@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
+import { withStoreLock } from "../core/store-lock.js";
 
 const failurePatternSchema = z.object({
   id: z.string(),
@@ -67,44 +68,46 @@ export async function recordFailurePattern(
     source: input.source,
     findings
   });
-  const store = await readFailurePatternStore(projectPath);
-  const existing = store.patterns.find((pattern) => pattern.signature === signature);
-  if (existing) {
-    const next = {
-      ...existing,
+  return withStoreLock(projectPath, async () => {
+    const store = await readFailurePatternStore(projectPath);
+    const existing = store.patterns.find((pattern) => pattern.signature === signature);
+    if (existing) {
+      const next = {
+        ...existing,
+        taskId: input.taskId,
+        taskClass: input.taskClass,
+        sessionId: input.sessionId,
+        verifyPassed: input.verifyPassed,
+        reviewPassed: input.reviewPassed,
+        findings,
+        relatedFiles: unique([...existing.relatedFiles, ...relatedFiles]).sort(),
+        lastSeenAt: now,
+        occurrences: existing.occurrences + 1
+      };
+      store.patterns = store.patterns.map((pattern) => pattern.id === existing.id ? next : pattern);
+      await writeFailurePatternStore(projectPath, trimStore(store));
+      return next;
+    }
+
+    const created: FailurePattern = {
+      id: `fp_${signature.slice(0, 12)}`,
+      signature,
       taskId: input.taskId,
       taskClass: input.taskClass,
       sessionId: input.sessionId,
+      source: input.source,
       verifyPassed: input.verifyPassed,
       reviewPassed: input.reviewPassed,
       findings,
-      relatedFiles: unique([...existing.relatedFiles, ...relatedFiles]).sort(),
+      relatedFiles,
+      firstSeenAt: now,
       lastSeenAt: now,
-      occurrences: existing.occurrences + 1
+      occurrences: 1
     };
-    store.patterns = store.patterns.map((pattern) => pattern.id === existing.id ? next : pattern);
+    store.patterns.push(created);
     await writeFailurePatternStore(projectPath, trimStore(store));
-    return next;
-  }
-
-  const created: FailurePattern = {
-    id: `fp_${signature.slice(0, 12)}`,
-    signature,
-    taskId: input.taskId,
-    taskClass: input.taskClass,
-    sessionId: input.sessionId,
-    source: input.source,
-    verifyPassed: input.verifyPassed,
-    reviewPassed: input.reviewPassed,
-    findings,
-    relatedFiles,
-    firstSeenAt: now,
-    lastSeenAt: now,
-    occurrences: 1
-  };
-  store.patterns.push(created);
-  await writeFailurePatternStore(projectPath, trimStore(store));
-  return created;
+    return created;
+  });
 }
 
 export async function readRelevantFailurePatterns(

@@ -1,8 +1,5 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileCrossPlatform } from "../core/exec.js";
 import { isBlockedPath } from "../governance/blocked-files.js";
-
-const execFileAsync = promisify(execFile);
 
 export type ReviewResult = {
   changedFiles: string[];
@@ -19,7 +16,7 @@ export async function analyzeDiff(input: {
   relevantFiles: string[];
   blockedPaths: string[];
 }): Promise<ReviewResult> {
-  const { stdout } = await execFileAsync("git", ["diff", "--name-only", "HEAD"], { cwd: input.projectPath });
+  const { stdout } = await execFileCrossPlatform("git", ["diff", "--name-only", "HEAD"], { cwd: input.projectPath });
   const changedFiles = stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   return analyzeChangedFiles({ ...input, changedFiles });
 }

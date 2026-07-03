@@ -1,8 +1,5 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileCrossPlatform } from "../core/exec.js";
 import { isBlockedPath } from "./blocked-files.js";
-
-const execFileAsync = promisify(execFile);
 
 export type ScopeViolation = { file: string; rule: "blocked-path" | "outside-allowed" };
 
@@ -25,6 +22,13 @@ export function checkScope(
   for (const file of changedFiles) {
     if (isBlockedPath(file, input.blockedPaths)) {
       violations.push({ file, rule: "blocked-path" });
+      continue;
+    }
+    // .visp/ holds workflow-owned metadata that visp-hyper and the kit write
+    // as a byproduct of orchestration (handoffs, telemetry, task graphs); it
+    // is never part of a task's implementation scope, so the allow-list rule
+    // does not apply to it. Blocked paths above still do.
+    if (file.startsWith(".visp/")) {
       continue;
     }
     if (hasAllowList && !matchesAllowed(file, allowed)) {
@@ -67,7 +71,7 @@ export async function collectChangedFiles(
 ): Promise<{ files: string[]; warnings: string[] }> {
   try {
     if (mode.mode === "staged") {
-      const { stdout } = await execFileAsync("git", ["diff", "--name-only", "--cached"], {
+      const { stdout } = await execFileCrossPlatform("git", ["diff", "--name-only", "--cached"], {
         cwd: projectPath
       });
       return { files: splitNames(stdout), warnings: [] };
@@ -75,15 +79,15 @@ export async function collectChangedFiles(
 
     if (mode.mode === "all") {
       const [unstaged, staged, untracked] = await Promise.all([
-        execFileAsync("git", ["diff", "--name-only"], { cwd: projectPath }),
-        execFileAsync("git", ["diff", "--name-only", "--cached"], { cwd: projectPath }),
-        execFileAsync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectPath })
+        execFileCrossPlatform("git", ["diff", "--name-only"], { cwd: projectPath }),
+        execFileCrossPlatform("git", ["diff", "--name-only", "--cached"], { cwd: projectPath }),
+        execFileCrossPlatform("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectPath })
       ]);
       const files = [...splitNames(unstaged.stdout), ...splitNames(staged.stdout), ...splitNames(untracked.stdout)];
       return { files: [...new Set(files)], warnings: [] };
     }
 
-    const { stdout } = await execFileAsync(
+    const { stdout } = await execFileCrossPlatform(
       "git",
       ["diff", "--name-only", `${mode.baseRef}...HEAD`],
       { cwd: projectPath }
