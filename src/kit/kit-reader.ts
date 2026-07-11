@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { toPosixPath } from "../core/fs-utils.js";
+import { toPosixPath } from "../core/path-utils.js";
 import type { ArtifactFile, KitArtifacts } from "../core/types.js";
 
 export async function readKitArtifacts(projectPath: string): Promise<KitArtifacts> {

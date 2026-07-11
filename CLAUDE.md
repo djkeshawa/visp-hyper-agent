@@ -48,7 +48,7 @@ The CLI is a thin Commander shell (`src/cli/index.ts`) over pure, single-respons
 
 ## Working on this repo: the Visp Kit gated workflow
 
-This repo dogfoods visp-kit in **strict mode** — the real `visp` binary is installed and `.visp/` is initialized. Follow `AGENTS.md`: `visp status` → `visp policy validate` → `visp gate implement --task <id>` must allow before editing → implement only the selected task → `visp done --task <id>`. Practical quirks learned building features 002–007:
+This repo is set up to dogfood visp-kit in **strict mode**, but the working tree is **not currently initialized** — there is no `.visp/` directory here and no global `visp` binary in this checkout. The gated workflow only applies once you (re)initialize it. To set it up: install the kit (`pnpm --dir ../visp-kit run install:global`, or `npm install -g visp-kit`), then from this repo run `visp init` and scaffold a feature (`visp feature "<describe>"` → clarify → spec → plan → tasks → context). Once `.visp/policy.json` and a `task-graph.json` exist, follow `AGENTS.md`: `visp status` → `visp policy validate` → `visp gate implement --task <id>` must allow before editing → implement only the selected task → `visp done --task <id>`. Until then, treat direct source changes as ordinary work: keep them narrowly scoped and run `pnpm check`. Practical quirks learned building features 002–007:
 
 - The `visp` CLI takes task ids as **`--task <id>`, never positional** — a positional id is parsed as a *path* and returns an unrelated error.
 - Scaffold commands (`clarify`/`spec`/`plan`/`tasks`) emit TBD templates; you author both the `.json` **and** the matching `.md`, and `traceability.json` must list every REQ/AC/task before `--validate` passes.
@@ -59,4 +59,4 @@ This repo dogfoods visp-kit in **strict mode** — the real `visp` binary is ins
 
 ## AGENTS.md vs. this repo (important)
 
-`AGENTS.md` / `AGENTS.visp.md` describe the strict Visp-Kit gated workflow using the separate `visp` binary. Do not confuse `visp <cmd>` (external kit governance) with `visp-hyper <cmd>` (this project's CLI). Since this working directory has an initialized kit, the gates above apply to changes here.
+`AGENTS.md` / `AGENTS.visp.md` describe the strict Visp-Kit gated workflow using the separate `visp` binary. Do not confuse `visp <cmd>` (external kit governance) with `visp-hyper <cmd>` (this project's CLI). If this working directory has an initialized kit (`.visp/` present), the gates above apply to changes here; if it is not initialized (the current state — see the section above), treat direct source changes as ordinary scoped work.

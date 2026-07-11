@@ -2,6 +2,7 @@ import { z } from "zod";
 import { fileExists, readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
 import { parseJsonStore } from "../core/json-store.js";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { SkillProposal } from "./skill-proposals.js";
 
 export const skillEntrySchema = z.object({
@@ -14,6 +15,11 @@ export const skillEntrySchema = z.object({
   usedCount: z.number().int().nonnegative(),
   lastUsedAt: z.string().nullable(),
   lastUsedSessionCount: z.number().int().nonnegative().nullable()
+  ,source: z.string().optional()
+  ,contentHash: z.string().regex(/^[a-f0-9]{64}$/u).optional()
+  ,author: z.string().optional()
+  ,approvedBy: z.string().nullable().optional()
+  ,approvalExpiresAt: z.string().datetime().nullable().optional()
 });
 
 export const skillRegistrySchema = z.object({
@@ -107,6 +113,17 @@ function renderSkill(proposal: SkillProposal): string {
   ].join("\n");
 }
 
+function proposalHash(proposal: SkillProposal): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      name: proposal.name,
+      description: proposal.description,
+      whenToUse: proposal.whenToUse,
+      body: proposal.body
+    }))
+    .digest("hex");
+}
+
 
 /**
  * Install a skill to its tool-specific destination and register it. If the
@@ -142,7 +159,12 @@ export async function installSkill(
     destinations: [destination],
     usedCount: 0,
     lastUsedAt: null,
-    lastUsedSessionCount: null
+    lastUsedSessionCount: null,
+    source: proposal.sourcePath,
+    contentHash: proposalHash(proposal),
+    author: "agent-proposal",
+    approvedBy: null,
+    approvalExpiresAt: null
   });
   await writeSkillRegistry(projectPath, registry);
 

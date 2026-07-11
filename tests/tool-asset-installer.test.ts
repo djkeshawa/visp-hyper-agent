@@ -138,6 +138,40 @@ describe("kit-owned denylist (AC003)", () => {
     expect(isKitOwnedDestination(".claude/agents/coordinator.md")).toBe(false);
     expect(isKitOwnedDestination("visp-hyper-instructions.md")).toBe(false);
   });
+
+  it("denies the broadened kit-owned destinations", () => {
+    expect(isKitOwnedDestination("AGENTS.visp.md")).toBe(true);
+    expect(isKitOwnedDestination(".agents/skills/visp-core/SKILL.md")).toBe(true);
+    expect(isKitOwnedDestination(".agents/skills/visp-foo/anything.md")).toBe(true);
+    expect(isKitOwnedDestination(".github/instructions/visp-core.instructions.md")).toBe(true);
+    expect(isKitOwnedDestination(".visp/prompts/visp-rules.md")).toBe(true);
+    expect(isKitOwnedDestination(".visp/hooks/pre-commit")).toBe(true);
+    expect(isKitOwnedDestination(".visp/hooks")).toBe(true);
+    // Backslash form is normalized before matching.
+    expect(isKitOwnedDestination(".agents\\skills\\visp-core\\SKILL.md")).toBe(true);
+  });
+
+  it("still allows hyper's OWN manifest destinations (must not be denied)", () => {
+    expect(isKitOwnedDestination("AGENTS.visp-hyper.md")).toBe(false);
+    expect(isKitOwnedDestination(".agents/skills/visp-hyper/SKILL.md")).toBe(false);
+    expect(isKitOwnedDestination(".github/instructions/visp-hyper.instructions.md")).toBe(false);
+  });
+
+  it("every hyper MANIFEST destination is allowed and appears in planInstall", async () => {
+    const project = await makeProject();
+    for (const tool of ["claude-code", "codex", "copilot", "generic", "opencode"] as const) {
+      const plan = await planInstall(tool, project, { templatesDir: REAL_TEMPLATES });
+      // No planned destination is kit-owned.
+      for (const asset of plan) {
+        expect(isKitOwnedDestination(asset.destination)).toBe(false);
+      }
+      // planInstall and installAssets agree: the plan's destinations are exactly
+      // what a fresh install creates.
+      const report = await installAssets(tool, await makeProject(), { templatesDir: REAL_TEMPLATES });
+      expect(report.created.sort()).toEqual(plan.map((p) => p.destination).sort());
+      expect(report.warnings.some((w) => w.includes("kit-owned"))).toBe(false);
+    }
+  });
 });
 
 describe("missing templates (errors)", () => {

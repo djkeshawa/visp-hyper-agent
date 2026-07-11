@@ -1,5 +1,8 @@
 # Working with visp-hyper
 
+> Discovery: Codex does not auto-load this file. Add this line to your `AGENTS.md`
+> so agents find it: `See AGENTS.visp-hyper.md for the visp-hyper session protocol`.
+
 This project uses **visp-hyper**, a local-first companion that selects context and
 prints an Agent Handoff Protocol telling you how to run a disciplined session.
 
@@ -15,16 +18,17 @@ prints an Agent Handoff Protocol telling you how to run a disciplined session.
 5. At the end of the session, persist learnings with
    `visp-hyper remember --summary "<what was learned>"`.
 
-## Cost routing
+## Role passes
 
-Spend the fewest tokens for the most accurate result. When your tool supports it,
-delegate scanning, searching, and mechanical edits to a cheaper context, and reserve
-the strongest model for net-new logic and design decisions.
+Tools with native subagent support (such as Claude Code) may run the scout pass in
+a dedicated subagent; here you run both passes sequentially in one session.
 
-## Workflow directives
+Run each task as two sequential passes in the same session — one model can do both.
 
-If a `BEGIN_VISP_WORKFLOW_DIRECTIVE` block prints, treat its `parallel:` grouping as
-safe-to-reorder, not as a concurrency requirement: execute the tasks in the listed
-order and run `visp-hyper checkpoint --task <id>` after each before starting the
-next. If a `BEGIN_VISP_ADAPTATION` block prints after a failed checkpoint, follow
-its instruction — a remediation task (`R-...`) becomes the current task.
+1. **Scout pass (read-only).** Gather the files and evidence the task needs. Read
+   every path under `required_reads`, inspect the files named in the action block,
+   and note the exact paths you will edit and validate. Cite the paths you found;
+   do not edit anything in this pass.
+2. **Implement pass.** Edit only the files inside the allowed scope from the action
+   block, run the listed validation commands, and report the evidence (commands run
+   and their result). Then run `visp-hyper checkpoint --task <id>` to record it.

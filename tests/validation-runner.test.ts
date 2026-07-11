@@ -116,5 +116,19 @@ describe("ProjectValidationRunner", () => {
       expect(results).toHaveLength(1);
       expect(results[0]!.exitCode).toBe(3);
     });
+
+    it("AC002d: a command whose binary cannot be spawned records exitCode null + spawnError", async () => {
+      const command = "definitely-not-a-real-binary-xyz --version";
+      const runner = new ProjectValidationRunner({ kitCommands: [command] });
+      const dir = await mkdtemp(join(tmpdir(), "visp-val-run-"));
+
+      const results = await runner.run(dir, [command]);
+
+      expect(results).toHaveLength(1);
+      // Distinct from a real non-zero exit: null signals "could not be run".
+      expect(results[0]!.exitCode).toBeNull();
+      expect(results[0]!.spawnError).toBeTruthy();
+      expect(results[0]!.output).toMatch(/could not be run/u);
+    });
   });
 });

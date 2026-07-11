@@ -7,6 +7,6 @@ export const defaultConfig: HyperConfig = {
   memoryEndpoint: "http://localhost:8000",
   contextMode: "deterministic",
   blockedPaths: [".env", ".env.*", "node_modules", "dist", "build", ".git"],
-  skillMode: "auto"
+  skillMode: "review"
 };
 

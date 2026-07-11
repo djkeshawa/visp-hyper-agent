@@ -9,7 +9,8 @@ import {
   currentTask,
   initialPipelineState,
   loadTaskGraph,
-  orderTasks
+  orderTasks,
+  readySet
 } from "../src/pipeline/pipeline-engine.js";
 import { readState, writeState } from "../src/core/session-manager.js";
 import type { HyperState, SessionRecord } from "../src/core/types.js";
@@ -264,6 +265,93 @@ describe("advance", () => {
     const next = advance(state, graph, { verifyPassed: true, reviewPassed: true }, "T1");
     expect(next).toBe(state);
   });
+
+  it("fails closed when the re-computed graph reports a dependency cycle", () => {
+    // State is built from an acyclic graph (A -> B), so currentTaskId is A.
+    const state = initialPipelineState(graph);
+    expect(state.currentTaskId).toBe("A");
+
+    // The graph is re-edited between handoff and checkpoint into a cycle
+    // (A depends on B, B depends on A). advance() must NOT trust the stale
+    // taskIds order or advance the pipeline.
+    const cyclicGraph = graphFromTasks([
+      { id: "A", dependsOn: ["B"] },
+      { id: "B", dependsOn: ["A"] }
+    ]);
+
+    const next = advance(state, cyclicGraph, { verifyPassed: true, reviewPassed: true }, "T9");
+
+    // Not completed, not advanced.
+    expect(next.completed).toEqual([]);
+    expect(next.currentTaskId).toBe("A");
+    const last = next.stepHistory[next.stepHistory.length - 1];
+    expect(last?.action).toBe("checkpoint-failed");
+    expect(last?.detail).toContain("dependency cycle");
+    expect(last?.detail).toContain("A");
+    expect(last?.detail).toContain("B");
+  });
+});
+
+describe("readySet", () => {
+  it("returns parallelizable siblings whose deps are all completed, in graph order", () => {
+    const graph = graphFromTasks([
+      { id: "A", dependsOn: [], parallelizable: true },
+      { id: "B", dependsOn: [], parallelizable: true },
+      { id: "C", dependsOn: [], parallelizable: true }
+    ]);
+    // Current task is A; B and C are ready parallelizable siblings.
+    expect(readySet(graph, "A", [])).toEqual(["B", "C"]);
+  });
+
+  it("excludes the current task and already-completed tasks", () => {
+    const graph = graphFromTasks([
+      { id: "A", dependsOn: [], parallelizable: true },
+      { id: "B", dependsOn: [], parallelizable: true },
+      { id: "C", dependsOn: [], parallelizable: true }
+    ]);
+    // B is completed, A is current -> only C remains.
+    expect(readySet(graph, "A", ["B"])).toEqual(["C"]);
+  });
+
+  it("excludes non-parallelizable siblings", () => {
+    const graph = graphFromTasks([
+      { id: "A", dependsOn: [], parallelizable: true },
+      { id: "B", dependsOn: [], parallelizable: false },
+      { id: "C", dependsOn: [] } // parallelizable undefined -> excluded
+    ]);
+    expect(readySet(graph, "A", [])).toEqual([]);
+  });
+
+  it("excludes siblings whose dependencies are not yet completed", () => {
+    // X is a real task in the graph, so its completion actually gates B and C.
+    const graph = graphFromTasks([
+      { id: "X", dependsOn: [], parallelizable: true },
+      { id: "A", dependsOn: [], parallelizable: true },
+      { id: "B", dependsOn: ["X"], parallelizable: true },
+      { id: "C", dependsOn: ["X"], parallelizable: true }
+    ]);
+    // With X not completed, B and C are not ready; only X qualifies as a sibling.
+    expect(readySet(graph, "A", [])).toEqual(["X"]);
+    // Once X is completed, B and C become ready (and X drops out as completed).
+    expect(readySet(graph, "A", ["X"])).toEqual(["B", "C"]);
+  });
+
+  it("treats unknown dependency ids as satisfied (mirrors orderTasks)", () => {
+    const graph = graphFromTasks([
+      { id: "A", dependsOn: [], parallelizable: true },
+      { id: "B", dependsOn: ["GHOST"], parallelizable: true }
+    ]);
+    // GHOST is not a task in the graph, so it is treated as satisfied.
+    expect(readySet(graph, "A", [])).toEqual(["B"]);
+  });
+
+  it("returns an empty array when there are no parallelizable siblings", () => {
+    const graph = graphFromTasks([
+      { id: "A", dependsOn: [], parallelizable: true },
+      { id: "B", dependsOn: ["A"], parallelizable: false }
+    ]);
+    expect(readySet(graph, "A", [])).toEqual([]);
+  });
 });
 
 describe("buildActionBlock", () => {
@@ -326,6 +414,38 @@ describe("buildActionBlock", () => {
     const block = buildActionBlock(fullTask);
     expect(block).toContain("done_criteria:");
     expect(block).toContain("`visp-hyper checkpoint --task T002`");
+  });
+
+  const parallelTask: KitTask = graphFromTasks([
+    { id: "T100", title: "Parallel", parallelizable: true, riskLevel: "low" }
+  ]).tasks[0]!;
+
+  it("appends may_run_concurrently_with when parallelizable and the ready-set is non-empty", () => {
+    const block = buildActionBlock(parallelTask, { concurrentWith: ["T101", "T102"] });
+    expect(block).toContain("parallelizable: true");
+    expect(block).toContain("may_run_concurrently_with: T101, T102");
+    // The line sits directly after the risk line.
+    const lines = block.split("\n");
+    const riskIndex = lines.findIndex((line) => line.startsWith("risk:"));
+    expect(lines[riskIndex + 1]).toBe("may_run_concurrently_with: T101, T102");
+  });
+
+  it("omits may_run_concurrently_with when the ready-set is empty", () => {
+    const block = buildActionBlock(parallelTask, { concurrentWith: [] });
+    expect(block).not.toContain("may_run_concurrently_with:");
+  });
+
+  it("omits may_run_concurrently_with when concurrentWith is not provided", () => {
+    const block = buildActionBlock(parallelTask);
+    expect(block).not.toContain("may_run_concurrently_with:");
+  });
+
+  it("omits may_run_concurrently_with when the task is not parallelizable even if siblings are passed", () => {
+    // fullTask has parallelizable: false — the line must never render for it, so
+    // pinned non-parallelizable output stays byte-identical.
+    const block = buildActionBlock(fullTask, { concurrentWith: ["T101"] });
+    expect(block).toContain("parallelizable: false");
+    expect(block).not.toContain("may_run_concurrently_with:");
   });
 });
 

@@ -16,24 +16,20 @@ const configSchema = z.object({
   memoryEndpoint: z.string().default("http://localhost:8000"),
   memoryRepoId: z.string().optional(),
   contextMode: z.literal("deterministic"),
-  blockedPaths: z.array(z.string()),
-  skillMode: z.enum(["auto", "review"]).default("auto"),
-  // Optional so legacy config files without it keep parsing.
-  validationCommands: z.array(z.string()).optional()
+  // Defaulted so a hand-edited config missing this one field parses (keeping the
+  // rest of the file) instead of the whole store being discarded to defaults.
+  // Mirrors defaultConfig.blockedPaths.
+  blockedPaths: z
+    .array(z.string())
+    .default([".env", ".env.*", "node_modules", "dist", "build", ".git"]),
+  skillMode: z.enum(["auto", "review"]).default("review")
+  ,validationCommands: z.array(z.string()).optional()
 });
 
 const pipelineStepRecordSchema = z.object({
   taskId: z.string(),
   action: z.enum(["started", "checkpoint-passed", "checkpoint-failed", "task-injected", "escalation-issued"]),
   at: z.string(),
-  detail: z.string().optional()
-});
-
-const adaptiveDecisionRecordSchema = z.object({
-  at: z.string(),
-  taskId: z.string(),
-  rule: z.string(),
-  action: z.enum(["inject-remediation", "escalation-directive"]),
   detail: z.string().optional()
 });
 
@@ -44,9 +40,14 @@ const pipelineStateSchema = z.object({
   stepHistory: z.array(pipelineStepRecordSchema),
   // Optional so legacy state without synthetic graphs still parses.
   syntheticTasks: z.array(kitTaskSchema).optional(),
-  // Optional so legacy state without adaptive pipeline fields still parses.
   injectedTasks: z.array(kitTaskSchema).optional(),
-  decisionLog: z.array(adaptiveDecisionRecordSchema).optional()
+  decisionLog: z.array(z.object({
+    at: z.string(),
+    taskId: z.string(),
+    rule: z.string(),
+    action: z.enum(["inject-remediation", "escalation-directive"]),
+    detail: z.string().optional()
+  })).optional()
 });
 
 const stateSchema = z.object({
@@ -64,7 +65,6 @@ const stateSchema = z.object({
       pipeline: pipelineStateSchema.optional()
     })
   ),
-  // Optional so legacy state without branch-keyed sessions still parses.
   activeSessionByBranch: z.record(z.string()).optional()
 });
 
@@ -90,22 +90,14 @@ function emptyState(): HyperState {
 
 const branchLocator = new GitBranchSessionLocator();
 
-/** BranchSessionLocator key for the caller's current branch (never throws). */
 async function currentBranchKey(projectPath: string): Promise<string> {
   const branch = await branchLocator.currentBranch(projectPath);
   return branchLocator.sessionKey(projectPath, branch);
 }
 
-/**
- * Resolve the session the current branch should act on: the branch-keyed
- * entry wins so parallel branches/worktrees stay isolated; a branch with no
- * session of its own falls back to the legacy global activeSessionId.
- */
 function resolveActiveSessionId(state: HyperState, branchKey: string): string | null {
   const branchSessionId = state.activeSessionByBranch?.[branchKey];
-  if (branchSessionId && state.sessions[branchSessionId]) {
-    return branchSessionId;
-  }
+  if (branchSessionId && state.sessions[branchSessionId]) return branchSessionId;
   return state.activeSessionId && state.sessions[state.activeSessionId] ? state.activeSessionId : null;
 }
 
@@ -168,15 +160,9 @@ export async function createSession(input: {
     const now = new Date().toISOString();
     const session: SessionRecord = {
       id: `vh_${now.slice(0, 10).replaceAll("-", "")}_${randomUUID().slice(0, 8)}`,
-      goal: input.goal,
-      tool: input.tool,
-      projectPath: input.projectPath,
-      createdAt: now,
-      updatedAt: now,
-      phase: "implementation",
-      relevantFiles: input.relevantFiles
+      goal: input.goal, tool: input.tool, projectPath: input.projectPath,
+      createdAt: now, updatedAt: now, phase: "implementation", relevantFiles: input.relevantFiles
     };
-
     state.activeSessionId = session.id;
     state.sessions[session.id] = session;
     state.activeSessionByBranch = { ...state.activeSessionByBranch, [branchKey]: session.id };
@@ -199,13 +185,8 @@ export async function updateActiveSession(
   return withStoreLock(projectPath, async () => {
     const state = await readState(projectPath);
     const sessionId = resolveActiveSessionId(state, branchKey);
-    if (!sessionId) {
-      return null;
-    }
-    const next = updater({
-      ...state.sessions[sessionId]!,
-      updatedAt: new Date().toISOString()
-    });
+    if (!sessionId) return null;
+    const next = updater({ ...state.sessions[sessionId]!, updatedAt: new Date().toISOString() });
     state.sessions[next.id] = next;
     await writeState(projectPath, state);
     return next;

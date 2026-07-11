@@ -1,7 +1,7 @@
 import { isAbsolute, relative } from "node:path";
 import { Command, Option } from "commander";
-import { toPosixPath } from "../../core/fs-utils.js";
-import { readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
+import { toPosixPath } from "../../core/path-utils.js";
+import { readState, updateActiveSession } from "../../core/session-manager.js";
 import type { ToolProfile } from "../../core/types.js";
 import { detectVisp } from "../../kit/kit-command-bridge.js";
 import type { KitTask } from "../../kit/kit-schemas.js";
@@ -28,10 +28,7 @@ export function quickCommand(): Command {
       const projectPath = resolveProjectPath(this);
 
       const files = normalizeFiles(options.files ?? [], projectPath);
-      const config = await readConfig(projectPath);
-      const detected = await new ProjectValidationRunner({
-        configCommands: config.validationCommands
-      }).detect(projectPath);
+      const detected = await new ProjectValidationRunner().detect(projectPath);
 
       const task: KitTask = {
         id: QUICK_TASK_ID,
@@ -78,8 +75,8 @@ export function quickCommand(): Command {
  */
 function normalizeFiles(files: string[], projectPath: string): string[] {
   return files.map((file) => {
-    const rel = isAbsolute(file) ? toPosixPath(relative(projectPath, file)) : file;
-    return rel.replace(/^\.\//, "");
+    const rel = isAbsolute(file) ? relative(projectPath, file) : file;
+    return toPosixPath(rel).replace(/^\.\//, "");
   });
 }
 

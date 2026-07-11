@@ -1,7 +1,7 @@
 import { readFile, access } from "node:fs/promises";
 import { join } from "node:path";
-import { execFileCrossPlatform } from "../core/exec.js";
-import type { ValidationCommandRunner } from "../core/types.js";
+import { execFileResolved } from "../core/executable-resolver.js";
+import type { ValidationCommandRunner, ValidationResult } from "../core/types.js";
 
 export class ProjectValidationRunner implements ValidationCommandRunner {
   private readonly timeoutMs: number;
@@ -61,21 +61,15 @@ export class ProjectValidationRunner implements ValidationCommandRunner {
         result.push(`${pm} run ${name}`);
       }
     }
-    // Config-declared commands extend the detected allowlist (deduped).
     for (const command of this.configCommands) {
-      if (!result.includes(command)) {
-        result.push(command);
-      }
+      if (!result.includes(command)) result.push(command);
     }
     return result;
   }
 
-  async run(
-    projectPath: string,
-    commands: string[]
-  ): Promise<Array<{ command: string; exitCode: number; output: string }>> {
+  async run(projectPath: string, commands: string[]): Promise<ValidationResult[]> {
     const allowlist = await this.detect(projectPath);
-    const results: Array<{ command: string; exitCode: number; output: string }> = [];
+    const results: ValidationResult[] = [];
 
     for (const command of commands) {
       if (!allowlist.includes(command)) {
@@ -87,7 +81,7 @@ export class ProjectValidationRunner implements ValidationCommandRunner {
       const [first, ...rest] = parts;
 
       try {
-        const { stdout, stderr } = await execFileCrossPlatform(first!, rest, {
+        const { stdout, stderr } = await execFileResolved(first!, rest, {
           cwd: projectPath,
           timeout: this.timeoutMs
         });
@@ -101,6 +95,20 @@ export class ProjectValidationRunner implements ValidationCommandRunner {
           killed?: boolean;
           signal?: string;
         };
+
+        // A never-spawned command (missing binary / EINVAL batch) is NOT a test
+        // failure: record exitCode null + a spawnError so evidence can say
+        // "command could not be run" rather than "verify failed".
+        if (failure.code === "ENOENT" || failure.code === "EINVAL") {
+          results.push({
+            command,
+            exitCode: null,
+            output: `command could not be run: ${first} (${String(failure.code)})`,
+            spawnError: `${first} could not be spawned (${String(failure.code)})`
+          });
+          continue;
+        }
+
         const exitCode = typeof failure.code === "number" ? failure.code : 1;
         const rawOut = (failure.stdout ?? "") + (failure.stderr ?? "");
         const output = rawOut.trim().slice(0, 4000);

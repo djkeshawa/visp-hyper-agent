@@ -6,7 +6,7 @@ Visp Hyper Agent does not replace coding agents and never calls an LLM itself. I
 
 - **Structured code flow** — drives the gated [Visp Kit](https://github.com/djkeshawa/visp-kit) workflow through its CLI, adopts task-scoped context packs, and advances only on verified evidence.
 - **Active memory** — recalls and persists project knowledge through [llm-memory](https://github.com/djkeshawa/llm-memory) (optional; file-based memory is the zero-dependency default).
-- **Cost-routed multi-agent setup** — installs a coordinator/scout/implementer subagent fleet with per-role model tiers, and emits evidence-gated model-routing advice that only downgrades tiers when local pass-rate data proves quality holds.
+- **Claude Code subagent fleet (install-time)** — for the `claude-code` tool, `init` installs a coordinator/scout/implementer subagent set with per-role model tiers from a static `model-map.json`, and the installed `/hyper-run` command drives the coordinator to delegate the scout pass to the `scout` subagent and implementation to the `implementer` subagent through Claude Code's native Agent tool. Other tools have no dispatch mechanism and instead get an honest sequential scout-then-implement role framing. Across all tools, hyper emits evidence-gated model-routing advice that only downgrades tiers when local pass-rate data proves quality holds.
 - **Self-improvement** — harvests reusable skills your agent discovers during sessions and installs them as project skills.
 
 Everything is file-based under the target project's `.visp/` directory. No network calls (except to your own optional llm-memory server), no database, no embeddings, no new runtime dependencies.
@@ -147,12 +147,20 @@ This installs into the project:
 .claude/commands/hyper-*.md       # /hyper-review, /hyper-remember
 ```
 
+The per-role model tiers above are static assignments written at install time from
+`templates/claude-code/model-map.json` — this dispatch fleet is a Claude Code
+feature only. Other tools follow the sequential scout-then-implement role framing in
+their installed instructions instead.
+
 Then, inside a Claude Code session:
 
 ```text
 /hyper-run implement offline note sync
 # → handoff + task action block (allowed/forbidden files, acceptance
-#   criteria, validation commands) + model_routing advice
+#   criteria, validation commands) + model_routing advice.
+#   Acting as the coordinator, delegate the scout pass to the `scout`
+#   subagent and implementation to `implementer` via the Agent tool,
+#   validating each result before checkpointing.
 
 /hyper-checkpoint T001
 # → runs visp verify + review; advances only on PASSED
@@ -168,7 +176,7 @@ The same flow works tool-agnostically: `--tool codex` writes `AGENTS.visp-hyper.
 All orchestration output is deterministic, delimited text designed for LLM consumption:
 
 - `BEGIN_VISP_AGENT_HANDOFF` — session contract: required file reads, MCP resources including computed context freshness, workflow, hard rules, installed project skills, and the skill-proposal protocol.
-- `BEGIN_VISP_TASK_ACTION` — one bounded task: goal, allowed/forbidden files, acceptance criteria, validation commands, done criteria.
+- `BEGIN_VISP_TASK_ACTION` — one bounded task: goal, allowed/forbidden files, acceptance criteria, validation commands, done criteria. When the current task is `parallelizable` and other ready sibling tasks (all dependencies completed, also parallelizable) exist, it also carries a `may_run_concurrently_with: <ids>` line naming that ready-set; the line is omitted otherwise.
 - `BEGIN_VISP_PIPELINE_BLOCKED` — a gate refused: failed rules and the exact next allowed `visp` command. Unparseable gate results fail closed.
 - `BEGIN_VISP_CHECKPOINT_RESULT` — verify/review outcomes and the next task (or `pipeline_complete`).
 - `BEGIN_VISP_MODEL_ROUTING` — advisory tier suggestion with its evidence (samples, pass rate).
@@ -269,7 +277,7 @@ Source modules:
 
 Supported profiles: `generic`, `codex`, `claude-code`, `copilot`, `opencode`.
 
-`--tool` changes handoff metadata, profile wording, and asset install destinations while preserving the shared protocol structure. Unknown values are rejected by the CLI. Per-tool model assignments live in `templates/<tool>/model-map.json` — new models are a data update, not a code change.
+`--tool` changes handoff metadata, profile wording, and asset install destinations while preserving the shared protocol structure. Unknown values are rejected by the CLI. Only `claude-code` ships a subagent fleet with a `templates/claude-code/model-map.json`; for that tool, new model assignments are a data update, not a code change. The other tools have no dispatch mechanism and use the sequential scout-then-implement role framing instead.
 
 ## Current Limits
 

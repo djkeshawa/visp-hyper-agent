@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { Command } from "commander";
-import { execFileCrossPlatform } from "../../core/exec.js";
+import { execFileResolved } from "../../core/executable-resolver.js";
 import { readTextIfExists } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
 import type { HyperConfig, MemoryRecord, SessionRecord } from "../../core/types.js";
@@ -44,10 +44,7 @@ export function rememberCommand(): Command {
       const projectPath = resolveProjectPath(this);
       const session = await getActiveSession(projectPath);
       if (!session) {
-        // Degrade, never crash: match guard/resume rather than throwing.
-        console.log("No active Visp Hyper session. Run `visp-hyper start` first.");
-        process.exitCode = 1;
-        return;
+        throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
       }
       const reviewSummary = await readTextIfExists(join(projectPath, ".visp", "hyper", "current", "review-report.md"));
       const record = {
@@ -300,7 +297,7 @@ async function writeBackRemoteMemory(
 
 async function changedFiles(projectPath: string): Promise<string[]> {
   try {
-    const { stdout } = await execFileCrossPlatform("git", ["diff", "--name-only"], { cwd: projectPath });
+    const { stdout } = await execFileResolved("git", ["diff", "--name-only"], { cwd: projectPath });
     return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   } catch {
     return [];

@@ -4,17 +4,28 @@ import type { SessionRecord } from "../../core/types.js";
 import type { KitTask } from "../../kit/kit-schemas.js";
 import { readRelevantFailurePatterns } from "../../memory/failure-patterns.js";
 import { effectiveGraph, evidenceRequirements } from "../../pipeline/adaptive-rules.js";
-import { buildActionBlock, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
+import { buildActionBlock, currentTask, loadTaskGraph, readySet } from "../../pipeline/pipeline-engine.js";
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { contextPackPathIfExists, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
+import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 
 export function nextCommand(): Command {
   return new Command("next")
     .description("Print the next recommended action for the active session.")
     .action(async function (this: Command) {
       const projectPath = resolveProjectPath(this);
+      const kit = await detectVisp(projectPath);
+      if (kit.available) {
+        const bridge = new KitCommandBridge({ projectPath });
+        const action = await bridge.nextAction();
+        if (action) {
+          console.log(["BEGIN_VISP_WORKFLOW_ACTION_V2", JSON.stringify(action), "END_VISP_WORKFLOW_ACTION_V2"].join("\n"));
+          return;
+        }
+        for (const warning of bridge.warnings) console.warn(`warning: ${warning}`);
+      }
       const session = await getActiveSession(projectPath);
       if (!session) {
         console.log(
@@ -29,11 +40,8 @@ export function nextCommand(): Command {
       }
 
       if (session.pipeline?.currentTaskId) {
-        // Same resolution as checkpoint: disk graph, then the session's
-        // synthetic graph, with injected remediation tasks merged in-memory.
         const syntheticTasks = session.pipeline.syntheticTasks;
-        const baseGraph =
-          (await loadTaskGraph(projectPath)) ??
+        const baseGraph = (await loadTaskGraph(projectPath)) ??
           (syntheticTasks && syntheticTasks.length > 0 ? { tasks: syntheticTasks } : null);
         const graph = baseGraph ? effectiveGraph(baseGraph, session.pipeline) : null;
         if (!graph) {
@@ -42,8 +50,9 @@ export function nextCommand(): Command {
           const task = currentTask(graph, session.pipeline);
           if (task) {
             const contextPackPath = await contextPackPathIfExists(projectPath, task.id);
+            const concurrentWith = readySet(graph, task.id, session.pipeline.completed);
             const knownFailureModes = await knownFailureModesFor(projectPath, task);
-            console.log(buildActionBlock(task, { sessionId: session.id, contextPackPath, knownFailureModes }));
+            console.log(buildActionBlock(task, { sessionId: session.id, contextPackPath, concurrentWith, knownFailureModes }));
             await printAndRecordRouting(projectPath, task);
             printWorkflowDirectiveIfAny(graph, session.pipeline, session.tool, session.id);
             return;
@@ -54,6 +63,20 @@ export function nextCommand(): Command {
 
       printLegacyNext(session);
     });
+}
+
+async function knownFailureModesFor(projectPath: string, task: KitTask): Promise<string[] | undefined> {
+  try {
+    const patterns = await readRelevantFailurePatterns(projectPath, {
+      taskId: task.id,
+      taskClass: task.riskLevel ?? "unknown",
+      files: task.allowedFiles
+    });
+    const { knownFailureModes } = evidenceRequirements(task, patterns);
+    return knownFailureModes.length > 0 ? knownFailureModes : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function printLegacyNext(session: SessionRecord): void {
@@ -67,24 +90,6 @@ function printLegacyNext(session: SessionRecord): void {
       "END_VISP_NEXT_ACTION"
     ].join("\n")
   );
-}
-
-/**
- * Known failure modes for the task, surfaced as an optional action-block
- * section. Best-effort: an unreadable pattern store yields none.
- */
-async function knownFailureModesFor(projectPath: string, task: KitTask): Promise<string[] | undefined> {
-  try {
-    const patterns = await readRelevantFailurePatterns(projectPath, {
-      taskId: task.id,
-      taskClass: task.riskLevel ?? "unknown",
-      files: task.allowedFiles
-    });
-    const { knownFailureModes } = evidenceRequirements(task, patterns);
-    return knownFailureModes.length > 0 ? knownFailureModes : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

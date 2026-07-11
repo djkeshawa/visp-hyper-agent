@@ -1,8 +1,8 @@
 import type { TelemetryAttempt } from "../telemetry/telemetry-store.js";
 import type { RoutingDecision, RoutingState } from "./routing-state.js";
 
-export const DOWNGRADE_MIN_SAMPLES = 3;
-export const DOWNGRADE_MIN_PASS_RATE = 0.9;
+export const DOWNGRADE_MIN_SAMPLES = 30;
+export const DOWNGRADE_MIN_WILSON_LOWER_BOUND = 0.85;
 export const QUARANTINE_SESSIONS = 3;
 
 /**
@@ -18,22 +18,38 @@ export type RoutingSuggestion = {
   taskClass: string;
   suggestedTier: string;
   reason: string;
-  evidence: { samples: number; passRate: number | null };
+  evidence: { samples: number; passes: number; passRate: number | null; lowerConfidenceBound: number | null };
 };
+
+/** 95% Wilson score lower bound for a binomial proportion. */
+export function wilsonLowerBound(passes: number, samples: number, z = 1.959963984540054): number | null {
+  if (samples <= 0) return null;
+  const p = passes / samples;
+  const z2 = z * z;
+  const denominator = 1 + z2 / samples;
+  const centre = p + z2 / (2 * samples);
+  const margin = z * Math.sqrt((p * (1 - p) + z2 / (4 * samples)) / samples);
+  return (centre - margin) / denominator;
+}
 
 function downgradeEvidence(
   attempts: TelemetryAttempt[],
   taskClass: string
-): { samples: number; passRate: number | null } {
+): RoutingSuggestion["evidence"] {
   const relevant = attempts.filter(
     (entry) => entry.taskClass === taskClass && entry.tier === CHEAP_TIER && entry.firstAttempt === true
   );
   const samples = relevant.length;
   if (samples === 0) {
-    return { samples: 0, passRate: null };
+    return { samples: 0, passes: 0, passRate: null, lowerConfidenceBound: null };
   }
   const passed = relevant.filter((entry) => entry.verifyPassed && entry.reviewPassed).length;
-  return { samples, passRate: passed / samples };
+  return {
+    samples,
+    passes: passed,
+    passRate: passed / samples,
+    lowerConfidenceBound: wilsonLowerBound(passed, samples)
+  };
 }
 
 function pct(rate: number): string {
@@ -55,17 +71,6 @@ export function computeSuggestedTier(input: {
   const taskId = task.id;
   const taskClass = task.riskLevel ?? "unknown";
 
-  // 1 + 2. Baseline. Low risk is cheap by default; nothing else to decide.
-  if (taskClass === "low") {
-    return {
-      taskId,
-      taskClass,
-      suggestedTier: CHEAP_TIER,
-      reason: "baseline: low risk",
-      evidence: { samples: 0, passRate: null }
-    };
-  }
-
   const evidence = downgradeEvidence(attempts, taskClass);
 
   // 3. Active quarantine forces strongest tier — quality recovers unconditionally.
@@ -81,13 +86,13 @@ export function computeSuggestedTier(input: {
   }
 
   // 4. Evidence-gated downgrade.
-  if (evidence.samples >= DOWNGRADE_MIN_SAMPLES && evidence.passRate !== null) {
-    if (evidence.passRate >= DOWNGRADE_MIN_PASS_RATE) {
+  if (evidence.samples >= DOWNGRADE_MIN_SAMPLES && evidence.lowerConfidenceBound !== null) {
+    if (evidence.lowerConfidenceBound >= DOWNGRADE_MIN_WILSON_LOWER_BOUND) {
       return {
         taskId,
         taskClass,
         suggestedTier: CHEAP_TIER,
-        reason: `evidence: ${evidence.samples} samples at ${pct(evidence.passRate)} first-attempt pass`,
+        reason: `experimental evidence: ${evidence.samples} samples, ${pct(evidence.lowerConfidenceBound)} Wilson lower bound`,
         evidence
       };
     }
@@ -95,7 +100,7 @@ export function computeSuggestedTier(input: {
       taskId,
       taskClass,
       suggestedTier: STRONGEST_TIER,
-      reason: `pass rate ${pct(evidence.passRate)} below 90%`,
+      reason: `Wilson lower bound ${pct(evidence.lowerConfidenceBound)} below ${pct(DOWNGRADE_MIN_WILSON_LOWER_BOUND)}`,
       evidence
     };
   }
@@ -150,12 +155,15 @@ export function escalate(input: {
 export function renderModelRouting(suggestion: RoutingSuggestion): string {
   const passRate =
     suggestion.evidence.passRate === null ? "n/a" : `${Math.round(suggestion.evidence.passRate * 100)}%`;
+  const lowerBound = suggestion.evidence.lowerConfidenceBound === null
+    ? "n/a"
+    : `${Math.round(suggestion.evidence.lowerConfidenceBound * 100)}%`;
   return [
     "BEGIN_VISP_MODEL_ROUTING",
     `task: ${suggestion.taskId}`,
     `suggested_tier: ${suggestion.suggestedTier}`,
     `reason: ${suggestion.reason}`,
-    `evidence: samples=${suggestion.evidence.samples} pass_rate=${passRate}`,
+    `evidence: samples=${suggestion.evidence.samples} passes=${suggestion.evidence.passes} pass_rate=${passRate} wilson_lower_bound=${lowerBound}`,
     "END_VISP_MODEL_ROUTING"
   ].join("\n");
 }

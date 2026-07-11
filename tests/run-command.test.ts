@@ -290,6 +290,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
         gate: { stdout: { allowed: true, failedRules: [] } },
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
+        reconcile: { stdout: { success: true } },
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -347,6 +348,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
         gate: { stdout: { allowed: true, failedRules: [] } },
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
+        reconcile: { stdout: { success: true } },
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -398,6 +400,41 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const after = await listFeatureFiles(projectPath);
     expect(after).toEqual(before);
+  });
+
+  it("blocked gate prefers the bare nextCommand over the sentence nextAllowedCommand", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        gate: {
+          stdout: {
+            allowed: false,
+            failedRules: [{ ruleId: "R-IMPL-002", message: "Feature not started" }],
+            // Sentence form (would make a weak model execute the word "Run") plus
+            // the bare machine-runnable form the run command must prefer.
+            nextAllowedCommand: 'Run visp feature "<describe your feature>".',
+            nextCommand: 'visp feature "<describe your feature>"'
+          },
+          exitCode: 1
+        },
+        next: { stdout: { success: true, nextCommand: "visp feature" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_PIPELINE_BLOCKED");
+    // Prefers the bare command, not the sentence.
+    expect(output).toContain('next_allowed_command: visp feature "<describe your feature>"');
+    expect(output).not.toContain("next_allowed_command: Run visp feature");
+    // Follow-up wording no longer tells the model to "Run the command above".
+    expect(output).toContain("instruction: Follow the instruction above exactly, then re-run `visp-hyper run`.");
   });
 
   it("AC007: next prints the action block after a run, legacy after plain start", async () => {
@@ -507,6 +544,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
         gate: { stdout: { allowed: true, failedRules: [] } },
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
+        reconcile: { stdout: { success: true } },
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -547,6 +585,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
         gate: { stdout: { allowed: true, failedRules: [] } },
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
+        reconcile: { stdout: { success: true } },
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -585,6 +624,77 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     pipeline = activePipeline(await readState(projectPath));
     expect(pipeline.currentTaskId).toBe("T002");
     expect(pipeline.stepHistory.some((step: any) => step.action === "checkpoint-failed")).toBe(true);
+  });
+
+  it("runs reconcile after verify+review and a reconcile gate BLOCK fails the checkpoint", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        // Reconcile gate BLOCKS: a parsed result with success:false.
+        reconcile: { stdout: { success: false, errors: ["provenance drift"] } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+    const output = logs.join("\n");
+    expect(output).toContain("verify: PASSED");
+    expect(output).toContain("status: FAILED");
+    expect(output).toContain("reconcile");
+
+    const pipeline = activePipeline(await readState(projectPath));
+    // Did not advance; still on T001.
+    expect(pipeline.currentTaskId).toBe("T001");
+    expect(pipeline.completed).not.toContain("T001");
+
+    // The shim recorded a reconcile invocation.
+    const argv = (await readFile(shim.argvLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    expect(argv.some((args) => args[0] === "reconcile")).toBe(true);
+  });
+
+  it("is inconclusive and does not advance when reconciliation is unavailable", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    // Shim provides verify+review but NOT reconcile → the reconcile invocation
+    // yields a non-JSON/unknown-subcommand result → null → warn, not block.
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: { success: true, errors: [] } },
+        gate: { stdout: { allowed: true, failedRules: [] } },
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        next: { stdout: { success: true, nextCommand: "visp implement" } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).not.toContain("next_task: T002");
+
+    const pipeline = activePipeline(await readState(projectPath));
+    expect(pipeline.currentTaskId).toBe("T001");
+    expect(pipeline.completed).not.toContain("T001");
   });
 });
 

@@ -91,6 +91,18 @@ describe("isBlockedPath", () => {
     });
   });
 
+  describe("separator tolerance (defense-in-depth for Windows backslash paths)", () => {
+    it("blocks a backslash directory-prefix path", () => {
+      expect(isBlockedPath("node_modules\\foo\\bar.js", patterns)).toBe(true);
+      expect(isBlockedPath("dist\\index.js", patterns)).toBe(true);
+      expect(isBlockedPath(".git\\config", patterns)).toBe(true);
+    });
+
+    it("does not block a backslash near-miss", () => {
+      expect(isBlockedPath("node_modules2\\x", patterns)).toBe(false);
+    });
+  });
+
   describe("edge cases", () => {
     it("blocks nothing when the pattern list is empty", () => {
       expect(isBlockedPath(".env", [])).toBe(false);

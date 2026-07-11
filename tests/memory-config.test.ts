@@ -220,4 +220,31 @@ describe("LlmMemoryProvider repoId override (AC003/AC004)", () => {
     expect(config.memoryRepoId).toBeUndefined();
     expect(config.memoryMode).toBe("file");
   });
+
+  it("legacy config missing blockedPaths keeps its other hand-edited fields and gets default blockedPaths", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "visp-legacy-blocked-"));
+    const hyperDir = join(dir, ".visp", "hyper");
+    await mkdir(hyperDir, { recursive: true });
+    // A hand-edited config with a non-default tokenBudget but no blockedPaths.
+    // Before blockedPaths was defaulted, the whole store would be discarded to
+    // defaults (losing the custom tokenBudget); it must now parse in place.
+    await writeFile(
+      join(hyperDir, "config.json"),
+      JSON.stringify({
+        defaultTool: "codex",
+        tokenBudget: 99999,
+        memoryMode: "file",
+        memoryEndpoint: "http://localhost:8000",
+        contextMode: "deterministic"
+      }),
+      "utf8"
+    );
+
+    const config = await readConfig(dir);
+    // Hand-edited fields survive.
+    expect(config.defaultTool).toBe("codex");
+    expect(config.tokenBudget).toBe(99999);
+    // Missing field is filled from the default, not the whole file reset.
+    expect(config.blockedPaths).toEqual(defaultConfig.blockedPaths);
+  });
 });

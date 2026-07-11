@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { ZodType, ZodTypeDef } from "zod";
-import { execFileCrossPlatform } from "../core/exec.js";
+import { execFileResolved } from "../core/executable-resolver.js";
 import {
   kitBudgetResultSchema,
   kitContextPackSchema,
@@ -13,6 +13,7 @@ import {
   kitReviewSummarySchema,
   kitStatusSchema,
   kitVerifySummarySchema,
+  workflowActionV2Schema,
   type KitBudgetResult,
   type KitContextPack,
   type KitGateResult,
@@ -22,6 +23,7 @@ import {
   type KitReviewSummary,
   type KitStatus,
   type KitVerifySummary
+  ,type WorkflowActionV2
 } from "./kit-schemas.js";
 
 // Schemas with `.transform()` have a different input than output type; allow any input.
@@ -205,6 +207,10 @@ export class KitCommandBridge {
     return this.invoke(["next"], kitNextSchema);
   }
 
+  async nextAction(): Promise<WorkflowActionV2 | null> {
+    return this.invoke(["next", "--format", "json"], workflowActionV2Schema, { allowNonZeroExit: true });
+  }
+
   async integrationContract(options: { quiet?: boolean } = {}): Promise<KitIntegrationContract | null> {
     const warningStart = this.warnings.length;
     const result = await this.invoke(["integration", "contract"], kitIntegrationContractSchema);
@@ -328,12 +334,12 @@ async function runCommand(
   warnings: string[]
 ): Promise<RunResult | null> {
   try {
-    const { stdout } = await execFileCrossPlatform(binary, args, { cwd, timeout });
+    const { stdout } = await execFileResolved(binary, args, { cwd, timeout });
     return { exitCode: 0, stdout };
   } catch (error) {
     const failure = error as NodeJS.ErrnoException & { code?: string | number; stdout?: string; killed?: boolean; signal?: string };
 
-    if (failure.code === "ENOENT") {
+    if (failure.code === "ENOENT" || failure.code === "EINVAL") {
       warnings.push(`visp binary "${binary}" was not found.`);
       return null;
     }

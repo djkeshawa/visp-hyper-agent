@@ -140,7 +140,7 @@ describe("checkpoint adaptive pipeline integration", () => {
     expect((await readPipeline(projectPath)).currentTaskId).toBe(TASK_ID);
   });
 
-  it("strict evidence: a high-risk task may not pass verify vacuously", async () => {
+  it("strict evidence: missing validation remains inconclusive and cannot advance", async () => {
     const projectPath = await createRepo();
     await writeSession(projectPath);
     // High-risk task with no validation commands anywhere: vacuous verify.
@@ -154,8 +154,9 @@ describe("checkpoint adaptive pipeline integration", () => {
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", TASK_ID]);
     const output = logs.join("\n");
-    expect(output).toContain("verify: FAILED");
-    expect(output).toContain("strict evidence: this task class requires real validation evidence");
+    expect(output).toContain("verify: INCONCLUSIVE");
+    expect(output).toContain("no validation commands detected; verification is inconclusive");
+    expect(output).not.toContain("action: inject-remediation");
   });
 
   it("escalates when the remediation task itself keeps failing", async () => {

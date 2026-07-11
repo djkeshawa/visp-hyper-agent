@@ -254,9 +254,26 @@ export interface SemanticMemoryProvider extends MemoryProvider {
   semanticRecall(query: string, options?: RecallOptions): Promise<MemoryResult[]>;
 }
 
+/**
+ * Result of running one validation command. `exitCode` is `null` when the
+ * command could not be spawned at all (missing binary / EINVAL); in that case
+ * `spawnError` carries the reason. A `null` exit code is NOT a passing result —
+ * consumers must fail closed — but it is distinct from a real non-zero exit so
+ * evidence can honestly say "command could not be run" vs "verify failed".
+ */
+export interface ValidationResult {
+  command: string;
+  exitCode: number | null;
+  output: string;
+  spawnError?: string;
+}
+
+export type EvidenceVerdict = "passed" | "failed" | "inconclusive";
+export type AssuranceLevel = "kit_strict" | "local_checked" | "advisory";
+
 export interface ValidationCommandRunner {
   detect(projectPath: string): Promise<string[]>;
-  run(projectPath: string, commands: string[]): Promise<Array<{ command: string; exitCode: number; output: string }>>;
+  run(projectPath: string, commands: string[]): Promise<ValidationResult[]>;
 }
 
 export interface BranchSessionLocator {

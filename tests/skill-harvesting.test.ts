@@ -300,7 +300,7 @@ describe("skill-registry", () => {
 });
 
 describe("skillMode config lockstep", () => {
-  it("parses a legacy config without skillMode and defaults to auto", async () => {
+  it("parses a legacy config without skillMode and defaults to review", async () => {
     const dir = await mkdtemp(join(tmpdir(), "visp-skill-cfg-"));
     const hyperDir = join(dir, ".visp", "hyper");
     await mkdir(hyperDir, { recursive: true });
@@ -318,7 +318,7 @@ describe("skillMode config lockstep", () => {
     );
 
     const config = await readConfig(dir);
-    expect(config.skillMode).toBe("auto");
+    expect(config.skillMode).toBe("review");
   });
 
   it("accepts an explicit review mode", async () => {
@@ -335,8 +335,8 @@ describe("skillMode config lockstep", () => {
     expect(config.skillMode).toBe("review");
   });
 
-  it("defaults to skillMode auto", () => {
-    expect(defaultConfig.skillMode).toBe("auto");
+  it("defaults to skillMode review", () => {
+    expect(defaultConfig.skillMode).toBe("review");
   });
 });
 

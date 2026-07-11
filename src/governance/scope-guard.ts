@@ -1,4 +1,4 @@
-import { execFileCrossPlatform } from "../core/exec.js";
+import { execFileResolved } from "../core/executable-resolver.js";
 import { isBlockedPath } from "./blocked-files.js";
 
 export type ScopeViolation = { file: string; rule: "blocked-path" | "outside-allowed" };
@@ -22,13 +22,6 @@ export function checkScope(
   for (const file of changedFiles) {
     if (isBlockedPath(file, input.blockedPaths)) {
       violations.push({ file, rule: "blocked-path" });
-      continue;
-    }
-    // .visp/ holds workflow-owned metadata that visp-hyper and the kit write
-    // as a byproduct of orchestration (handoffs, telemetry, task graphs); it
-    // is never part of a task's implementation scope, so the allow-list rule
-    // does not apply to it. Blocked paths above still do.
-    if (file.startsWith(".visp/")) {
       continue;
     }
     if (hasAllowList && !matchesAllowed(file, allowed)) {
@@ -71,7 +64,7 @@ export async function collectChangedFiles(
 ): Promise<{ files: string[]; warnings: string[] }> {
   try {
     if (mode.mode === "staged") {
-      const { stdout } = await execFileCrossPlatform("git", ["diff", "--name-only", "--cached"], {
+      const { stdout } = await execFileResolved("git", ["diff", "--name-only", "--cached"], {
         cwd: projectPath
       });
       return { files: splitNames(stdout), warnings: [] };
@@ -79,15 +72,15 @@ export async function collectChangedFiles(
 
     if (mode.mode === "all") {
       const [unstaged, staged, untracked] = await Promise.all([
-        execFileCrossPlatform("git", ["diff", "--name-only"], { cwd: projectPath }),
-        execFileCrossPlatform("git", ["diff", "--name-only", "--cached"], { cwd: projectPath }),
-        execFileCrossPlatform("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectPath })
+        execFileResolved("git", ["diff", "--name-only"], { cwd: projectPath }),
+        execFileResolved("git", ["diff", "--name-only", "--cached"], { cwd: projectPath }),
+        execFileResolved("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectPath })
       ]);
       const files = [...splitNames(unstaged.stdout), ...splitNames(staged.stdout), ...splitNames(untracked.stdout)];
       return { files: [...new Set(files)], warnings: [] };
     }
 
-    const { stdout } = await execFileCrossPlatform(
+    const { stdout } = await execFileResolved(
       "git",
       ["diff", "--name-only", `${mode.baseRef}...HEAD`],
       { cwd: projectPath }
@@ -95,6 +88,19 @@ export async function collectChangedFiles(
     return { files: splitNames(stdout), warnings: [] };
   } catch {
     return { files: [], warnings: ["git diff could not be read; scope check was skipped"] };
+  }
+}
+
+/** Tracked working-tree and staged changes only (excludes untracked generated artifacts). */
+export async function collectTrackedChangedFiles(projectPath: string): Promise<Set<string> | null> {
+  try {
+    const [unstaged, staged] = await Promise.all([
+      execFileResolved("git", ["diff", "--name-only"], { cwd: projectPath }),
+      execFileResolved("git", ["diff", "--name-only", "--cached"], { cwd: projectPath })
+    ]);
+    return new Set([...splitNames(unstaged.stdout), ...splitNames(staged.stdout)]);
+  } catch {
+    return null;
   }
 }
 

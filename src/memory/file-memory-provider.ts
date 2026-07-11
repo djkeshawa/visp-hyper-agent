@@ -10,7 +10,8 @@ import type {
   ProjectMemoryProfile,
   RecallOptions
 } from "../core/types.js";
-import { ensureDir, toPosixPath, writeText } from "../core/fs-utils.js";
+import { ensureDir, writeText } from "../core/fs-utils.js";
+import { toPosixPath } from "../core/path-utils.js";
 
 export async function readMemoryPack(projectPath: string): Promise<MemoryPack> {
   const provider = new FileMemoryProvider(projectPath);

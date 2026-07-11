@@ -1,15 +1,16 @@
-import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
+import { execFileResolved } from "../src/core/executable-resolver.js";
 import { initializeProject } from "../src/core/session-manager.js";
 import { checkScope, collectChangedFiles } from "../src/governance/scope-guard.js";
-import { createToolOnlyPathDir } from "./helpers/tool-path-dir.js";
+import { toolOnlyPath } from "./helpers/tool-path.js";
 
-const execFileAsync = promisify(execFile);
+// Resolve every helper's git call the same way the product does, so bare
+// commands still spawn when the test replaces PATH with an isolated tool dir.
+const execFileAsync = execFileResolved;
 
 const originalPath = process.env.PATH;
 
@@ -45,7 +46,7 @@ async function stage(projectPath: string, file: string): Promise<void> {
  * branch is exercised (mirrors local-evidence.test.ts technique).
  */
 async function gitNodeOnlyPath(): Promise<string> {
-  return createToolOnlyPathDir(["git", "node"]);
+  return toolOnlyPath(["git"]);
 }
 
 /**

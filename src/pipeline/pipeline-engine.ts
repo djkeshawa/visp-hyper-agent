@@ -219,9 +219,32 @@ export function advance(
     };
   }
 
+  const { ordered, cycle } = orderTasks(graph);
+
+  // Fail closed on a re-computed cycle. The graph may have changed since the
+  // pipeline state was built (a task's dependencies were edited), so ordering is
+  // recomputed here. If it now reports a cycle, refusing to trust the stale
+  // `state.taskIds` order is the safe choice: record the checkpoint as failed,
+  // name the offending task ids, and keep `currentTaskId` so the run does not
+  // silently continue against an unorderable graph.
+  if (cycle) {
+    return {
+      ...state,
+      completed: [...state.completed],
+      stepHistory: [
+        ...state.stepHistory,
+        {
+          taskId: current,
+          action: "checkpoint-failed",
+          at: now,
+          detail: `dependency cycle detected among tasks: ${cycle.join(", ")}`
+        }
+      ]
+    };
+  }
+
   const completed = [...state.completed, current];
-  const { ordered } = orderTasks(graph);
-  const orderedIds = ordered.length > 0 ? ordered.map((task) => task.id) : state.taskIds;
+  const orderedIds = ordered.map((task) => task.id);
   const nextTaskId = orderedIds.find((id) => !completed.includes(id)) ?? null;
 
   return {
@@ -236,12 +259,48 @@ export function advance(
 }
 
 /**
+ * Compute the ready-set of parallelizable sibling task ids for a given current
+ * task. A sibling is "ready" when every one of its `dependsOn` ids is already in
+ * `completed` (dependency ids not present in the graph are treated as satisfied,
+ * mirroring {@link orderTasks}), it is itself `parallelizable === true`, it is not
+ * the current task, and it is not already completed. Ids are returned in stable
+ * graph order. Pure: reads only the passed graph/state, changes nothing.
+ */
+export function readySet(
+  graph: KitTaskGraph,
+  currentTaskId: string,
+  completed: readonly string[]
+): string[] {
+  const known = new Set(graph.tasks.map((task) => task.id));
+  const done = new Set(completed);
+
+  return graph.tasks
+    .filter((task) => {
+      if (task.id === currentTaskId || done.has(task.id)) {
+        return false;
+      }
+      if (task.parallelizable !== true) {
+        return false;
+      }
+      return task.dependsOn.every((dep) => !known.has(dep) || done.has(dep));
+    })
+    .map((task) => task.id);
+}
+
+/**
  * Render the bounded, deterministic task-action text block. Sections with no
  * data are omitted. Style mirrors the handoff protocol renderer.
+ *
+ * When the current task is `parallelizable === true` and `concurrentWith` names a
+ * non-empty ready-set of sibling ids (see {@link readySet}), a single
+ * deterministic `may_run_concurrently_with: <ids>` line is appended after the
+ * risk line. The line is omitted entirely when the task is not parallelizable or
+ * the ready-set is empty, so existing non-parallelizable output stays
+ * byte-identical.
  */
 export function buildActionBlock(
   task: KitTask,
-  options: { contextPackPath?: string; sessionId?: string; knownFailureModes?: string[] } = {}
+  options: { contextPackPath?: string; sessionId?: string; concurrentWith?: readonly string[]; knownFailureModes?: string[] } = {}
 ): string {
   const lines: string[] = ["BEGIN_VISP_TASK_ACTION"];
 
@@ -249,6 +308,9 @@ export function buildActionBlock(
   lines.push(
     `risk: ${task.riskLevel ?? "unknown"}    parallelizable: ${task.parallelizable === true ? "true" : "false"}`
   );
+  if (task.parallelizable === true && options.concurrentWith && options.concurrentWith.length > 0) {
+    lines.push(`may_run_concurrently_with: ${options.concurrentWith.join(", ")}`);
+  }
   if (options.sessionId) {
     lines.push(`session: ${options.sessionId}`);
   }
@@ -297,9 +359,7 @@ export function buildActionBlock(
   if (options.knownFailureModes && options.knownFailureModes.length > 0) {
     lines.push("");
     lines.push("known_failure_modes:");
-    for (const mode of options.knownFailureModes) {
-      lines.push(`  - ${mode}`);
-    }
+    for (const mode of options.knownFailureModes) lines.push(`  - ${mode}`);
   }
 
   lines.push("");

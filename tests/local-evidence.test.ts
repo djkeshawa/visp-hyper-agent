@@ -1,15 +1,16 @@
-import { execFile } from "node:child_process";
 import { delimiter, dirname, join } from "node:path";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
+import { execFileResolved } from "../src/core/executable-resolver.js";
 import { collectLocalEvidence } from "../src/quality/local-evidence.js";
-import { createToolOnlyPathDir } from "./helpers/tool-path-dir.js";
 import { createVispShim } from "./helpers/visp-shim.js";
+import { toolOnlyPath } from "./helpers/tool-path.js";
 
-const execFileAsync = promisify(execFile);
+// Resolve every helper's git call the same way the product does, so bare
+// commands still spawn when the test replaces PATH with an isolated tool dir.
+const execFileAsync = execFileResolved;
 
 const originalPath = process.env.PATH;
 
@@ -44,7 +45,7 @@ async function stage(projectPath: string, file: string): Promise<void> {
  * so the kit-less branch is exercised.
  */
 async function gitNodeOnlyPath(): Promise<string> {
-  return createToolOnlyPathDir(["git", "node"]);
+  return toolOnlyPath(["git"]);
 }
 
 describe("collectLocalEvidence", () => {
@@ -71,16 +72,32 @@ describe("collectLocalEvidence", () => {
     );
   });
 
-  it("vacuous: no commands and no scripts pass verify with a warning", async () => {
+  it("AC001-verify: an unspawnable validation command fails closed but reports 'could not be run'", async () => {
+    const projectPath = await createRepo();
+    const command = "definitely-not-a-real-binary-xyz --version";
+    const evidence = await collectLocalEvidence({
+      projectPath,
+      task: { id: "T001", validationCommands: [command] },
+      blockedPaths: []
+    });
+    // Fail closed: a command that never ran must not count as a pass.
+    expect(evidence.verifyPassed).toBe(false);
+    // ...but it is reported distinctly from a genuine "verify failed".
+    expect(evidence.findings.some((line) => line.includes("could not be run"))).toBe(true);
+    expect(evidence.findings.some((line) => line.startsWith("verify failed:"))).toBe(false);
+    expect(evidence.warnings.some((line) => line.includes("could not be run"))).toBe(true);
+  });
+
+  it("reports inconclusive when no validation commands exist", async () => {
     const projectPath = await createRepo();
     const evidence = await collectLocalEvidence({
       projectPath,
       task: { id: "T001" },
       blockedPaths: []
     });
-    expect(evidence.verifyPassed).toBe(true);
-    expect(evidence.warnings).toContain("no validation commands detected; verify passed vacuously");
-    expect(evidence.findings).toContain("no validation commands detected; verify passed vacuously");
+    expect(evidence.verifyPassed).toBe(false);
+    expect(evidence.verifyVerdict).toBe("inconclusive");
+    expect(evidence.warnings).toContain("no validation commands detected; verification is inconclusive");
   });
 
   it("AC003-scope: changed file outside allowed files fails review", async () => {
@@ -124,6 +141,40 @@ describe("collectLocalEvidence", () => {
     });
     expect(evidence.reviewPassed).toBe(true);
     expect(evidence.findings.some((line) => line.startsWith("scope violation:"))).toBe(false);
+  });
+
+  it("AC003-scope: visp-hyper's own .visp/ output is not a scope violation", async () => {
+    const projectPath = await createRepo();
+    // An in-scope user change plus visp-hyper's own generated tree.
+    await writeFile(join(projectPath, "src", "ok.ts"), "export const ok = 1;\n", "utf8");
+    await stage(projectPath, "src/ok.ts");
+    await mkdir(join(projectPath, ".visp", "hyper", "current"), { recursive: true });
+    await writeFile(join(projectPath, ".visp", "hyper", "state.json"), "{}\n", "utf8");
+    await writeFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "{}\n", "utf8");
+
+    const evidence = await collectLocalEvidence({
+      projectPath,
+      task: { id: "T001", allowedFiles: ["src"] },
+      blockedPaths: []
+    });
+    expect(evidence.reviewPassed).toBe(true);
+    expect(evidence.findings.some((line) => line.includes(".visp"))).toBe(false);
+  });
+
+  it("AC003-scope: canonical Visp policy changes remain protected", async () => {
+    const projectPath = await createRepo();
+    await mkdir(join(projectPath, ".visp"), { recursive: true });
+    await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+    await execFileAsync("git", ["add", ".visp/policy.json"], { cwd: projectPath });
+    await execFileAsync("git", ["-c", "user.name=Visp Test", "-c", "user.email=visp@example.test", "commit", "-m", "add policy"], { cwd: projectPath });
+    await writeFile(join(projectPath, ".visp", "policy.json"), "{\"changed\":true}\n", "utf8");
+    const evidence = await collectLocalEvidence({
+      projectPath,
+      task: { id: "T001", allowedFiles: ["src/ok.ts"], validationCommands: ["node --version"] },
+      blockedPaths: []
+    });
+    expect(evidence.reviewVerdict).toBe("failed");
+    expect(evidence.findings).toContain("scope violation: .visp/policy.json outside allowed files");
   });
 
   it("AC003-scope: blocked path change fails review", async () => {
@@ -294,7 +345,8 @@ describe("checkpoint --task local evidence integration", () => {
         }
       },
       verify: { stdout: { success: true } },
-      review: { stdout: { success: true } }
+      review: { stdout: { success: true } },
+      reconcile: { stdout: { success: true } }
     });
     process.env.PATH = `${dirname(shim.binary)}${delimiter}${originalPath ?? ""}`;
 

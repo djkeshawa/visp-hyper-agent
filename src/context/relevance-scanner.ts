@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
-import { basename, extname, join, posix, relative } from "node:path";
-import { toPosixPath } from "../core/fs-utils.js";
+import { basename, dirname, extname, join, relative } from "node:path";
 import { isBlockedPath } from "../governance/blocked-files.js";
+import { toPosixPath } from "../core/path-utils.js";
 import type { ContextFile } from "../core/types.js";
 
 const stopWords = new Set(["a", "an", "and", "for", "in", "of", "on", "the", "to", "with"]);
@@ -188,13 +188,12 @@ function likelyTestFiles(path: string, fileSet: Set<string>): string[] {
 
   const ext = extname(path);
   const name = basename(path, ext);
-  // Scanned paths are canonical forward-slash, so candidates must be too.
   const candidates = [
-    posix.join("tests", `${name}.test${ext}`),
-    posix.join("tests", `${name}.spec${ext}`),
-    posix.join(posix.dirname(path), `${name}.test${ext}`),
-    posix.join(posix.dirname(path), `${name}.spec${ext}`)
-  ];
+    join("tests", `${name}.test${ext}`),
+    join("tests", `${name}.spec${ext}`),
+    join(dirname(path), `${name}.test${ext}`),
+    join(dirname(path), `${name}.spec${ext}`)
+  ].map(toPosixPath);
 
   return candidates.filter((candidate) => fileSet.has(candidate));
 }

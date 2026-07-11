@@ -21,21 +21,23 @@ export interface VispShim {
   argvLogPath: string;
 }
 
+const WINDOWS = process.platform === "win32";
+
 /**
- * Writes an executable Node script that switches on its first argument and
- * prints canned JSON. Pass `binary` to KitCommandBridge / detectVisp directly.
- * On Windows the returned binary is a `visp.cmd` wrapper (shebang scripts are
- * not executable there); both files always exist so PATH-based lookups work
- * on either platform.
+ * Writes an executable shim that switches on its first argument and prints
+ * canned JSON. Pass `binary` to KitCommandBridge / detectVisp directly.
+ *
+ * On win32 an extensionless shebang script is not executable, so we emit the
+ * logic as a plain `.js` file and a sibling `visp.cmd` wrapper that runs
+ * `node <script>` — the shape a real `npm i -g` install produces, which the
+ * executable-resolver runs through `cmd.exe`. On POSIX we keep the historical
+ * extensionless `#!/usr/bin/env node` script.
  */
 export async function createVispShim(spec: ShimSpec): Promise<VispShim> {
   const dir = await mkdtemp(join(tmpdir(), "visp-shim-"));
-  const script = join(dir, "visp");
-  const binary = process.platform === "win32" ? join(dir, "visp.cmd") : script;
   const argvLogPath = join(dir, "argv.log");
 
-  const source = `#!/usr/bin/env node
-"use strict";
+  const body = `"use strict";
 const { appendFileSync } = require("node:fs");
 
 const spec = ${JSON.stringify(spec)};
@@ -52,14 +54,29 @@ if (!response) {
   process.exit(127);
 }
 
-const body = typeof response.stdout === "string" ? response.stdout : JSON.stringify(response.stdout);
-process.stdout.write(body);
+const out = typeof response.stdout === "string" ? response.stdout : JSON.stringify(response.stdout);
+process.stdout.write(out);
 process.exit(response.exitCode ?? 0);
 `;
 
-  await writeFile(script, source, "utf8");
-  await chmod(script, 0o755);
-  await writeFile(join(dir, "visp.cmd"), `@node "%~dp0visp" %*\r\n`, "utf8");
+  if (WINDOWS) {
+    // A `.cmd` wrapper is what a real global npm install writes; the resolver
+    // runs it through cmd.exe. Point `binary` at the `.cmd` so callers that
+    // treat it as an absolute path resolve correctly.
+    const scriptPath = join(dir, "visp-shim.js");
+    const binary = join(dir, "visp.cmd");
+    await writeFile(scriptPath, body, "utf8");
+    // `%~dp0` keeps the wrapper location-independent; `%*` forwards args
+    // verbatim. No user input is interpolated — this is a fixed template.
+    const cmdWrapper = `@echo off\r\nnode "%~dp0visp-shim.js" %*\r\n`;
+    await writeFile(binary, cmdWrapper, "utf8");
+    return { binary, argvLogPath };
+  }
+
+  const binary = join(dir, "visp");
+  const script = `#!/usr/bin/env node\n${body}`;
+  await writeFile(binary, script, "utf8");
+  await chmod(binary, 0o755);
 
   return { binary, argvLogPath };
 }

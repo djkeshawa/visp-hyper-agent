@@ -1,11 +1,11 @@
 import { Command, Option } from "commander";
-import { execFileCrossPlatform } from "../../core/exec.js";
 import { checkContextFreshness } from "../../context/context-freshness.js";
+import { execFileResolved } from "../../core/executable-resolver.js";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
-import type { KitReviewSummary, KitVerifySummary } from "../../kit/kit-schemas.js";
-import { readRelevantFailurePatterns, recordFailurePattern } from "../../memory/failure-patterns.js";
+import type { KitReconcileSummary, KitReviewSummary, KitVerifySummary } from "../../kit/kit-schemas.js";
+import { recordFailurePattern } from "../../memory/failure-patterns.js";
 import { createCheckpointSnapshot, writeCheckpointSnapshot } from "../../quality/checkpoint-snapshot.js";
 import { collectLocalEvidence } from "../../quality/local-evidence.js";
 import { harvestSkillProposals } from "./remember.js";
@@ -13,7 +13,6 @@ import {
   applyAdaptiveDecision,
   decideAdaptiveAction,
   effectiveGraph,
-  evidenceRequirements,
   renderAdaptationBlock,
   type AdaptiveDecision
 } from "../../pipeline/adaptive-rules.js";
@@ -27,6 +26,7 @@ import { readRoutingState, updateRoutingState } from "../../routing/routing-stat
 import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
 import { printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 import { collectChangedFiles } from "../../governance/scope-guard.js";
+import type { AssuranceLevel, EvidenceVerdict } from "../../core/types.js";
 
 // Default tier recorded in telemetry when the orchestrator does not report
 // which tier actually executed the task via `--tier`.
@@ -41,11 +41,7 @@ export function checkpointCommand(): Command {
       const projectPath = resolveProjectPath(this);
       const session = await getActiveSession(projectPath);
       if (!session) {
-        // Degrade, never crash: a thrown stack trace mid-orchestration derails
-        // the coding agent's loop; a clean message + exit code does not.
-        console.log("No active Visp Hyper session. Run `visp-hyper start` first.");
-        process.exitCode = 1;
-        return;
+        throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
       }
 
       await writeCheckpointMarkdown(projectPath, session.id, session.goal, options.task);
@@ -70,8 +66,7 @@ export function checkpointCommand(): Command {
       }
 
       // Disk graph first; fall back to a session's synthetic graph (e.g. a `quick`
-      // session) which exists nowhere on disk. Injected remediation tasks are
-      // merged in-memory so they are checkpointable like any other task.
+      // session) which exists nowhere on disk.
       const syntheticTasks = session.pipeline?.syntheticTasks;
       const baseGraph =
         (await loadTaskGraph(projectPath)) ??
@@ -96,6 +91,10 @@ export function checkpointCommand(): Command {
       const kit = await detectVisp(projectPath);
       let verifyPassed: boolean;
       let reviewPassed: boolean;
+      let verifyVerdict: EvidenceVerdict;
+      let reviewVerdict: EvidenceVerdict;
+      let reconcileVerdict: EvidenceVerdict | undefined;
+      let assuranceLevel: AssuranceLevel;
       let evidenceSource: "kit" | "local";
       let localFindings: string[] = [];
       let failureFindings: string[] = [];
@@ -104,14 +103,42 @@ export function checkpointCommand(): Command {
         const bridge = new KitCommandBridge({ projectPath });
         const verify = await bridge.verify(taskId);
         const review = await bridge.review(taskId);
-        printWarnings(bridge.warnings);
         verifyPassed = verify?.success === true;
         reviewPassed = review?.success === true;
+        verifyVerdict = verify === null ? "inconclusive" : verify.success ? "passed" : "failed";
+        reviewVerdict = review === null ? "inconclusive" : review.success ? "passed" : "failed";
+        assuranceLevel = "kit_strict";
         evidenceSource = "kit";
         failureFindings = [
           ...summaryFindings("verify", verify),
           ...summaryFindings("review", review)
         ];
+
+        // Kit's integration contract defines the checkpoint sequence as
+        // [verify, review, reconcile]. Only run reconcile once verify+review
+        // have passed (a failed checkpoint blocks regardless). A parsed
+        // reconcile result with success:false is a reconcile GATE BLOCK and must
+        // fail the checkpoint; a null result means reconcile was unavailable or
+        // unparseable — that degrades with a warning (kit-unavailable contract),
+        // never a hard block.
+        if (verifyVerdict === "passed" && reviewVerdict === "passed") {
+          const reconcile = await bridge.reconcile(taskId);
+          if (reconcile === null) {
+            bridge.warnings.push(
+              "reconcile evidence was unavailable or unparseable; checkpoint is inconclusive."
+            );
+            reconcileVerdict = "inconclusive";
+            reviewPassed = false;
+          } else if (reconcile.success !== true) {
+            reconcileVerdict = "failed";
+            reviewPassed = false;
+            failureFindings = [...failureFindings, ...summaryFindings("reconcile", reconcile)];
+          } else {
+            reconcileVerdict = "passed";
+          }
+        }
+
+        printWarnings(bridge.warnings);
       } else {
         const config = await readConfig(projectPath);
         const evidence = await collectLocalEvidence({
@@ -126,6 +153,9 @@ export function checkpointCommand(): Command {
         });
         verifyPassed = evidence.verifyPassed;
         reviewPassed = evidence.reviewPassed;
+        verifyVerdict = evidence.verifyVerdict;
+        reviewVerdict = evidence.reviewVerdict;
+        assuranceLevel = evidence.assuranceLevel;
         localFindings = evidence.findings;
         evidenceSource = "local";
         failureFindings = localFindings;
@@ -133,6 +163,7 @@ export function checkpointCommand(): Command {
       }
       if (contextFreshness.blocking) {
         reviewPassed = false;
+        reviewVerdict = "failed";
         failureFindings = [
           ...failureFindings,
           contextFreshness.finding ?? "context freshness check failed"
@@ -142,31 +173,12 @@ export function checkpointCommand(): Command {
         }
       }
 
-      // Tightened evidence for high-risk or repeatedly-failing task classes:
-      // verify may not pass vacuously (with no validation commands at all).
-      // Only ever tightens the gate; failures to compute it are swallowed.
-      try {
-        const patterns = await readRelevantFailurePatterns(projectPath, {
-          taskId,
-          taskClass,
-          files: task?.allowedFiles
-        });
-        const requirements = evidenceRequirements(task, patterns);
-        const vacuousVerify =
-          evidenceSource === "local" &&
-          localFindings.includes("no validation commands detected; verify passed vacuously");
-        if (requirements.strictEvidence && verifyPassed && vacuousVerify) {
-          verifyPassed = false;
-          const finding =
-            "strict evidence: this task class requires real validation evidence; declare validationCommands on the task or in config.json";
-          failureFindings = [...failureFindings, finding];
-          localFindings = [...localFindings, finding];
-        }
-      } catch {
-        // Advisory tightening only; never fail the checkpoint machinery itself.
-      }
-
-      const passed = verifyPassed && reviewPassed;
+      const verdict: EvidenceVerdict = verifyVerdict === "failed" || reviewVerdict === "failed" || reconcileVerdict === "failed"
+        ? "failed"
+        : verifyVerdict === "inconclusive" || reviewVerdict === "inconclusive" || reconcileVerdict === "inconclusive"
+          ? "inconclusive"
+          : "passed";
+      const passed = verdict === "passed";
       try {
         await appendAttempt(projectPath, {
           taskId,
@@ -188,11 +200,8 @@ export function checkpointCommand(): Command {
       );
       await updateActiveSession(projectPath, (current) => ({ ...current, pipeline: nextState }));
 
-      // Deterministic adaptation: repeated failures inject a scoped remediation
-      // task or issue an escalation directive. Best-effort like routing — a
-      // failure here must never break the checkpoint itself.
       let adaptiveDecision: AdaptiveDecision = { action: "none" };
-      if (!passed && task) {
+      if (verdict === "failed" && task) {
         try {
           adaptiveDecision = decideAdaptiveAction({ state: nextState, task, findings: failureFindings });
           if (adaptiveDecision.action !== "none") {
@@ -207,18 +216,14 @@ export function checkpointCommand(): Command {
 
       // Quality recovers unconditionally: a checkpoint failure quarantines the
       // task class so future routing forces the strongest tier until it expires.
-      if (!passed) {
+      if (verdict === "failed") {
         try {
           const hyperState = await readState(projectPath);
-          await updateRoutingState(projectPath, (state) =>
-            escalate({
-              state,
-              taskId,
-              taskClass,
-              sessionCount: Object.keys(hyperState.sessions).length,
-              now: new Date().toISOString()
-            })
-          );
+          await updateRoutingState(projectPath, (state) => escalate({
+            state, taskId, taskClass,
+            sessionCount: Object.keys(hyperState.sessions).length,
+            now: new Date().toISOString()
+          }));
         } catch (error) {
           console.log(`warning: routing escalation was not recorded: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -248,8 +253,10 @@ export function checkpointCommand(): Command {
       const lines = [
         "BEGIN_VISP_CHECKPOINT_RESULT",
         `task: ${taskId}`,
-        `verify: ${verifyPassed ? "PASSED" : "FAILED"}`,
-        `review: ${reviewPassed ? "PASSED" : "FAILED"}`,
+        `verify: ${verifyVerdict.toUpperCase()}`,
+        `review: ${reviewVerdict.toUpperCase()}`,
+        `verdict: ${verdict.toUpperCase()}`,
+        `assurance_level: ${assuranceLevel}`,
         `evidence_source: ${evidenceSource}`,
         `context_freshness: ${contextFreshness.status}`
       ];
@@ -266,15 +273,17 @@ export function checkpointCommand(): Command {
           lines.push(` - ${finding}`);
         }
       }
-      lines.push(`status: ${passed ? "PASSED" : "FAILED"}`);
+      lines.push(`status: ${verdict.toUpperCase()}`);
       if (passed) {
         if (nextState.currentTaskId) {
           lines.push(`next_task: ${nextState.currentTaskId}`);
         } else {
           lines.push("pipeline_complete: true");
         }
-      } else {
+      } else if (verdict === "failed") {
         lines.push(`instruction: Fix the reported findings and re-run checkpoint --task ${taskId}.`);
+      } else {
+        lines.push(`instruction: Restore the missing evidence and re-run checkpoint --task ${taskId}.`);
       }
       lines.push("END_VISP_CHECKPOINT_RESULT");
       console.log(lines.join("\n"));
@@ -289,8 +298,7 @@ export function checkpointCommand(): Command {
         }
       }
 
-      // On a pass with a next task, advise the routing tier for that task and
-      // print the fan-out directive for the remaining DAG when it applies.
+      // On a pass with a next task, advise the routing tier for that task.
       if (passed && nextState.currentTaskId) {
         const nextTask = graph.tasks.find((entry) => entry.id === nextState.currentTaskId);
         if (nextTask) {
@@ -321,7 +329,10 @@ export function checkpointCommand(): Command {
     });
 }
 
-function summaryFindings(label: "verify" | "review", summary: KitVerifySummary | KitReviewSummary | null): string[] {
+function summaryFindings(
+  label: "verify" | "review" | "reconcile",
+  summary: KitVerifySummary | KitReviewSummary | KitReconcileSummary | null
+): string[] {
   if (!summary) {
     return [`${label} evidence was unavailable or unparseable`];
   }
@@ -359,7 +370,7 @@ async function writeCheckpointMarkdown(
   taskId?: string
 ): Promise<void> {
   const [{ stdout: stat }, snapshot] = await Promise.all([
-    execFileCrossPlatform("git", ["diff", "--stat", "HEAD"], { cwd: projectPath }),
+    execFileResolved("git", ["diff", "--stat", "HEAD"], { cwd: projectPath }),
     createCheckpointSnapshot(projectPath, { sessionId, goal, taskId })
   ]);
   const files = snapshot.files.map((file) => file.path);

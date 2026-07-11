@@ -1,12 +1,12 @@
 import { Command, Option } from "commander";
-import { execFileCrossPlatform } from "../../core/exec.js";
 import { checkContextFreshness } from "../../context/context-freshness.js";
 import type { ContextFreshness, ContextFreshnessStatus } from "../../context/context-freshness.js";
+import { execFileResolved } from "../../core/executable-resolver.js";
 import { readTextIfExists, vispPath } from "../../core/fs-utils.js";
 import { getActiveSession } from "../../core/session-manager.js";
 import type { SessionRecord } from "../../core/types.js";
 import { requiredReads, renderHandoff } from "../../handoff/handoff-protocol.js";
-import { buildActionBlock, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
+import { buildActionBlock, currentTask, loadTaskGraph, readySet } from "../../pipeline/pipeline-engine.js";
 import { compareCurrentToCheckpoint, emptyDelta, type CheckpointDelta } from "../../quality/checkpoint-snapshot.js";
 import { contextPackPathIfExists, resolveProjectPath } from "./shared.js";
 
@@ -249,7 +249,7 @@ async function changedFiles(projectPath: string): Promise<{ files: string[]; war
   const files = new Set<string>();
   const warnings: string[] = [];
   try {
-    const { stdout } = await execFileCrossPlatform("git", ["diff", "--name-only", "HEAD"], { cwd: projectPath });
+    const { stdout } = await execFileResolved("git", ["diff", "--name-only", "HEAD"], { cwd: projectPath });
     for (const file of splitLines(stdout)) {
       files.add(file);
     }
@@ -258,7 +258,7 @@ async function changedFiles(projectPath: string): Promise<{ files: string[]; war
   }
 
   try {
-    const { stdout } = await execFileCrossPlatform("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectPath });
+    const { stdout } = await execFileResolved("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectPath });
     for (const file of splitLines(stdout)) {
       files.add(file);
     }
@@ -303,5 +303,6 @@ async function currentActionBlock(projectPath: string, session: SessionRecord): 
     return null;
   }
   const contextPackPath = await contextPackPathIfExists(projectPath, task.id);
-  return buildActionBlock(task, { sessionId: session.id, contextPackPath });
+  const concurrentWith = readySet(graph, task.id, session.pipeline.completed);
+  return buildActionBlock(task, { sessionId: session.id, contextPackPath, concurrentWith });
 }

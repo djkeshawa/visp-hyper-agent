@@ -9,7 +9,8 @@ import {
   buildActionBlock,
   currentTask,
   initialPipelineState,
-  loadTaskGraph
+  loadTaskGraph,
+  readySet
 } from "../../pipeline/pipeline-engine.js";
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
@@ -106,10 +107,11 @@ export function runCommand(): Command {
       }
 
       const contextPackPath = await contextPackPathIfExists(projectPath, task.id);
+      const concurrentWith = readySet(graph, task.id, pipeline.completed);
 
       console.log(handoff);
       console.log("");
-      console.log(buildActionBlock(task, { contextPackPath, sessionId: session.id }));
+      console.log(buildActionBlock(task, { contextPackPath, sessionId: session.id, concurrentWith }));
       await printAndRecordRouting(projectPath, task);
       printWorkflowDirectiveIfAny(graph, pipeline, session.tool, session.id);
     });
@@ -188,9 +190,14 @@ function renderPipelineBlocked(input: {
   } else {
     lines.push("  - none");
   }
-  const nextAllowed = input.gate?.nextAllowedCommand ?? input.bridge?.nextCommand ?? "visp tasks";
+  // Prefer the bare machine-runnable command (kit `nextCommand`, then the
+  // bridge's `next` command); the sentence form `nextAllowedCommand` (e.g.
+  // 'Run visp feature "<x>".') is the last resort. The follow-up instruction is
+  // worded so a weak model quotes-and-follows rather than executing the word
+  // "Run" that begins the sentence form.
+  const nextAllowed = input.gate?.nextCommand ?? input.gate?.nextAllowedCommand ?? input.bridge?.nextCommand ?? "visp tasks";
   lines.push(`next_allowed_command: ${nextAllowed}`);
-  lines.push("instruction: Run the command above with your coding agent, then re-run `visp-hyper run`.");
+  lines.push("instruction: Follow the instruction above exactly, then re-run `visp-hyper run`.");
   lines.push("END_VISP_PIPELINE_BLOCKED");
   return lines.join("\n");
 }

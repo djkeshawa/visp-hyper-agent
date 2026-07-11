@@ -1,4 +1,4 @@
-import { execFileCrossPlatform } from "../core/exec.js";
+import { execFileResolved } from "../core/executable-resolver.js";
 import { isBlockedPath } from "../governance/blocked-files.js";
 
 export type ReviewResult = {
@@ -16,7 +16,7 @@ export async function analyzeDiff(input: {
   relevantFiles: string[];
   blockedPaths: string[];
 }): Promise<ReviewResult> {
-  const { stdout } = await execFileCrossPlatform("git", ["diff", "--name-only", "HEAD"], { cwd: input.projectPath });
+  const { stdout } = await execFileResolved("git", ["diff", "--name-only", "HEAD"], { cwd: input.projectPath });
   const changedFiles = stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   return analyzeChangedFiles({ ...input, changedFiles });
 }

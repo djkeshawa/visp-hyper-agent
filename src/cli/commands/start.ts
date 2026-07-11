@@ -156,16 +156,32 @@ async function fuseRecalledMemory(projectPath: string, config: HyperConfig, goal
     return { warnings: selection.warnings };
   }
   const detailed = await selection.provider.recallDetailed(goal, { limit: recallLimit });
-  const recalled: RecalledMemory[] = detailed.map((entry) => ({
-    summary: entry.result.summary,
-    content: entry.result.content,
-    category: entry.category,
-    score: entry.score
-  }));
+  const recalled: RecalledMemory[] = [];
+  const quarantined: string[] = [];
+  for (const entry of detailed) {
+    if (looksLikeInstructionInjection(entry.result.content)) {
+      quarantined.push("quarantined an instruction-like recalled memory; content omitted");
+      continue;
+    }
+    recalled.push({
+      summary: entry.result.summary,
+      content: entry.result.content,
+      category: entry.category,
+      score: entry.score,
+      provenance: "llm-memory",
+      scope: "project",
+      ttl: "session",
+      trust: "untrusted-context"
+    });
+  }
   return {
     recalled: recalled.length > 0 ? recalled : undefined,
-    warnings: [...selection.warnings, ...selection.provider.warnings]
+    warnings: [...selection.warnings, ...selection.provider.warnings, ...quarantined]
   };
+}
+
+function looksLikeInstructionInjection(content: string): boolean {
+  return /(?:ignore|override|disregard)\s+(?:all\s+)?(?:previous|system|developer)|\b(?:must|always)\s+(?:run|execute|install|edit|delete)|(?:grant|expand)\s+(?:permission|access)/iu.test(content);
 }
 
 type KitAdoption = {

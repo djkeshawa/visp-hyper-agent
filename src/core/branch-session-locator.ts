@@ -1,10 +1,10 @@
-import { execFileCrossPlatform } from "./exec.js";
+import { execFileResolved } from "./executable-resolver.js";
 import type { BranchSessionLocator } from "./types.js";
 
 export class GitBranchSessionLocator implements BranchSessionLocator {
   async currentBranch(projectPath: string): Promise<string | null> {
     try {
-      const { stdout } = await execFileCrossPlatform(
+      const { stdout } = await execFileResolved(
         "git",
         ["rev-parse", "--abbrev-ref", "HEAD"],
         { cwd: projectPath, timeout: 5000 }

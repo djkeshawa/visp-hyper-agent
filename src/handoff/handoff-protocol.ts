@@ -79,26 +79,50 @@ const hardRules = [
   "Keep the diff focused."
 ];
 
+// Each profile gives a weak model three concrete things: the action verb/tool
+// for that surface, one exact example command, and a one-line expected-output
+// cue so the model can self-verify it did the right thing. Modeled on
+// visp-kit's gateReadingSection Allowed/Blocked example pattern.
 const profileInstructions: Record<ToolProfile, { label: string; instructions: string[] }> = {
   generic: {
     label: "Generic coding agent",
-    instructions: ["Use the protocol literally and keep responses concise."]
+    instructions: [
+      "Open and read each file under required_reads with your file-read tool before writing any code.",
+      "Advance a task by running exactly: visp-hyper checkpoint --task T001 (substitute the real task id).",
+      "Expected output cue: a block starting `BEGIN_VISP_CHECKPOINT` with `status: PASSED` means you may continue; `status: FAILED` means fix only the reported findings and re-run."
+    ]
   },
   codex: {
     label: "Codex",
-    instructions: ["Use repository tools for inspection and edits, then report validation evidence."]
+    instructions: [
+      "Use your repository read tool on every required_reads path, then make focused edits only inside the allowed file scope.",
+      "Record validation evidence by running exactly: visp-hyper checkpoint --task T001 (substitute the real task id).",
+      "Expected output cue: `BEGIN_VISP_CHECKPOINT` with `status: PASSED` confirms verify+review passed; on `status: FAILED` read the `findings:` lines and re-run the same command after fixing them."
+    ]
   },
   "claude-code": {
     label: "Claude Code",
-    instructions: ["Read the required files first, then use focused file edits and explicit validation steps."]
+    instructions: [
+      "Read every required_reads path with the Read tool first, then use Edit for narrow changes inside the allowed file scope.",
+      "Advance the pipeline by running exactly: visp-hyper checkpoint --task T001 (substitute the real task id).",
+      "Expected output cue: `BEGIN_VISP_CHECKPOINT` with `status: PASSED` means the checkpoint held; `status: FAILED` lists `findings:` to resolve before re-running."
+    ]
   },
   copilot: {
     label: "GitHub Copilot",
-    instructions: ["Keep changes narrow and use the generated context files as the source of task truth."]
+    instructions: [
+      "Treat the generated context files under required_reads as task truth; read them before editing and stay inside the allowed file scope.",
+      "Advance a task by running exactly: visp-hyper checkpoint --task T001 (substitute the real task id).",
+      "Expected output cue: `BEGIN_VISP_CHECKPOINT` with `status: PASSED` clears the task; `status: FAILED` names the findings to fix, then re-run the same command."
+    ]
   },
   opencode: {
     label: "OpenCode",
-    instructions: ["Follow the required reads and preserve the shared protocol structure in handoffs."]
+    instructions: [
+      "Read each required_reads path with your file tool, keep edits inside the allowed file scope, and preserve the handoff block structure.",
+      "Advance a task by running exactly: visp-hyper checkpoint --task T001 (substitute the real task id).",
+      "Expected output cue: `BEGIN_VISP_CHECKPOINT` with `status: PASSED` means continue; `status: FAILED` means fix only the reported findings and re-run."
+    ]
   }
 };
 

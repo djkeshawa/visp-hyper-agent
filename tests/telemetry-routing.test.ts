@@ -189,6 +189,7 @@ describe("telemetry store and budget round-trip", () => {
         gate: { stdout: { allowed: true, failedRules: [] } },
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
+        reconcile: { stdout: { success: true } },
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -330,19 +331,19 @@ describe("routing engine (pure)", () => {
     expect(suggestion.evidence.samples).toBe(0);
   });
 
-  it("AC003b: low risk → scout baseline", () => {
+  it("AC003b: low risk without evidence remains on strongest tier", () => {
     const suggestion = computeSuggestedTier({
       task: { id: "T001", riskLevel: "low" },
       attempts: [scoutAttempt({ taskClass: "low" })],
       routingState: emptyRoutingState(),
       sessionCount: 0
     });
-    expect(suggestion.suggestedTier).toBe(CHEAP_TIER);
-    expect(suggestion.reason).toBe("baseline: low risk");
+    expect(suggestion.suggestedTier).toBe(STRONGEST_TIER);
+    expect(suggestion.reason).toContain("insufficient evidence");
   });
 
-  it("AC003c: 3 passing scout first-attempts → scout downgrade with evidence reason", () => {
-    const attempts = [scoutAttempt(), scoutAttempt(), scoutAttempt()];
+  it("AC003c: 30 passing scout first-attempts earn an experimental downgrade", () => {
+    const attempts = Array.from({ length: 30 }, () => scoutAttempt());
     const suggestion = computeSuggestedTier({
       task: { id: "T001", riskLevel: "medium" },
       attempts,
@@ -350,12 +351,12 @@ describe("routing engine (pure)", () => {
       sessionCount: 0
     });
     expect(suggestion.suggestedTier).toBe(CHEAP_TIER);
-    expect(suggestion.reason).toContain("3 samples");
+    expect(suggestion.reason).toContain("30 samples");
     expect(suggestion.evidence.passRate).toBe(1);
   });
 
-  it("AC003c: 2 samples → no downgrade (insufficient evidence)", () => {
-    const attempts = [scoutAttempt(), scoutAttempt()];
+  it("AC003c: 29 samples do not earn a downgrade", () => {
+    const attempts = Array.from({ length: 29 }, () => scoutAttempt());
     const suggestion = computeSuggestedTier({
       task: { id: "T001", riskLevel: "medium" },
       attempts,
@@ -364,15 +365,13 @@ describe("routing engine (pure)", () => {
     });
     expect(suggestion.suggestedTier).toBe(STRONGEST_TIER);
     expect(suggestion.reason).toContain("insufficient evidence");
-    expect(suggestion.reason).toContain("2/3");
+    expect(suggestion.reason).toContain("29/30");
   });
 
-  it("AC003c: 3 samples at 66% pass → no downgrade (below 90%)", () => {
-    const attempts = [
-      scoutAttempt(),
-      scoutAttempt(),
-      scoutAttempt({ verifyPassed: false })
-    ];
+  it("AC003c: 30 samples with one failure miss the Wilson threshold", () => {
+    const attempts = Array.from({ length: 30 }, (_, index) =>
+      scoutAttempt(index === 29 ? { verifyPassed: false } : {})
+    );
     const suggestion = computeSuggestedTier({
       task: { id: "T001", riskLevel: "medium" },
       attempts,
@@ -380,7 +379,7 @@ describe("routing engine (pure)", () => {
       sessionCount: 0
     });
     expect(suggestion.suggestedTier).toBe(STRONGEST_TIER);
-    expect(suggestion.reason).toContain("below 90%");
+    expect(suggestion.reason).toContain("Wilson lower bound");
   });
 
   it("AC004a: escalate adds quarantine sessionCount+3 and a decision", () => {
@@ -416,7 +415,7 @@ describe("routing engine (pure)", () => {
   });
 
   it("AC004b: expired quarantine re-enables evidence-based downgrade", () => {
-    const attempts = [scoutAttempt(), scoutAttempt(), scoutAttempt()];
+    const attempts = Array.from({ length: 30 }, () => scoutAttempt());
     const routingState: RoutingState = {
       quarantines: [{ taskClass: "medium", untilSessionCount: 8 }],
       decisions: []

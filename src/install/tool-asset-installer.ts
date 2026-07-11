@@ -86,6 +86,30 @@ export function isKitOwnedDestination(path: string): boolean {
   if (/^\.claude\/commands\/visp-[^/]+\.md$/.test(normalized)) {
     return true;
   }
+  // Kit's own top-level agent instructions file (NOT hyper's AGENTS.visp-hyper.md).
+  if (normalized === "AGENTS.visp.md") {
+    return true;
+  }
+  // Kit-owned skill packs under .agents/skills/visp-*/ — but NOT hyper's own
+  // `visp-hyper` skill directory.
+  if (/^\.agents\/skills\/visp-[^/]+\//.test(normalized) && !/^\.agents\/skills\/visp-hyper\//.test(normalized)) {
+    return true;
+  }
+  // Kit-owned Copilot instruction files .github/instructions/visp-*.instructions.md
+  // — but NOT hyper's own visp-hyper.instructions.md.
+  if (
+    /^\.github\/instructions\/visp-[^/]+\.instructions\.md$/.test(normalized) &&
+    !/^\.github\/instructions\/visp-hyper[^/]*\.instructions\.md$/.test(normalized)
+  ) {
+    return true;
+  }
+  // Kit-owned prompt rules and hook scripts under .visp/.
+  if (normalized === ".visp/prompts/visp-rules.md") {
+    return true;
+  }
+  if (normalized === ".visp/hooks" || normalized.startsWith(".visp/hooks/")) {
+    return true;
+  }
   return false;
 }
 
@@ -124,6 +148,12 @@ export async function planInstall(
   const specs = MANIFEST[tool];
   const planned: PlannedAsset[] = [];
   for (const spec of specs) {
+    // Consult the same denylist installAssets enforces so plan and install
+    // agree: a kit-owned destination is never written, so it must never appear
+    // in the plan.
+    if (isKitOwnedDestination(spec.destination)) {
+      continue;
+    }
     const destAbsolute = join(projectPath, spec.destination);
     planned.push({
       templatePath: spec.templatePath,

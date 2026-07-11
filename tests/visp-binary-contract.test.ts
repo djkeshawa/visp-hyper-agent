@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { detectVisp, KitCommandBridge } from "../src/kit/kit-command-bridge.js";
 
@@ -24,11 +25,19 @@ function vispOnPath(): boolean {
 const REPO_ROOT = process.cwd();
 const HAS_KIT_ARTIFACTS =
   existsSync(join(REPO_ROOT, ".visp", "policy.json")) || existsSync(join(REPO_ROOT, ".visp", "project.json"));
-const RUN_LIVE = vispOnPath() && HAS_KIT_ARTIFACTS;
+const SIBLING_KIT = join(REPO_ROOT, "..", "visp-kit", "dist", "index.js");
+const LOCAL_BINARY = (() => {
+  if (vispOnPath()) return "visp";
+  if (!existsSync(SIBLING_KIT)) return null;
+  const wrapper = join(mkdtempSync(join(tmpdir(), "visp-live-contract-")), "visp.cmd");
+  writeFileSync(wrapper, `@echo off\r\nnode "${SIBLING_KIT}" %*\r\n`, "utf8");
+  return wrapper;
+})();
+const RUN_LIVE = LOCAL_BINARY !== null && HAS_KIT_ARTIFACTS;
 
 describe.skipIf(!RUN_LIVE)("real visp binary contract", () => {
   it("detectVisp parses a live `visp status --json` against this repo's kit", async () => {
-    const result = await detectVisp(REPO_ROOT);
+    const result = await detectVisp(REPO_ROOT, { binary: LOCAL_BINARY ?? undefined });
     expect(result.available).toBe(true);
     if (result.available) {
       expect(result.status.initialized).toBe(true);
@@ -36,11 +45,20 @@ describe.skipIf(!RUN_LIVE)("real visp binary contract", () => {
   });
 
   it("policyValidate parses a live `visp policy validate --json`", async () => {
-    const bridge = new KitCommandBridge({ projectPath: REPO_ROOT });
+    const bridge = new KitCommandBridge({ projectPath: REPO_ROOT, binary: LOCAL_BINARY ?? undefined });
     const result = await bridge.policyValidate();
     expect(result).not.toBeNull();
     expect(typeof result?.success).toBe("boolean");
     expect(Array.isArray(result?.errors)).toBe(true);
+    expect(bridge.warnings).toEqual([]);
+  });
+
+  it("consumes the live WorkflowActionV2 contract", async () => {
+    const bridge = new KitCommandBridge({ projectPath: REPO_ROOT, binary: LOCAL_BINARY ?? undefined });
+    const action = await bridge.nextAction();
+    expect(action?.protocolVersion).toBe("2.0");
+    expect(["ready", "blocked", "inconclusive"]).toContain(action?.verdict);
+    expect(Array.isArray(action?.requiredReads)).toBe(true);
     expect(bridge.warnings).toEqual([]);
   });
 });

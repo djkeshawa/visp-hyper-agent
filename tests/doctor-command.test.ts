@@ -329,6 +329,7 @@ describe("doctor command", () => {
       includedFiles: [{ path: "src/feature.ts", reason: "task target" }]
     });
     await mkdir(contextDir, { recursive: true });
+    await mkdir(join(projectPath, ".visp", "hyper", "current"), { recursive: true });
     await writeFile(contextPath, originalContext, "utf8");
     await mkdir(join(projectPath, ".visp", "hyper", "current"), { recursive: true });
     await writeFile(

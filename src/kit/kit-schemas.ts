@@ -48,7 +48,11 @@ export const kitGateResultSchema = z.object({
   strictnessMode: z.string().optional(),
   failedRules: z.array(kitFailedRuleSchema).default([]),
   blockedCommands: z.array(kitBlockedCommandSchema).optional(),
-  nextAllowedCommand: z.string().optional()
+  // `nextAllowedCommand` is a human sentence (e.g. 'Run visp feature "<x>".');
+  // `nextCommand` is the bare machine-runnable form (e.g. 'visp feature "<x>"')
+  // when the kit provides it. Prefer the bare field for weak-model handoffs.
+  nextAllowedCommand: z.string().optional(),
+  nextCommand: z.string().optional()
 });
 export type KitGateResult = z.infer<typeof kitGateResultSchema>;
 
@@ -112,6 +116,23 @@ export const kitNextSchema = z.object({
   allowed: z.boolean().optional()
 });
 export type KitNext = z.infer<typeof kitNextSchema>;
+
+export const workflowActionV2Schema = z.object({
+  protocolVersion: z.literal("2.0"),
+  phase: z.enum(["clarify", "specify", "plan", "task", "implement", "verify"]),
+  taskId: z.string().nullable(),
+  goal: z.string(),
+  requiredReads: z.array(z.object({ path: z.string(), role: z.string(), sha256: z.string() })),
+  writablePaths: z.array(z.string()),
+  forbiddenPaths: z.array(z.string()),
+  acceptanceOracles: z.array(z.object({ id: z.string(), expectedBehavior: z.string(), validation: z.string() })),
+  validationCommands: z.array(z.string()),
+  assuranceLevel: z.enum(["kit_strict", "local_checked", "advisory"]),
+  verdict: z.enum(["ready", "blocked", "inconclusive"]),
+  findings: z.array(z.string()),
+  nextCommand: z.string()
+});
+export type WorkflowActionV2 = z.infer<typeof workflowActionV2Schema>;
 
 const kitIntegrationContractFeatureSchema = z.object({
   id: z.string(),

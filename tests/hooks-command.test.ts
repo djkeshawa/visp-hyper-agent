@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
-import { execFileCrossPlatform } from "../src/core/exec.js";
 import { initializeProject } from "../src/core/session-manager.js";
 
 const execFileAsync = promisify(execFile);
@@ -84,14 +83,6 @@ describe("hooks git", () => {
   let logs: string[];
   let errors: string[];
 
-  beforeAll(async () => {
-    // `hooks git` resolves dist/index.js to embed in the hook body; a fresh
-    // clone has no dist, so build on demand (same rule as the e2e block below).
-    if (!(await fileExists(distIndex))) {
-      await execFileCrossPlatform("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
-    }
-  }, 320_000);
-
   beforeEach(() => {
     logs = [];
     errors = [];
@@ -116,9 +107,9 @@ describe("hooks git", () => {
 
     const hookPath = join(projectPath, ".git", "hooks", "pre-commit");
     expect(await fileExists(hookPath)).toBe(true);
+    // POSIX exec-mode bits are meaningless on win32 (files carry no chmod +x
+    // permission), so only assert the executable bit where it exists.
     if (process.platform !== "win32") {
-      // Windows stat reports no POSIX execute bits, and git-for-Windows runs
-      // hooks through sh regardless — the bit only matters on POSIX.
       const mode = (await stat(hookPath)).mode;
       expect(mode & 0o111).not.toBe(0);
     }
@@ -210,7 +201,7 @@ describe("hooks git mechanical enforcement", () => {
       ? (await readFile(distIndex, "utf8")).includes('"guard"')
       : false;
     if (!built) {
-      await execFileCrossPlatform("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
+      await execFileAsync("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
     }
   }, 320_000);
 

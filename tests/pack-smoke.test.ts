@@ -2,7 +2,7 @@ import { access, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { execFileCrossPlatform } from "../src/core/exec.js";
+import { execFileResolved } from "../src/core/executable-resolver.js";
 import { createToolContext } from "../src/mcp/tool-bridge.js";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -24,7 +24,7 @@ async function fileExists(path: string): Promise<boolean> {
  * test` does not build, so build on demand (mirrors hooks-command.test.ts).
  */
 async function packFiles(): Promise<string[]> {
-  const { stdout } = await execFileCrossPlatform(
+  const { stdout } = await execFileResolved(
     "npm",
     ["pack", "--dry-run", "--json", "--ignore-scripts"],
     { cwd: packageRoot, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 }
@@ -38,7 +38,7 @@ describe("npm pack smoke", () => {
 
   beforeAll(async () => {
     if (!(await fileExists(distIndex))) {
-      await execFileCrossPlatform("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
+      await execFileResolved("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
     }
     files = await packFiles();
   }, 320_000);

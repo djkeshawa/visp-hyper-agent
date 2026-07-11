@@ -14,16 +14,17 @@ prints an Agent Handoff Protocol describing how to run a disciplined session.
    the reported findings and re-run.
 5. End the session with `visp-hyper remember --summary "<learnings>"`.
 
-## Cost routing
+## Role passes
 
-Spend the fewest tokens for the most accurate result. Reserve the strongest model for
-net-new logic and design decisions; lean on cheaper contexts for scanning and
-mechanical edits.
+Tools with native subagent support (such as Claude Code) may run the scout pass in
+a dedicated subagent; here you run both passes sequentially in one session.
 
-## Workflow directives
+Run each task as two sequential passes in the same session — one model can do both.
 
-If a `BEGIN_VISP_WORKFLOW_DIRECTIVE` block prints, treat its `parallel:` grouping as
-safe-to-reorder, not as a concurrency requirement: execute the tasks in the listed
-order and run `visp-hyper checkpoint --task <id>` after each before starting the
-next. If a `BEGIN_VISP_ADAPTATION` block prints after a failed checkpoint, follow
-its instruction — a remediation task (`R-...`) becomes the current task.
+1. **Scout pass (read-only).** Gather the files and evidence the task needs. Read
+   every path under `required_reads`, inspect the files named in the action block,
+   and note the exact paths you will edit and validate. Cite the paths you found;
+   do not edit anything in this pass.
+2. **Implement pass.** Edit only the files inside the allowed scope from the action
+   block, run the listed validation commands, and report the evidence (commands run
+   and their result). Then run `visp-hyper checkpoint --task <id>` to record it.
