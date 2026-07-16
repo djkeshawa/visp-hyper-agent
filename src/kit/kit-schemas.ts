@@ -24,37 +24,130 @@ export const kitStatusSchema = z.object({
 });
 export type KitStatus = z.infer<typeof kitStatusSchema>;
 
-// `failedRules` arrives as either bare rule-id strings or rule objects depending
-// on the subcommand; normalize both to a `{ ruleId, ... }` object shape.
-const kitFailedRuleSchema = z.union([
-  z.string().transform((ruleId) => ({ ruleId })),
-  z.object({
+const kitFailedRuleSchema = z
+  .object({
     ruleId: z.string(),
-    severity: z.string().optional(),
-    message: z.string().optional()
+    severity: z.enum(["info", "warning", "error"]),
+    message: z.string(),
+    recommendation: z.string(),
+    evidence: z.string()
   })
-]);
+  .passthrough();
 
 const kitBlockedCommandSchema = z.object({
   command: z.string(),
-  reason: z.string().optional(),
-  ruleId: z.string().optional()
+  reason: z.string(),
+  ruleId: z.string()
 });
 
-export const kitGateResultSchema = z.object({
-  success: z.boolean().optional(),
-  stage: z.string().optional(),
-  allowed: z.boolean(),
-  strictnessMode: z.string().optional(),
-  failedRules: z.array(kitFailedRuleSchema).default([]),
-  blockedCommands: z.array(kitBlockedCommandSchema).optional(),
-  // `nextAllowedCommand` is a human sentence (e.g. 'Run visp feature "<x>".');
-  // `nextCommand` is the bare machine-runnable form (e.g. 'visp feature "<x>"')
-  // when the kit provides it. Prefer the bare field for weak-model handoffs.
-  nextAllowedCommand: z.string().optional(),
-  nextCommand: z.string().optional()
-});
+const kitGateStageSchema = z.enum([
+  "next",
+  "setup",
+  "feature",
+  "clarify",
+  "spec",
+  "plan",
+  "tasks",
+  "context",
+  "implement",
+  "verify",
+  "review",
+  "reconcile",
+  "pr"
+]);
+
+const kitAppliedOverrideSchema = z
+  .object({
+    overrideId: z.string(),
+    ruleId: z.string(),
+    scope: z.enum(["project", "feature", "task", "stage"]),
+    reason: z.string(),
+    expiresAt: z.string().nullable(),
+    appliedToStage: kitGateStageSchema,
+    appliedToFeatureId: z.string().nullable(),
+    appliedToTaskId: z.string().nullable()
+  })
+  .passthrough();
+
+export const kitGateResultSchema = z
+  .object({
+    success: z.boolean(),
+    targetPath: z.string(),
+    stage: kitGateStageSchema,
+    strictnessMode: z.enum(["relaxed", "standard", "strict", "locked"]),
+    allowed: z.boolean(),
+    dryRun: z.boolean(),
+    feature: z.object({ id: z.string(), slug: z.string() }).nullable(),
+    taskId: z.string().nullable(),
+    passedRules: z.array(z.string()),
+    failedRules: z.array(kitFailedRuleSchema),
+    blockedCommands: z.array(kitBlockedCommandSchema),
+    warnings: z.array(z.string()),
+    overriddenRules: z.array(z.string()),
+    appliedOverrides: z.array(kitAppliedOverrideSchema),
+    // `nextAllowedCommand` is a human sentence (e.g. 'Run visp feature "<x>".');
+    // `nextCommand` is the bare machine-runnable form (e.g. 'visp feature "<x>"')
+    // when the kit provides it. Prefer the bare field for weak-model handoffs.
+    nextAllowedCommand: z.string(),
+    nextCommand: z.string().optional(),
+    reportPath: z.string(),
+    evaluatedAt: z.string()
+  })
+  .passthrough();
 export type KitGateResult = z.infer<typeof kitGateResultSchema>;
+
+export const kitPolicyValidationResultSchema = z
+  .object({
+    success: z.boolean(),
+    validation: z
+      .object({
+        passed: z.boolean(),
+        errors: z.array(z.string())
+      })
+      .passthrough(),
+    warnings: z.array(z.string()),
+    nextCommand: z.string()
+  })
+  .passthrough()
+  // Preserve the exact nested Kit result while keeping the legacy doctor
+  // consumer source-compatible during this bounded contract correction.
+  .transform((policy) => ({ ...policy, errors: policy.validation.errors }));
+export type KitPolicyValidationResult = z.infer<typeof kitPolicyValidationResultSchema>;
+
+const kitAuthoritativeIdSchema = z
+  .string()
+  .min(1)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u);
+
+const kitAuthoritativeTaskSchema = z
+  .object({
+    id: kitAuthoritativeIdSchema,
+    title: z.string().min(1),
+    description: z.string().min(1),
+    requirementIds: z.array(kitAuthoritativeIdSchema),
+    acceptanceCriterionIds: z.array(kitAuthoritativeIdSchema),
+    dependsOn: z.array(kitAuthoritativeIdSchema),
+    allowedFiles: z.array(z.string().min(1)),
+    expectedFiles: z.array(z.string().min(1)).optional(),
+    forbiddenFiles: z.array(z.string().min(1)).optional(),
+    validationCommands: z.array(z.string().min(1)),
+    status: z.enum(["pending", "ready", "in_progress", "blocked", "done", "verified"]),
+    parallelizable: z.boolean(),
+    riskLevel: z.enum(["low", "medium", "high"])
+  })
+  .passthrough();
+
+export const kitAuthoritativeTaskGraphSchema = z
+  .object({
+    featureId: kitAuthoritativeIdSchema,
+    featureSlug: z.string().min(1).optional(),
+    status: z.enum(["draft_invalid", "draft", "ready"]).optional(),
+    tasks: z.array(kitAuthoritativeTaskSchema),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime()
+  })
+  .passthrough();
+export type KitAuthoritativeTaskGraph = z.infer<typeof kitAuthoritativeTaskGraphSchema>;
 
 const kitContextFileSchema = z
   .object({
@@ -67,11 +160,109 @@ const kitContextFileSchema = z
   .passthrough();
 
 const kitArtifactProvenanceSchema = z.object({
-  label: z.string(),
-  path: z.string(),
-  hash: z.string(),
+  label: z.string().min(1),
+  path: z.string().min(1),
+  hash: z.string().min(1),
   hashAlgorithm: z.literal("sha256")
 });
+
+const kitAuthoritativeAcceptanceCriterionSchema = z
+  .object({
+    id: kitAuthoritativeIdSchema,
+    requirementId: kitAuthoritativeIdSchema,
+    description: z.string().min(1),
+    testable: z.boolean(),
+    validationMethod: z.enum(["unit", "integration", "e2e", "manual", "static"])
+  })
+  .passthrough();
+
+const kitAuthoritativeAssumptionSchema = z
+  .object({
+    id: kitAuthoritativeIdSchema,
+    description: z.string().min(1)
+  })
+  .passthrough();
+
+const kitAuthoritativeRequirementSchema = z
+  .object({
+    id: kitAuthoritativeIdSchema,
+    featureId: kitAuthoritativeIdSchema,
+    title: z.string().min(1),
+    description: z.string().min(1),
+    source: z.enum(["user", "clarification", "derived"]),
+    priority: z.enum(["must", "should", "could"]),
+    acceptanceCriteria: z.array(kitAuthoritativeAcceptanceCriterionSchema),
+    assumptions: z.array(kitAuthoritativeAssumptionSchema),
+    outOfScope: z.array(z.string().min(1))
+  })
+  .passthrough();
+
+const kitAuthoritativePlanDecisionSchema = z
+  .object({
+    id: kitAuthoritativeIdSchema,
+    title: z.string().min(1),
+    summary: z.string().min(1),
+    requirementIds: z.array(kitAuthoritativeIdSchema)
+  })
+  .passthrough();
+
+const kitAuthoritativePlanRiskSchema = z
+  .object({
+    id: kitAuthoritativeIdSchema,
+    description: z.string().min(1),
+    level: z.enum(["low", "medium", "high"]),
+    mitigation: z.string().min(1),
+    requirementIds: z.array(kitAuthoritativeIdSchema)
+  })
+  .passthrough();
+
+const kitAuthoritativeDependencyTaskSchema = z
+  .object({
+    id: kitAuthoritativeIdSchema,
+    title: z.string().min(1),
+    status: z.string().min(1),
+    dependsOn: z.array(kitAuthoritativeIdSchema)
+  })
+  .passthrough();
+
+const kitAuthoritativeConstitutionRuleSchema = z
+  .object({
+    id: kitAuthoritativeIdSchema,
+    text: z.string().min(1)
+  })
+  .passthrough();
+
+const kitAuthoritativeContextSnippetSchema = z
+  .object({
+    filePath: z.string().min(1),
+    reason: z.string().min(1),
+    startLine: z.number().int().positive(),
+    endLine: z.number().int().positive(),
+    content: z.string().min(1),
+    tokenEstimate: z.number().int().nonnegative()
+  })
+  .passthrough()
+  .refine((snippet) => snippet.endLine >= snippet.startLine, {
+    message: "endLine must be greater than or equal to startLine.",
+    path: ["endLine"]
+  });
+
+const kitAuthoritativePolicyGateSchema = z
+  .object({
+    strictnessMode: z.enum(["relaxed", "standard", "strict", "locked"]),
+    policyStatus: z.enum(["valid", "missing", "invalid", "default"]),
+    stage: kitGateStageSchema,
+    allowed: z.boolean(),
+    failedRules: z.array(kitFailedRuleSchema),
+    blockedCommands: z.array(kitBlockedCommandSchema),
+    overriddenRules: z.array(kitAuthoritativeIdSchema),
+    appliedOverrides: z.array(kitAppliedOverrideSchema),
+    warnings: z.array(z.string().min(1)),
+    nextAllowedCommand: z.string().min(1),
+    nextCommand: z.string().min(1).optional(),
+    evaluatedAt: z.string().datetime()
+  })
+  .passthrough();
 
 export const kitContextPackSchema = z
   .object({
@@ -84,6 +275,87 @@ export const kitContextPackSchema = z
   })
   .passthrough();
 export type KitContextPack = z.infer<typeof kitContextPackSchema>;
+
+const kitAuthoritativeContextFileSchema = z
+  .object({
+    path: z.string().min(1),
+    reason: z.string().min(1),
+    includeMode: z.enum(["summary", "snippet", "full", "new-file"]),
+    hash: z.string().min(1),
+    language: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative(),
+    tokenEstimate: z.number().int().nonnegative(),
+    summaryAvailable: z.boolean(),
+    snippetIncluded: z.boolean(),
+    summary: z.string().optional(),
+    warning: z.string().optional()
+  })
+  .passthrough();
+
+const kitContextTokenEstimateSchema = z.object({
+  input: z.number().int().nonnegative(),
+  expectedOutput: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  maxInput: z.number().int().positive(),
+  mode: z.enum(["lean", "balanced", "strict"]),
+  estimator: z.enum(["chars-divided-by-four", "model-profile-conservative", "heuristic-v1"]),
+  lowerBound: z.number().int().nonnegative().optional(),
+  upperBound: z.number().int().nonnegative().optional(),
+  profile: z.string().optional(),
+  uncertainty: z.string().optional()
+});
+
+/** Required current Kit context shape used only by configured strict run. */
+export const kitAuthoritativeContextPackSchema = z
+  .object({
+    id: kitAuthoritativeIdSchema,
+    featureId: kitAuthoritativeIdSchema,
+    featureSlug: z.string().min(1),
+    taskId: z.string().min(1),
+    budgetMode: z.enum(["lean", "balanced", "strict"]),
+    estimatedTokens: kitContextTokenEstimateSchema,
+    overBudget: z.boolean(),
+    recommendation: z.string().min(1),
+    warnings: z.array(z.string().min(1)),
+    selectedTask: kitAuthoritativeTaskSchema,
+    includedRequirements: z.array(kitAuthoritativeRequirementSchema),
+    includedAcceptanceCriteria: z.array(kitAuthoritativeAcceptanceCriterionSchema),
+    includedPlanDecisions: z.array(kitAuthoritativePlanDecisionSchema),
+    includedRisks: z.array(kitAuthoritativePlanRiskSchema),
+    includedDependencyTasks: z.array(kitAuthoritativeDependencyTaskSchema),
+    includedConstitutionRules: z.array(kitAuthoritativeConstitutionRuleSchema),
+    includedProjectContext: z
+      .object({
+        summary: z.string(),
+        patterns: z.string(),
+        warnings: z.array(z.string().min(1))
+      })
+      .passthrough(),
+    artifactProvenance: z.array(kitArtifactProvenanceSchema),
+    includedFiles: z.array(kitAuthoritativeContextFileSchema),
+    includedSnippets: z.array(kitAuthoritativeContextSnippetSchema),
+    validationCommands: z.array(z.string().min(1)),
+    constraints: z.array(z.string().min(1)),
+    instructions: z.array(z.string().min(1)),
+    strictnessMode: z.enum(["relaxed", "standard", "strict", "locked"]).optional(),
+    policyStatus: z.enum(["valid", "missing", "invalid", "default"]).optional(),
+    gateStatus: z.enum(["allowed", "blocked", "warnings", "not_evaluated"]).optional(),
+    failedGateRules: z.array(kitFailedRuleSchema).optional(),
+    blockedCommands: z.array(kitBlockedCommandSchema).optional(),
+    policyGate: kitAuthoritativePolicyGateSchema.optional(),
+    trimming: z
+      .object({
+        removedSnippetCount: z.number().int().nonnegative(),
+        removedPatterns: z.boolean(),
+        heavilyTrimmed: z.boolean()
+      })
+      .passthrough()
+      .optional(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime()
+  })
+  .passthrough();
+export type KitAuthoritativeContextPack = z.infer<typeof kitAuthoritativeContextPackSchema>;
 
 // Verify / review / reconcile share a minimal summary surface. We keep a
 // passthrough `findings`-like array when present without over-specifying it.
@@ -241,8 +513,8 @@ const kitIntegrationOrchestratorSchema = z
 
 export const kitIntegrationContractSchema = z
   .object({
-    success: z.boolean(),
-    contractVersion: z.string(),
+    success: z.literal(true),
+    contractVersion: z.literal("2.0"),
     kit: z.object({
       packageName: z.string(),
       cliName: z.string(),

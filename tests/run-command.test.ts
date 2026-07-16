@@ -1,12 +1,20 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
-import { createVispShim, type ShimSpec } from "./helpers/visp-shim.js";
+import {
+  authoritativeContextPackFixture,
+  authoritativeTaskFixture,
+  authoritativeTaskGraphFixture,
+  createVispShim,
+  gateResultFixture,
+  policyValidateFixture,
+  type ShimSpec
+} from "./helpers/visp-shim.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,36 +42,31 @@ async function writeTaskGraph(projectPath: string, options: { provenance?: boole
   await mkdir(join(featureDir, "context"), { recursive: true });
   await mkdir(join(projectPath, ".visp"), { recursive: true });
   await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
-  const taskGraph = JSON.stringify({
-    featureId: "001",
-    featureSlug: "pipeline",
-    tasks: [
-      {
-        id: "T001",
-        title: "First task",
-        description: "Implement the first task",
-        dependsOn: [],
-        allowedFiles: ["src/feature.ts"],
-        validationCommands: ["pnpm typecheck", "pnpm test"],
-        status: "ready"
-      },
-      {
-        id: "T002",
-        title: "Second task",
-        dependsOn: ["T001"],
-        allowedFiles: ["src/other.ts"]
-      }
-    ]
-  });
+  const taskGraph = JSON.stringify(
+    authoritativeTaskGraphFixture({
+      tasks: [
+        authoritativeTaskFixture(),
+        authoritativeTaskFixture({
+          id: "T002",
+          title: "Second task",
+          description: "Implement the second task.",
+          requirementIds: ["REQ002"],
+          acceptanceCriterionIds: ["AC002"],
+          dependsOn: ["T001"],
+          allowedFiles: ["src/other.ts"],
+          expectedFiles: ["tests/other.test.ts"],
+          status: "pending"
+        })
+      ]
+    })
+  );
   await writeFile(join(featureDir, "task-graph.json"), taskGraph, "utf8");
   await writeFile(
     join(featureDir, "context", "T001.context.json"),
-    JSON.stringify({
-      taskId: "T001",
-      includedFiles: [{ path: "src/feature.ts", reason: "task target" }],
-      ...(includeProvenance
-        ? {
-            artifactProvenance: [
+    JSON.stringify(
+      authoritativeContextPackFixture({
+        artifactProvenance: includeProvenance
+          ? [
               {
                 label: "task graph",
                 path: `.visp/features/${FEATURE_DIR}/task-graph.json`,
@@ -71,12 +74,74 @@ async function writeTaskGraph(projectPath: string, options: { provenance?: boole
                 hashAlgorithm: "sha256"
               }
             ]
-          }
-        : {}),
-      validationCommands: ["pnpm typecheck", "pnpm test"]
-    }),
+          : []
+      })
+    ),
     "utf8"
   );
+}
+
+function integrationContractFixture(contractVersion = "2.0") {
+  return {
+    success: true,
+    contractVersion,
+    kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.1" },
+    targetPath: "/repo",
+    initialized: true,
+    activeFeature: { id: "001", slug: "pipeline", key: FEATURE_DIR, path: `.visp/features/${FEATURE_DIR}` },
+    activeTask: { id: "T001", title: "First task", status: "ready" },
+    commands: {},
+    capabilities: {
+      governance: { failClosedGates: true, sourceEditsRequireImplementGate: true },
+      contextGrounding: {
+        taskScopedContextPacks: true,
+        artifactProvenance: true,
+        orchestratorReadContract: true
+      },
+      evidence: { verification: true, review: true, reconciliation: true }
+    },
+    workflow: {
+      failClosedOn: ["policyValidate", "gateNext", "gateImplement"],
+      freshnessChecks: ["contextPack.artifactProvenance[]"]
+    },
+    artifacts: {
+      kitSignals: [".visp/policy.json", ".visp/project.json"],
+      projectStatus: ".visp/status.json",
+      projectProfile: ".visp/project.json",
+      featureRoot: ".visp/features",
+      featureDir: `.visp/features/${FEATURE_DIR}`,
+      taskGraph: `.visp/features/${FEATURE_DIR}/task-graph.json`,
+      contextPack: `.visp/features/${FEATURE_DIR}/context/T001.context.json`,
+      contextPrompt: `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`
+    },
+    orchestrator: {
+      readContractVersion: "0.1",
+      freshnessPolicy: {
+        contextPackHashPinned: true,
+        provenanceArtifactsHashPinned: true,
+        staleContextBlocks: ["implementation", "checkpoint", "pr"]
+      }
+    },
+    warnings: []
+  };
+}
+
+function workflowActionFixture(protocolVersion = "2.0") {
+  return {
+    protocolVersion,
+    phase: "implement",
+    taskId: "T001",
+    goal: "Implement the first task",
+    requiredReads: [],
+    writablePaths: ["src/feature.ts"],
+    forbiddenPaths: [],
+    acceptanceOracles: [],
+    validationCommands: ["pnpm typecheck"],
+    assuranceLevel: "kit_strict",
+    verdict: "ready",
+    findings: [],
+    nextCommand: "visp implement"
+  };
 }
 
 function kitStatusSpec(extra: ShimSpec = {}): ShimSpec {
@@ -89,7 +154,15 @@ function kitStatusSpec(extra: ShimSpec = {}): ShimSpec {
         activeTask: { id: "T001", title: "First task", status: "ready" }
       }
     },
+    integration: { stdout: integrationContractFixture() },
     ...extra
+  };
+}
+
+function allowedRunGateSpec(): ShimSpec {
+  return {
+    "gate next": { stdout: gateResultFixture({ stage: "next" }) },
+    "gate implement": { stdout: gateResultFixture({ stage: "implement" }) }
   };
 }
 
@@ -99,6 +172,56 @@ function prependToPath(dir: string): void {
 
 async function readState(projectPath: string): Promise<any> {
   return JSON.parse(await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8"));
+}
+
+async function readArgvLog(path: string): Promise<string[][]> {
+  const raw = await readFile(path, "utf8");
+  return raw
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as string[]);
+}
+
+async function expectNoSession(projectPath: string): Promise<void> {
+  const state = await readState(projectPath);
+  expect.soft(state.activeSessionId).toBeNull();
+  expect.soft(state.sessions).toEqual({});
+  await expect
+    .soft(readFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "utf8"))
+    .rejects.toMatchObject({ code: "ENOENT" });
+}
+
+function expectNoLocalFallthrough(output: string): void {
+  expect.soft(output).not.toContain("BEGIN_VISP_AGENT_HANDOFF");
+  expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+  expect.soft(output).not.toContain("BEGIN_VISP_WORKFLOW_DIRECTIVE");
+  expect.soft(output).not.toContain("BEGIN_VISP_NEXT_ACTION");
+  expect.soft(output).not.toContain("BEGIN_VISP_MODEL_ROUTING");
+}
+
+function recoveryCommandLines(output: string): string[] {
+  return output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^(?:next|next_command|next_allowed_command)\s*:/u.test(line));
+}
+
+function expectNoInventedRecovery(output: string): void {
+  expect.soft(recoveryCommandLines(output)).toEqual([]);
+}
+
+async function createStrictSession(projectPath: string): Promise<void> {
+  await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+  await writeTaskGraph(projectPath);
+  const shim = await createVispShim(
+    kitStatusSpec({
+      policy: { stdout: policyValidateFixture() },
+      ...allowedRunGateSpec()
+    })
+  );
+  prependToPath(dirname(shim.binary));
+  await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
 }
 
 function activePipeline(state: any): any {
@@ -138,14 +261,502 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     await readFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "utf8");
   });
 
+  it("FAIL_CLOSED: configured project with a missing Kit binary never enters local run", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    process.env.PATH = await mkdtemp(join(tmpdir(), "visp-empty-"));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: binary_not_found");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+  });
+
+  it("FAIL_CLOSED: success false status never enters local or strict run", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    const shim = await createVispShim(
+      kitStatusSpec({
+        status: {
+          stdout: {
+            success: false,
+            initialized: true,
+            activeFeature: { id: "001", slug: "pipeline" },
+            activeTask: { id: "T001", title: "First task", status: "ready" }
+          }
+        },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: status_failed");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv[0]).toEqual(["status", "--json"]);
+    expect.soft(argv.some((args) => args[0] === "integration")).toBe(false);
+    expect.soft(argv.some((args) => args[0] === "policy")).toBe(false);
+    expect.soft(argv.some((args) => args[0] === "gate")).toBe(false);
+  });
+
+  it("FAIL_CLOSED: configured-unhealthy next cannot reuse an existing local session", async () => {
+    const projectPath = await createProject();
+    process.env.PATH = await mkdtemp(join(tmpdir(), "visp-empty-"));
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "local session", "--tool", "codex"]);
+    await writeTaskGraph(projectPath);
+    const stateBefore = await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8");
+    const handoffBefore = await readFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "utf8");
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: binary_not_found");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    expect.soft(await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")).toBe(stateBefore);
+    expect.soft(await readFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "utf8")).toBe(handoffBefore);
+  });
+
+  it("FAIL_CLOSED: unsupported integration contract blocks run before policy, gates, or session", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    const shim = await createVispShim(
+      kitStatusSpec({
+        integration: { stdout: integrationContractFixture("1.3") },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: unsupported_integration_contract");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.slice(0, 2)).toEqual([
+      ["status", "--json"],
+      ["integration", "contract", "--json"]
+    ]);
+    expect.soft(argv.some((args) => args[0] === "policy")).toBe(false);
+    expect.soft(argv.some((args) => args[0] === "gate")).toBe(false);
+  });
+
+  it("FAIL_CLOSED: integration contract 2.0 with success false blocks before policy, gates, or session", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    const shim = await createVispShim(
+      kitStatusSpec({
+        integration: { stdout: { ...integrationContractFixture(), success: false } },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: integration_contract_unavailable");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv).toEqual([
+      ["status", "--json"],
+      ["integration", "contract", "--json"]
+    ]);
+  });
+
+  it.each([
+    { label: "missing", policy: undefined },
+    { label: "malformed", policy: { stdout: "not policy json" } },
+    {
+      label: "valid-JSON wrong-shape",
+      policy: { stdout: { success: true, errors: [7] } }
+    },
+    {
+      label: "success-validation coherence mismatch",
+      policy: {
+        stdout: policyValidateFixture({
+          success: true,
+          validation: {
+            passed: false,
+            errors: ["The nested Kit validation result is authoritative."]
+          }
+        })
+      }
+    }
+  ])("FAIL_CLOSED: $label policy result blocks before gate or session", async ({ policy }) => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    const spec = kitStatusSpec({ ...allowedRunGateSpec() });
+    if (policy) {
+      spec.policy = policy;
+    }
+    const shim = await createVispShim(spec);
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: policy_unavailable");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.slice(0, 3)).toEqual([
+      ["status", "--json"],
+      ["integration", "contract", "--json"],
+      ["policy", "validate", "--json"]
+    ]);
+    expect.soft(argv.some((args) => args[0] === "gate")).toBe(false);
+  });
+
+  it.each([
+    { label: "missing", gate: undefined, status: "INCONCLUSIVE", reasonCode: "gate_next_unavailable" },
+    {
+      label: "malformed",
+      gate: { stdout: "not gate json" },
+      status: "INCONCLUSIVE",
+      reasonCode: "gate_next_unavailable"
+    },
+    {
+      label: "blocked",
+      gate: {
+        stdout: gateResultFixture({
+          stage: "next",
+          allowed: false,
+          failedRules: [{ ruleId: "VSP014", message: "Implementation is not allowed" }],
+          nextAllowedCommand: "Run visp tasks.",
+          nextCommand: "visp tasks"
+        }),
+        exitCode: 1
+      },
+      status: "BLOCKED",
+      reasonCode: "gate_next_blocked"
+    }
+  ])(
+    "FAIL_CLOSED: $label gate next stops before implement evaluation or session",
+    async ({ gate, status, reasonCode }) => {
+      const projectPath = await createProject();
+      await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+      await writeTaskGraph(projectPath);
+      const spec = kitStatusSpec({ policy: { stdout: policyValidateFixture() } });
+      if (gate) {
+        spec.gate = gate;
+      }
+      const shim = await createVispShim(spec);
+      prependToPath(dirname(shim.binary));
+
+      logs = [];
+      await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+      const output = logs.join("\n");
+      expect.soft(output).toContain(`status: ${status}`);
+      expect.soft(output).toContain(`reason_code: ${reasonCode}`);
+      expectNoLocalFallthrough(output);
+      if (status === "INCONCLUSIVE") {
+        expectNoInventedRecovery(output);
+      } else {
+        expect.soft(recoveryCommandLines(output)).toEqual(["next_allowed_command: visp tasks"]);
+        expect.soft(output).not.toContain("instruction:");
+      }
+      await expectNoSession(projectPath);
+      const argv = await readArgvLog(shim.argvLogPath);
+      expect.soft(argv.slice(0, 4)).toEqual([
+        ["status", "--json"],
+        ["integration", "contract", "--json"],
+        ["policy", "validate", "--json"],
+        ["gate", "next", "--json"]
+      ]);
+      expect.soft(
+        argv.some((args) => args[0] === "gate" && args[1] === "implement")
+      ).toBe(false);
+    }
+  );
+
+  it("FAIL_CLOSED: missing configured task graph stops before implement gate or session", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: task_graph_unavailable");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.map((args) => args.slice(0, 2))).toEqual([
+      ["status", "--json"],
+      ["integration", "contract"],
+      ["policy", "validate"],
+      ["gate", "next"]
+    ]);
+    expect.soft(argv.some((args) => args[0] === "next")).toBe(false);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
+  });
+
+  it("FAIL_CLOSED: valid JSON with the wrong task-graph shape stops before context or implement gate", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    await writeFile(
+      join(projectPath, ".visp", "features", FEATURE_DIR, "task-graph.json"),
+      JSON.stringify({ featureId: "001", featureSlug: "pipeline", tasks: [] }),
+      "utf8"
+    );
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: task_graph_unavailable");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
+  });
+
+  it("FAIL_CLOSED: task graph without an executable task stops before implement gate or session", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    await writeFile(
+      join(projectPath, ".visp", "features", FEATURE_DIR, "task-graph.json"),
+      JSON.stringify(authoritativeTaskGraphFixture({ tasks: [] })),
+      "utf8"
+    );
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: task_unavailable");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "next")).toBe(false);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
+  });
+
+  it("FAIL_CLOSED: missing context pack stops before implement gate or session", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    await rm(join(projectPath, ".visp", "features", FEATURE_DIR, "context", "T001.context.json"));
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: context_pack_unavailable");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
+    expect.soft(argv.some((args) => args[0] === "next")).toBe(false);
+  });
+
+  it("FAIL_CLOSED: valid JSON with the wrong context-pack shape stops before implement gate", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    await writeFile(
+      join(projectPath, ".visp", "features", FEATURE_DIR, "context", "T001.context.json"),
+      JSON.stringify({
+        taskId: "T001",
+        includedFiles: [{ path: "src/feature.ts", reason: "legacy partial context" }]
+      }),
+      "utf8"
+    );
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: context_pack_unavailable");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
+  });
+
+  it("FAIL_CLOSED: an authoritative context pack with only blocked files stops before implement gate", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    await writeFile(
+      join(projectPath, ".visp", "features", FEATURE_DIR, "context", "T001.context.json"),
+      JSON.stringify(
+        authoritativeContextPackFixture({
+          includedFiles: [
+            {
+              path: ".env",
+              reason: "Must be rejected by Hyper's configured blocked paths.",
+              includeMode: "full",
+              hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+              language: "dotenv",
+              sizeBytes: 16,
+              tokenEstimate: 4,
+              summaryAvailable: false,
+              snippetIncluded: false
+            }
+          ]
+        })
+      ),
+      "utf8"
+    );
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: context_pack_unavailable");
+    expect.soft(output).toContain("yielded no usable, policy-allowed files");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
+  });
+
+  it.each([
+    { label: "missing", next: undefined, reasonCode: "strict_next_unavailable" },
+    { label: "malformed", next: { stdout: "not workflow action json" }, reasonCode: "strict_next_unavailable" },
+    {
+      label: "unsupported",
+      next: { stdout: workflowActionFixture("3.0") },
+      reasonCode: "unsupported_workflow_action"
+    },
+    {
+      label: "nonzero ready",
+      next: { stdout: workflowActionFixture(), exitCode: 1 },
+      reasonCode: "strict_next_unavailable"
+    }
+  ])("FAIL_CLOSED: $label strict next action cannot fall through locally", async ({ next, reasonCode }) => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+    const stateBefore = await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8");
+    const handoffBefore = await readFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "utf8");
+    const spec = kitStatusSpec();
+    if (next) {
+      spec.next = next;
+    }
+    const shim = await createVispShim(spec);
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain(`reason_code: ${reasonCode}`);
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv).toEqual([
+      ["status", "--json"],
+      ["next", "--format", "json", "--json"]
+    ]);
+    expect.soft(argv.some((args) => args[0] === "gate")).toBe(false);
+    expect.soft(await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")).toBe(stateBefore);
+    expect.soft(await readFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "utf8")).toBe(handoffBefore);
+  });
+
   it("AC004: kit run with allowed gate prints handoff plus task action and sets pipeline", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -168,49 +779,69 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect(pipeline.currentTaskId).toBe("T001");
     // A sequential graph prints no fan-out directive.
     expect(output).not.toContain("BEGIN_VISP_WORKFLOW_DIRECTIVE");
+
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv).toEqual([
+      ["status", "--json"],
+      ["integration", "contract", "--json"],
+      ["policy", "validate", "--json"],
+      ["gate", "next", "--json"],
+      ["gate", "implement", "--task", "T001", "--json"]
+    ]);
+    expect.soft(argv.filter((args) => args[0] === "status")).toHaveLength(1);
+    expect.soft(argv.filter((args) => args[0] === "integration")).toHaveLength(1);
   });
 
   it("prints a workflow directive when the graph has parallelizable disjoint tasks", async () => {
     const projectPath = await createProject();
     const featureDir = join(projectPath, ".visp", "features", FEATURE_DIR);
+    const firstTask = authoritativeTaskFixture({ parallelizable: true });
     await mkdir(join(featureDir, "context"), { recursive: true });
     await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
     await writeFile(
       join(featureDir, "task-graph.json"),
-      JSON.stringify({
-        featureId: "001",
-        featureSlug: "pipeline",
-        tasks: [
-          {
-            id: "T001",
-            title: "First task",
-            dependsOn: [],
-            parallelizable: true,
-            allowedFiles: ["src/feature.ts"],
-            status: "ready"
-          },
-          {
-            id: "T002",
-            title: "Second task",
-            dependsOn: [],
-            parallelizable: true,
-            allowedFiles: ["src/other.ts"]
-          },
-          { id: "T003", title: "Third task", dependsOn: ["T001", "T002"], allowedFiles: ["src"] }
-        ]
-      }),
+      JSON.stringify(
+        authoritativeTaskGraphFixture({
+          tasks: [
+            firstTask,
+            authoritativeTaskFixture({
+              id: "T002",
+              title: "Second task",
+              description: "Implement the independent second task.",
+              requirementIds: ["REQ002"],
+              acceptanceCriterionIds: ["AC002"],
+              dependsOn: [],
+              allowedFiles: ["src/other.ts"],
+              expectedFiles: ["tests/other.test.ts"],
+              status: "ready",
+              parallelizable: true
+            }),
+            authoritativeTaskFixture({
+              id: "T003",
+              title: "Third task",
+              description: "Integrate the first two tasks.",
+              requirementIds: ["REQ003"],
+              acceptanceCriterionIds: ["AC003"],
+              dependsOn: ["T001", "T002"],
+              allowedFiles: ["src/integration.ts"],
+              expectedFiles: ["tests/integration.test.ts"],
+              status: "pending"
+            })
+          ]
+        })
+      ),
       "utf8"
     );
     await writeFile(
       join(featureDir, "context", "T001.context.json"),
-      JSON.stringify({ taskId: "T001", includedFiles: [{ path: "src/feature.ts", reason: "task target" }] }),
+      JSON.stringify(authoritativeContextPackFixture({ selectedTask: firstTask })),
       "utf8"
     );
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -236,7 +867,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
         integration: {
           stdout: {
             success: true,
-            contractVersion: "1.1",
+            contractVersion: "2.0",
             kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.1" },
             targetPath: projectPath,
             initialized: true,
@@ -265,8 +896,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
             warnings: []
           }
         },
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -276,7 +907,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
 
     const output = logs.join("\n");
-    expect(output).toContain("warning: Kit integration contract 1.1 does not advertise provenance freshness");
+    expect(output).toContain("warning: Kit integration contract 2.0 does not advertise provenance freshness");
     expect(output).toContain("BEGIN_VISP_TASK_ACTION");
   });
 
@@ -286,8 +917,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
         reconcile: { stdout: { success: true } },
@@ -344,8 +975,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
         reconcile: { stdout: { success: true } },
@@ -368,7 +999,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect(output).toContain("status: PASSED");
   });
 
-  it("AC005: blocked gate prints PIPELINE_BLOCKED and authors no kit artifacts", async () => {
+  it("AC005: blocked implement gate prints PIPELINE_BLOCKED without creating a session", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
 
@@ -376,16 +1007,18 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: {
-          stdout: {
+        policy: { stdout: policyValidateFixture() },
+        "gate next": { stdout: gateResultFixture({ stage: "next" }) },
+        "gate implement": {
+          stdout: gateResultFixture({
+            stage: "implement",
             allowed: false,
             failedRules: [{ ruleId: "R-IMPL-001", message: "Spec not approved" }],
-            nextAllowedCommand: "visp specify"
-          },
+            nextAllowedCommand: "Run visp specify.",
+            nextCommand: "visp specify"
+          }),
           exitCode: 1
-        },
-        next: { stdout: { success: true, nextCommand: "visp specify" } }
+        }
       })
     );
     prependToPath(dirname(shim.binary));
@@ -396,31 +1029,40 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     const output = logs.join("\n");
     expect(output).toContain("BEGIN_VISP_PIPELINE_BLOCKED");
     expect(output).toContain("R-IMPL-001");
-    expect(output).toContain("next_allowed_command: visp specify");
+    expect.soft(recoveryCommandLines(output)).toEqual(["next_allowed_command: visp specify"]);
+    expect(output).not.toContain("instruction:");
+    expectNoLocalFallthrough(output);
+    await expectNoSession(projectPath);
+
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "next")).toBe(true);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(true);
+    expect.soft(argv.some((args) => args[0] === "next")).toBe(false);
 
     const after = await listFeatureFiles(projectPath);
     expect(after).toEqual(before);
   });
 
-  it("blocked gate prefers the bare nextCommand over the sentence nextAllowedCommand", async () => {
+  it("blocked implement gate uses only the bare Kit nextCommand", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: {
-          stdout: {
+        policy: { stdout: policyValidateFixture() },
+        "gate next": { stdout: gateResultFixture({ stage: "next" }) },
+        "gate implement": {
+          stdout: gateResultFixture({
+            stage: "implement",
             allowed: false,
             failedRules: [{ ruleId: "R-IMPL-002", message: "Feature not started" }],
             // Sentence form (would make a weak model execute the word "Run") plus
             // the bare machine-runnable form the run command must prefer.
             nextAllowedCommand: 'Run visp feature "<describe your feature>".',
             nextCommand: 'visp feature "<describe your feature>"'
-          },
+          }),
           exitCode: 1
-        },
-        next: { stdout: { success: true, nextCommand: "visp feature" } }
+        }
       })
     );
     prependToPath(dirname(shim.binary));
@@ -433,19 +1075,61 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     // Prefers the bare command, not the sentence.
     expect(output).toContain('next_allowed_command: visp feature "<describe your feature>"');
     expect(output).not.toContain("next_allowed_command: Run visp feature");
-    // Follow-up wording no longer tells the model to "Run the command above".
-    expect(output).toContain("instruction: Follow the instruction above exactly, then re-run `visp-hyper run`.");
+    // Hyper must render only Kit's machine command; it must not invent a
+    // follow-up instruction around the authoritative recovery action.
+    expect(output).not.toContain("instruction:");
+    expectNoLocalFallthrough(output);
+    await expectNoSession(projectPath);
+
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "next")).toBe(true);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(true);
+    expect.soft(argv.some((args) => args[0] === "next")).toBe(false);
   });
 
-  it("AC007: next prints the action block after a run, legacy after plain start", async () => {
+  it("blocked implement gate does not substitute Kit nextAllowedCommand when nextCommand is absent", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
-        next: { stdout: { success: true, nextCommand: "visp implement" } }
+        policy: { stdout: policyValidateFixture() },
+        "gate next": { stdout: gateResultFixture({ stage: "next" }) },
+        "gate implement": {
+          stdout: gateResultFixture({
+            stage: "implement",
+            allowed: false,
+            failedRules: [{ ruleId: "R-IMPL-003", message: "Kit has no machine recovery command" }],
+            nextAllowedCommand: "Run a human-oriented recovery sequence.",
+            nextCommand: undefined
+          }),
+          exitCode: 1
+        }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_PIPELINE_BLOCKED");
+    expect(output).toContain("R-IMPL-003");
+    expect.soft(recoveryCommandLines(output)).toEqual([]);
+    expect(output).not.toContain("instruction:");
+    expectNoLocalFallthrough(output);
+    await expectNoSession(projectPath);
+  });
+
+  it("AC007: strict next renders WorkflowAction 2.0 while genuine no-Kit next stays local", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
+        next: { stdout: workflowActionFixture() }
       })
     );
     prependToPath(dirname(shim.binary));
@@ -456,15 +1140,19 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     logs = [];
     await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
     let output = logs.join("\n");
-    expect(output).toContain("BEGIN_VISP_TASK_ACTION");
-    expect(output).toContain("task: T001");
+    expect(output).toContain("BEGIN_VISP_WORKFLOW_ACTION_V2");
+    expect(output).toContain('"protocolVersion":"2.0"');
+    expect(output).toContain('"assuranceLevel":"kit_strict"');
+    expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
 
-    // A plain start (kit-less) clears pipeline awareness for the new session.
+    // A separate project with no Kit signals retains explicitly local behavior.
+    const localProjectPath = await createProject();
     process.env.PATH = await mkdtemp(join(tmpdir(), "visp-empty-"));
     logs = [];
-    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "plain goal", "--tool", "codex"]);
+    await runCli(["node", "visp-hyper", "--project", localProjectPath, "init"]);
+    await runCli(["node", "visp-hyper", "--project", localProjectPath, "start", "plain goal", "--tool", "codex"]);
     logs = [];
-    await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
+    await runCli(["node", "visp-hyper", "--project", localProjectPath, "next"]);
     output = logs.join("\n");
     expect(output).toContain("BEGIN_VISP_NEXT_ACTION");
     expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
@@ -474,16 +1162,25 @@ describe("run command and pipeline-aware next/checkpoint", () => {
   it("POLICY_BLOCKED: failing policy validate stops before any handoff or kit artifacts", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
+    const nextCommand = "Fix .visp/policy.json and run `visp policy validate`.";
 
     const before = await listFeatureFiles(projectPath);
 
     const shim = await createVispShim(
       kitStatusSpec({
         policy: {
-          stdout: { success: false, errors: ["Policy file references missing rule R-XYZ-001"] }
+          stdout: policyValidateFixture({
+            success: false,
+            validation: {
+              passed: false,
+              errors: ["Policy file references missing rule R-XYZ-001"]
+            },
+            nextCommand
+          }),
+          exitCode: 1
         },
         // These would let the run proceed; they must never be reached.
-        gate: { stdout: { allowed: true, failedRules: [] } },
+        ...allowedRunGateSpec(),
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -495,26 +1192,36 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     const output = logs.join("\n");
     expect(output).toContain("BEGIN_VISP_POLICY_BLOCKED");
     expect(output).toContain("Policy file references missing rule R-XYZ-001");
+    expect.soft(recoveryCommandLines(output)).toEqual([`next_allowed_command: ${nextCommand}`]);
+    expect(output).not.toContain("instruction:");
     // The run returns early: no handoff, no task action, no pipeline-blocked block.
     expect(output).not.toContain("BEGIN_VISP_AGENT_HANDOFF");
     expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
     expect(output).not.toContain("BEGIN_VISP_PIPELINE_BLOCKED");
+    await expectNoSession(projectPath);
 
     // No kit artifacts authored when policy is blocked.
     const after = await listFeatureFiles(projectPath);
     expect(after).toEqual(before);
   });
 
-  it("FAIL_CLOSED: unparseable implement gate output yields PIPELINE_BLOCKED, not an allowed action", async () => {
+  it("POLICY_BLOCKED: non-empty nested Kit errors block even when success and passed are true", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
-
+    const nextCommand = "visp policy validate";
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        // Non-JSON gate body (a STRING) is unparseable => implementGate is null.
-        gate: { stdout: "not json at all — the gate crashed mid-output" },
-        next: { stdout: { success: true, nextCommand: "visp tasks" } }
+        policy: {
+          stdout: policyValidateFixture({
+            success: true,
+            validation: {
+              passed: true,
+              errors: ["Kit reported a policy error despite a successful validation flag."]
+            },
+            nextCommand
+          })
+        },
+        ...allowedRunGateSpec()
       })
     );
     prependToPath(dirname(shim.binary));
@@ -523,15 +1230,55 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
 
     const output = logs.join("\n");
-    // Fail closed: unknown gate state is treated as blocked, never as permission.
-    expect(output).toContain("BEGIN_VISP_PIPELINE_BLOCKED");
-    expect(output).toContain("task: T001");
-    // An allowed gate would have printed the task action; it must not appear.
-    expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect(output).toContain("BEGIN_VISP_POLICY_BLOCKED");
+    expect(output).toContain("Kit reported a policy error despite a successful validation flag.");
+    expect.soft(recoveryCommandLines(output)).toEqual([`next_allowed_command: ${nextCommand}`]);
+    expect(output).not.toContain("instruction:");
+    expectNoLocalFallthrough(output);
+    await expectNoSession(projectPath);
 
-    // Pipeline is still initialized (we reached the gate), but the run is blocked.
-    const pipeline = activePipeline(await readState(projectPath));
-    expect(pipeline.currentTaskId).toBe("T001");
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv).toEqual([
+      ["status", "--json"],
+      ["integration", "contract", "--json"],
+      ["policy", "validate", "--json"]
+    ]);
+  });
+
+  it.each([
+    { label: "missing", implementGate: undefined },
+    {
+      label: "malformed",
+      implementGate: { stdout: "not json at all — the gate crashed mid-output" }
+    }
+  ])("FAIL_CLOSED: $label implement gate stops before session creation", async ({ implementGate }) => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+    const spec = kitStatusSpec({
+      policy: { stdout: policyValidateFixture() },
+      "gate next": { stdout: gateResultFixture({ stage: "next" }) }
+    });
+    if (implementGate) {
+      spec["gate implement"] = implementGate;
+    }
+    const shim = await createVispShim(spec);
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: gate_implement_unavailable");
+    expectNoLocalFallthrough(output);
+    expectNoInventedRecovery(output);
+    await expectNoSession(projectPath);
+
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "next")).toBe(true);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(true);
+    expect.soft(argv.some((args) => args[0] === "next")).toBe(false);
   });
 
   it("FAIL_CLOSED: checkpoint fails when the adopted Kit context artifact changed after handoff", async () => {
@@ -540,8 +1287,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
         reconcile: { stdout: { success: true } },
@@ -581,8 +1328,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
         reconcile: { stdout: { success: true } },
@@ -632,8 +1379,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
         // Reconcile gate BLOCKS: a parsed result with success:false.
@@ -674,8 +1421,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     // yields a non-JSON/unknown-subcommand result → null → warn, not block.
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
         next: { stdout: { success: true, nextCommand: "visp implement" } }

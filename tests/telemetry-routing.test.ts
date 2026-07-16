@@ -14,7 +14,15 @@ import {
   escalate
 } from "../src/routing/routing-engine.js";
 import type { RoutingState } from "../src/routing/routing-state.js";
-import { createVispShim, type ShimSpec } from "./helpers/visp-shim.js";
+import { writeRoutingState } from "../src/routing/routing-state.js";
+import {
+  authoritativeContextPackFixture,
+  authoritativeTaskGraphFixture,
+  createVispShim,
+  gateResultFixture,
+  policyValidateFixture,
+  type ShimSpec
+} from "./helpers/visp-shim.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -45,42 +53,46 @@ async function writeTaskGraph(projectPath: string): Promise<void> {
   await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
   await writeFile(
     join(featureDir, "task-graph.json"),
-    JSON.stringify({
-      featureId: "001",
-      featureSlug: "pipeline",
-      tasks: [
-        {
-          id: "T001",
-          title: "First task",
-          description: "Implement the first task",
-          dependsOn: [],
-          allowedFiles: ["src/feature.ts"],
-          validationCommands: ["pnpm typecheck", "pnpm test"],
-          riskLevel: "high",
-          status: "ready"
-        },
-        {
-          id: "T002",
-          title: "Second task",
-          dependsOn: ["T001"],
-          allowedFiles: ["src/other.ts"]
-        }
-      ]
-    }),
+    JSON.stringify(authoritativeTaskGraphFixture()),
     "utf8"
   );
   await writeFile(
     join(featureDir, "context", "T001.context.json"),
-    JSON.stringify({
-      taskId: "T001",
-      includedFiles: [{ path: "src/feature.ts", reason: "task target" }],
-      validationCommands: ["pnpm typecheck", "pnpm test"]
-    }),
+    JSON.stringify(authoritativeContextPackFixture()),
     "utf8"
   );
 }
 
-function kitStatusSpec(extra: ShimSpec = {}): ShimSpec {
+function kit20IntegrationContract(projectPath: string): Record<string, unknown> {
+  return {
+    success: true,
+    contractVersion: "2.0",
+    kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.3" },
+    targetPath: projectPath,
+    initialized: true,
+    activeFeature: {
+      id: "001",
+      slug: "pipeline",
+      key: "001-pipeline",
+      path: ".visp/features/001-pipeline"
+    },
+    activeTask: { id: "T001", title: "First task", status: "ready" },
+    commands: {},
+    artifacts: {
+      kitSignals: [".visp/policy.json", ".visp/project.json"],
+      projectStatus: ".visp/status.json",
+      projectProfile: ".visp/project.json",
+      featureRoot: ".visp/features",
+      featureDir: ".visp/features/001-pipeline",
+      taskGraph: ".visp/features/001-pipeline/task-graph.json",
+      contextPack: ".visp/features/001-pipeline/context/T001.context.json",
+      contextPrompt: ".visp/features/001-pipeline/context/T001.prompt.md"
+    },
+    warnings: []
+  };
+}
+
+function kitStatusSpec(projectPath: string, extra: ShimSpec = {}): ShimSpec {
   return {
     status: {
       stdout: {
@@ -90,7 +102,19 @@ function kitStatusSpec(extra: ShimSpec = {}): ShimSpec {
         activeTask: { id: "T001", title: "First task", status: "ready" }
       }
     },
+    integration: { stdout: kit20IntegrationContract(projectPath) },
     ...extra
+  };
+}
+
+function allowedRunGates(projectPath: string): ShimSpec {
+  return {
+    "gate next": {
+      stdout: gateResultFixture({ targetPath: projectPath, stage: "next" })
+    },
+    "gate implement": {
+      stdout: gateResultFixture({ targetPath: projectPath, stage: "implement" })
+    }
   };
 }
 
@@ -184,9 +208,9 @@ describe("telemetry store and budget round-trip", () => {
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
-      kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+      kitStatusSpec(projectPath, {
+        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+        ...allowedRunGates(projectPath),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
         reconcile: { stdout: { success: true } },
@@ -215,9 +239,9 @@ describe("telemetry store and budget round-trip", () => {
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
-      kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+      kitStatusSpec(projectPath, {
+        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+        ...allowedRunGates(projectPath),
         next: { stdout: { success: true, nextCommand: "visp implement" } },
         budget: { stdout: { success: true } }
       })
@@ -264,9 +288,9 @@ describe("telemetry store and budget round-trip", () => {
 
     // First run a pipeline-aware session with a shim so the session has a task id...
     const shim = await createVispShim(
-      kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+      kitStatusSpec(projectPath, {
+        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+        ...allowedRunGates(projectPath),
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -458,9 +482,9 @@ describe("routing CLI integration", () => {
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
-      kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+      kitStatusSpec(projectPath, {
+        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+        ...allowedRunGates(projectPath),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
         next: { stdout: { success: true, nextCommand: "visp implement" } }
@@ -479,14 +503,14 @@ describe("routing CLI integration", () => {
     expect(output).toContain(`suggested_tier: ${STRONGEST_TIER}`);
   });
 
-  it("AC005b: checkpoint failure quarantines class; later next shows implementer + quarantine reason", async () => {
+  it("AC005b: checkpoint failure quarantines its class; a separate local next renders a matching quarantine", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
-      kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+      kitStatusSpec(projectPath, {
+        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+        ...allowedRunGates(projectPath),
         verify: { stdout: { success: false } },
         review: { stdout: { success: true } },
         next: { stdout: { success: true, nextCommand: "visp implement" } }
@@ -502,8 +526,36 @@ describe("routing CLI integration", () => {
     expect(routing.quarantines).toHaveLength(1);
     expect(routing.quarantines[0].taskClass).toBe("high");
 
+    // Exercise local routing in a separate project that has never carried Kit
+    // policy, project, feature, or context artifacts. Quick creates an explicit
+    // synthetic local task; its quarantine matches that task's low-risk class.
+    const localProjectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", localProjectPath, "init"]);
     logs = [];
-    await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      localProjectPath,
+      "quick",
+      "local parser cleanup",
+      "--tool",
+      "codex"
+    ]);
+    const localRouting = await readRoutingFile(localProjectPath);
+    await writeRoutingState(
+      localProjectPath,
+      escalate({
+        state: localRouting,
+        taskId: "Q001",
+        taskClass: "low",
+        sessionCount: 1,
+        now: "2026-07-16T00:00:00.000Z"
+      })
+    );
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", localProjectPath, "next"]);
     const output = logs.join("\n");
     expect(output).toContain("BEGIN_VISP_MODEL_ROUTING");
     expect(output).toContain(`suggested_tier: ${STRONGEST_TIER}`);
@@ -515,9 +567,9 @@ describe("routing CLI integration", () => {
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
-      kitStatusSpec({
-        policy: { stdout: { success: true, errors: [] } },
-        gate: { stdout: { allowed: true, failedRules: [] } },
+      kitStatusSpec(projectPath, {
+        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+        ...allowedRunGates(projectPath),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
         next: { stdout: { success: true, nextCommand: "visp implement" } }

@@ -10,6 +10,7 @@ import { readRoutingState, recordRoutingDecision } from "../../routing/routing-s
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { contextPackPathIfExists, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
 
 export function nextCommand(): Command {
   return new Command("next")
@@ -17,14 +18,36 @@ export function nextCommand(): Command {
     .action(async function (this: Command) {
       const projectPath = resolveProjectPath(this);
       const kit = await detectVisp(projectPath);
-      if (kit.available) {
+      if (kit.state === "configured-unhealthy") {
+        console.log(
+          renderKitAuthorityStop({
+            status: "INCONCLUSIVE",
+            reasonCode: kit.reasonCode,
+            reason: kit.reason
+          })
+        );
+        return;
+      }
+      if (kit.state === "healthy") {
         const bridge = new KitCommandBridge({ projectPath });
-        const action = await bridge.nextAction();
-        if (action) {
-          console.log(["BEGIN_VISP_WORKFLOW_ACTION_V2", JSON.stringify(action), "END_VISP_WORKFLOW_ACTION_V2"].join("\n"));
+        const actionDiagnostic = await bridge.nextActionDiagnostic();
+        if (actionDiagnostic.ok) {
+          console.log(
+            ["BEGIN_VISP_WORKFLOW_ACTION_V2", JSON.stringify(actionDiagnostic.value), "END_VISP_WORKFLOW_ACTION_V2"].join(
+              "\n"
+            )
+          );
           return;
         }
         for (const warning of bridge.warnings) console.warn(`warning: ${warning}`);
+        console.log(
+          renderKitAuthorityStop({
+            status: "INCONCLUSIVE",
+            reasonCode: actionDiagnostic.reasonCode,
+            reason: actionDiagnostic.reason
+          })
+        );
+        return;
       }
       const session = await getActiveSession(projectPath);
       if (!session) {

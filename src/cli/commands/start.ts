@@ -8,7 +8,11 @@ import { createSession, initializeProject, readConfig } from "../../core/session
 import type { ContextFile, ContextManifest, ContextPackOptions, HyperConfig, SessionRecord, ToolProfile } from "../../core/types.js";
 import { buildHandoffProtocol, renderHandoff } from "../../handoff/handoff-protocol.js";
 import { isBlockedPath } from "../../governance/blocked-files.js";
-import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
+import {
+  KitCommandBridge,
+  detectVisp,
+  type KitContextPackArtifact
+} from "../../kit/kit-command-bridge.js";
 import { readKitArtifacts } from "../../kit/kit-reader.js";
 import type { KitContextPack, KitIntegrationContract } from "../../kit/kit-schemas.js";
 import { readMemoryPack } from "../../memory/file-memory-provider.js";
@@ -46,6 +50,15 @@ export type StartResult = {
   handoff: string;
 };
 
+export type StrictKitStartInput = {
+  adoption: KitAdoption;
+};
+
+export type StartOptions = {
+  tool?: ToolProfile;
+  strictKit?: StrictKitStartInput;
+};
+
 /**
  * Run the full start pipeline (session creation, kit context adoption, memory
  * fusion, and all `.visp/hyper/current/` writes) and return the created session
@@ -55,15 +68,15 @@ export type StartResult = {
 export async function executeStart(
   projectPath: string,
   goal: string,
-  options: { tool?: ToolProfile }
+  options: StartOptions
 ): Promise<StartResult> {
   await initializeProject(projectPath);
   const config = await readConfig(projectPath);
   const tool = options.tool ?? config.defaultTool;
+  const adoption = options.strictKit?.adoption ?? (await adoptKitContextPack(projectPath, config));
   const kit = await readKitArtifacts(projectPath);
   const memory = await readMemoryPack(projectPath);
   const memoryFusion = await fuseRecalledMemory(projectPath, config, goal);
-  const adoption = await adoptKitContextPack(projectPath, config);
   const contextFiles =
     adoption?.files ??
     (await scanRelevantFiles({
@@ -184,7 +197,7 @@ function looksLikeInstructionInjection(content: string): boolean {
   return /(?:ignore|override|disregard)\s+(?:all\s+)?(?:previous|system|developer)|\b(?:must|always)\s+(?:run|execute|install|edit|delete)|(?:grant|expand)\s+(?:permission|access)/iu.test(content);
 }
 
-type KitAdoption = {
+export type KitAdoption = {
   files: ContextFile[];
   source: string;
   taskId: string;
@@ -205,6 +218,30 @@ type KitAdoption = {
   validationCommands: string[];
   warnings: string[];
 };
+
+/**
+ * Convert an already validated, contract-pinned Kit context artifact into the
+ * exact adoption object used by `executeStart`. This deliberately performs no
+ * Kit probe and exposes an empty/fully-blocked pack before the implement gate.
+ */
+export async function prepareStrictKitAdoption(
+  projectPath: string,
+  input: {
+    taskId: string;
+    artifact: KitContextPackArtifact;
+    contract: KitIntegrationContract;
+  }
+): Promise<KitAdoption | undefined> {
+  const config = await readConfig(projectPath);
+  return buildKitAdoption({
+    projectPath,
+    config,
+    taskId: input.taskId,
+    artifact: input.artifact,
+    contract: input.contract,
+    authorityWarnings: []
+  });
+}
 
 /**
  * When the external visp kit is available and has an active task with an on-disk
@@ -229,6 +266,26 @@ async function adoptKitContextPack(projectPath: string, config: HyperConfig): Pr
   }
   const contract = await bridge.integrationContract({ quiet: true });
 
+  return buildKitAdoption({
+    projectPath,
+    config,
+    taskId: activeTaskId,
+    artifact,
+    contract,
+    authorityWarnings: [...kit.warnings, ...bridge.warnings]
+  });
+}
+
+async function buildKitAdoption(input: {
+  projectPath: string;
+  config: HyperConfig;
+  taskId: string;
+  artifact: KitContextPackArtifact;
+  contract: KitIntegrationContract | null;
+  authorityWarnings: string[];
+}): Promise<KitAdoption | undefined> {
+  const { projectPath, config, taskId, artifact, contract } = input;
+
   const files = await contextFilesFromPack(artifact.pack, projectPath, config.blockedPaths);
   if (files.length === 0) {
     return undefined;
@@ -240,23 +297,23 @@ async function adoptKitContextPack(projectPath: string, config: HyperConfig): Pr
   }));
   const freshnessWarnings =
     artifactProvenance.length === 0
-      ? [missingProvenanceWarning(activeTaskId)]
+      ? [missingProvenanceWarning(taskId)]
       : [];
 
   return {
     files,
-    source: `visp-kit context pack (${activeTaskId})`,
-    taskId: activeTaskId,
+    source: `visp-kit context pack (${taskId})`,
+    taskId,
     contextArtifact: {
       path: normalizeRelative(projectPath, artifact.path),
       hash: artifact.sha256,
       hashAlgorithm: "sha256"
     },
     artifactProvenance,
-    kitReadContract: readContractFromKit(contract, activeTaskId),
+    kitReadContract: readContractFromKit(contract, taskId),
     freshnessWarnings,
     validationCommands: artifact.pack.validationCommands ?? [],
-    warnings: [...kit.warnings, ...bridge.warnings, ...freshnessWarnings]
+    warnings: [...input.authorityWarnings, ...freshnessWarnings]
   };
 }
 

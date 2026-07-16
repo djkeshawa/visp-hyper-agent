@@ -4,11 +4,22 @@ import { isAbsolute, join } from "node:path";
 import type { ZodType, ZodTypeDef } from "zod";
 import { execFileResolved } from "../core/executable-resolver.js";
 import {
+  classifyKitAvailability,
+  type KitAvailability,
+  type KitStatusProbeOutcome
+} from "./kit-availability.js";
+import {
+  unsupportedIntegrationContractWarning,
+  unsupportedWorkflowActionWarning
+} from "./kit-contract-compat.js";
+import {
   kitBudgetResultSchema,
+  kitAuthoritativeContextPackSchema,
   kitContextPackSchema,
   kitGateResultSchema,
   kitIntegrationContractSchema,
   kitNextSchema,
+  kitPolicyValidationResultSchema,
   kitReconcileSummarySchema,
   kitReviewSummarySchema,
   kitStatusSchema,
@@ -19,12 +30,15 @@ import {
   type KitGateResult,
   type KitIntegrationContract,
   type KitNext,
+  type KitPolicyValidationResult,
   type KitReconcileSummary,
   type KitReviewSummary,
   type KitStatus,
-  type KitVerifySummary
-  ,type WorkflowActionV2
+  type KitVerifySummary,
+  type WorkflowActionV2
 } from "./kit-schemas.js";
+
+export type { KitAvailability } from "./kit-availability.js";
 
 // Schemas with `.transform()` have a different input than output type; allow any input.
 type OutputSchema<T> = ZodType<T, ZodTypeDef, unknown>;
@@ -32,14 +46,30 @@ type OutputSchema<T> = ZodType<T, ZodTypeDef, unknown>;
 const DEFAULT_BINARY = "visp";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-export type KitAvailability =
-  | { available: true; status: KitStatus; warnings: string[] }
-  | { available: false; reason: string; warnings: string[] };
-
 interface RunResult {
   exitCode: number;
   stdout: string;
 }
+
+type CommandFailureCode = "binary_not_found" | "command_timeout" | "command_failed";
+
+type CommandOutcome =
+  | { ok: true; value: RunResult }
+  | { ok: false; reasonCode: CommandFailureCode; reason: string };
+
+export type KitBridgeDiagnosticReasonCode =
+  | "integration_contract_unavailable"
+  | "unsupported_integration_contract"
+  | "strict_next_unavailable"
+  | "unsupported_workflow_action";
+
+export type KitBridgeDiagnostic<T> =
+  | { ok: true; value: T }
+  | {
+      ok: false;
+      reasonCode: KitBridgeDiagnosticReasonCode;
+      reason: string;
+    };
 
 export type KitContextPackArtifact = {
   pack: KitContextPack;
@@ -57,35 +87,45 @@ export async function detectVisp(
 ): Promise<KitAvailability> {
   const binary = options.binary ?? DEFAULT_BINARY;
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const warnings: string[] = [];
+  const signalProbe = await probeKitArtifacts(projectPath);
+  const hasKitSignals = signalProbe.state !== "absent";
 
   // `visp status` reports initialized=true for ANY .visp/ directory — including
   // the .visp/hyper/ tree visp-hyper's own init creates. Require a kit-owned
   // artifact on disk before trusting the probe at all.
-  if (!(await hasKitArtifacts(projectPath))) {
-    const reason = "no visp kit artifacts found (.visp/policy.json or .visp/project.json).";
-    return { available: false, reason, warnings: [reason] };
+  if (!hasKitSignals) {
+    return classifyKitAvailability({ hasKitSignals: false });
   }
 
-  const result = await runCommand(binary, ["status", "--json"], projectPath, timeout, warnings);
-  if (!result) {
-    return { available: false, reason: warnings[warnings.length - 1] ?? "visp is unavailable.", warnings };
+  if (signalProbe.state === "unknown") {
+    return classifyKitAvailability({
+      hasKitSignals: true,
+      probe: {
+        kind: "failed",
+        reasonCode: "kit_signal_probe_failed",
+        reason: signalProbe.reason
+      }
+    });
   }
 
-  const status = parseJson(result.stdout, kitStatusSchema);
-  if (!status) {
-    const reason = "visp status output could not be parsed as kit status JSON.";
-    warnings.push(reason);
-    return { available: false, reason, warnings };
+  const result = await runCommand(binary, ["status", "--json"], projectPath, timeout);
+  let probe: KitStatusProbeOutcome;
+  if (!result.ok) {
+    const reasonCode =
+      result.reasonCode === "binary_not_found"
+        ? "binary_not_found"
+        : result.reasonCode === "command_timeout"
+          ? "status_timeout"
+          : "status_command_failed";
+    probe = { kind: "failed", reasonCode, reason: result.reason };
+  } else {
+    // Never accept or even parse healthy-looking JSON from a failed command.
+    const status =
+      result.value.exitCode === 0 ? parseJson(result.value.stdout, kitStatusSchema) : null;
+    probe = { kind: "completed", exitCode: result.value.exitCode, status };
   }
 
-  if (!status.initialized) {
-    const reason = "visp kit is not initialized for this project.";
-    warnings.push(reason);
-    return { available: false, reason, warnings };
-  }
-
-  return { available: true, status, warnings };
+  return classifyKitAvailability({ hasKitSignals, probe });
 }
 
 export class KitCommandBridge {
@@ -105,41 +145,107 @@ export class KitCommandBridge {
     return this.invoke(["status"], kitStatusSchema);
   }
 
-  async policyValidate(): Promise<{ success: boolean; errors: string[] } | null> {
+  async policyValidate(): Promise<KitPolicyValidationResult | null> {
     const result = await this.run(["policy", "validate"]);
     if (!result) {
       return null;
     }
-    const parsed = parseUnknownJson(result.stdout);
-    if (parsed === undefined || typeof parsed !== "object" || parsed === null) {
-      this.warnings.push("visp policy validate output could not be parsed as JSON.");
+    const policy = parseJson(result.stdout, kitPolicyValidationResultSchema);
+    if (!policy) {
+      this.warnings.push("visp policy validate output did not match the expected schema.");
       return null;
     }
-    const record = parsed as Record<string, unknown>;
-    const success = record.success === true;
-    const errors = Array.isArray(record.errors)
-      ? record.errors.filter((entry): entry is string => typeof entry === "string")
-      : [];
-    return { success, errors };
+    if (policy.success !== policy.validation.passed) {
+      this.warnings.push(
+        `visp policy validate reported contradictory success=${policy.success} and validation.passed=${policy.validation.passed}.`
+      );
+      return null;
+    }
+    if (result.exitCode !== 0 && policy.success) {
+      this.warnings.push(
+        `visp policy validate exited with code ${result.exitCode} while reporting success=true.`
+      );
+      return null;
+    }
+    return policy;
   }
 
   async gate(stage: string, taskId?: string): Promise<KitGateResult | null> {
     const args = taskId ? ["gate", stage, "--task", taskId] : ["gate", stage];
-    // Gates legitimately exit non-zero when blocked; treat a parseable body as success.
-    return this.invoke(args, kitGateResultSchema, { allowNonZeroExit: true });
+    const result = await this.run(args);
+    if (!result) {
+      return null;
+    }
+    const gate = parseJson(result.stdout, kitGateResultSchema);
+    if (!gate) {
+      this.warnings.push(`visp ${args.join(" ")} output could not be parsed against the expected schema.`);
+      return null;
+    }
+    if (gate.stage !== stage) {
+      this.warnings.push(
+        `visp ${args.join(" ")} reported stage=${gate.stage}; expected stage=${stage}.`
+      );
+      return null;
+    }
+    if (taskId && gate.taskId !== taskId) {
+      this.warnings.push(
+        `visp ${args.join(" ")} reported taskId=${gate.taskId ?? "null"}; expected taskId=${taskId}.`
+      );
+      return null;
+    }
+    if (gate.success !== gate.allowed) {
+      this.warnings.push(
+        `visp ${args.join(" ")} reported contradictory success=${gate.success} and allowed=${gate.allowed}.`
+      );
+      return null;
+    }
+    // Kit exits non-zero for authoritative blocked gates. It must never pair a
+    // failed process with an allowed result.
+    if (result.exitCode !== 0 && gate.allowed) {
+      this.warnings.push(
+        `visp ${args.join(" ")} exited with code ${result.exitCode} while reporting allowed=true.`
+      );
+      return null;
+    }
+    return gate;
   }
 
   async gateImplement(taskId?: string): Promise<KitGateResult | null> {
     return this.gate("implement", taskId);
   }
 
-  async readContextPack(taskId: string): Promise<KitContextPack | null> {
-    return (await this.readContextPackArtifact(taskId))?.pack ?? null;
+  async readContextPack(
+    taskId: string,
+    contract?: KitIntegrationContract
+  ): Promise<KitContextPack | null> {
+    return (await this.readContextPackArtifact(taskId, contract))?.pack ?? null;
   }
 
-  async readContextPackArtifact(taskId: string): Promise<KitContextPackArtifact | null> {
-    const status = await this.status();
-    const candidates = await this.contextPackPaths(taskId, status);
+  async readContextPackArtifact(
+    taskId: string,
+    contract?: KitIntegrationContract
+  ): Promise<KitContextPackArtifact | null> {
+    return this.readContextPackArtifactWithSchema(taskId, contract, kitContextPackSchema);
+  }
+
+  async readAuthoritativeContextPackArtifact(
+    taskId: string,
+    contract: KitIntegrationContract
+  ): Promise<KitContextPackArtifact | null> {
+    return this.readContextPackArtifactWithSchema(
+      taskId,
+      contract,
+      kitAuthoritativeContextPackSchema
+    );
+  }
+
+  private async readContextPackArtifactWithSchema<T extends KitContextPack>(
+    taskId: string,
+    contract: KitIntegrationContract | undefined,
+    schema: OutputSchema<T>
+  ): Promise<KitContextPackArtifact | null> {
+    const status = contract ? null : await this.status();
+    const candidates = await this.contextPackPaths(taskId, status, contract);
     for (const candidate of candidates) {
       let raw: string;
       try {
@@ -147,15 +253,19 @@ export class KitCommandBridge {
       } catch {
         continue;
       }
-      const parsed = parseJson(raw, kitContextPackSchema);
-      if (parsed) {
+      const parsed = parseJson(raw, schema);
+      if (parsed && parsed.taskId === taskId) {
         return {
           pack: parsed,
           path: candidate,
           sha256: hashText(raw)
         };
       }
-      this.warnings.push(`Context pack at ${candidate} could not be parsed as JSON.`);
+      this.warnings.push(
+        parsed
+          ? `Context pack at ${candidate} reported taskId=${parsed.taskId}; expected ${taskId}.`
+          : `Context pack at ${candidate} could not be parsed as JSON.`
+      );
       return null;
     }
     this.warnings.push(`No context pack found for task ${taskId}.`);
@@ -208,16 +318,79 @@ export class KitCommandBridge {
   }
 
   async nextAction(): Promise<WorkflowActionV2 | null> {
-    return this.invoke(["next", "--format", "json"], workflowActionV2Schema, { allowNonZeroExit: true });
+    const result = await this.nextActionDiagnostic();
+    return result.ok ? result.value : null;
+  }
+
+  async nextActionDiagnostic(): Promise<KitBridgeDiagnostic<WorkflowActionV2>> {
+    const args = ["next", "--format", "json"];
+    const result = await this.run(args);
+    if (!result) {
+      return diagnosticFailure(
+        "strict_next_unavailable",
+        this.warnings[this.warnings.length - 1] ?? "Kit strict next action is unavailable."
+      );
+    }
+    const payload = parseUnknownJson(result.stdout);
+    const unsupported = unsupportedWorkflowActionWarning(payload);
+    if (unsupported) {
+      this.warnings.push(unsupported);
+      return diagnosticFailure("unsupported_workflow_action", unsupported);
+    }
+    const action = payload === undefined ? null : parseData(payload, workflowActionV2Schema);
+    if (!action) {
+      const reason = `visp ${args.join(" ")} output could not be parsed against the expected schema.`;
+      this.warnings.push(reason);
+      return diagnosticFailure("strict_next_unavailable", reason);
+    }
+    // Kit intentionally exits non-zero for authoritative blocked/inconclusive
+    // actions. A non-zero process must never authorize a ready action, though:
+    // process failure and permission cannot be reconciled safely.
+    if (result.exitCode !== 0 && action.verdict === "ready") {
+      const reason = `visp ${args.join(" ")} exited with code ${result.exitCode} while reporting verdict=ready.`;
+      this.warnings.push(reason);
+      return diagnosticFailure("strict_next_unavailable", reason);
+    }
+    return { ok: true, value: action };
   }
 
   async integrationContract(options: { quiet?: boolean } = {}): Promise<KitIntegrationContract | null> {
     const warningStart = this.warnings.length;
-    const result = await this.invoke(["integration", "contract"], kitIntegrationContractSchema);
-    if (!result && options.quiet) {
+    const result = await this.integrationContractDiagnostic();
+    if (!result.ok && options.quiet) {
       this.warnings.splice(warningStart);
     }
-    return result;
+    return result.ok ? result.value : null;
+  }
+
+  async integrationContractDiagnostic(): Promise<KitBridgeDiagnostic<KitIntegrationContract>> {
+    const args = ["integration", "contract"];
+    const result = await this.run(args);
+    if (!result) {
+      return diagnosticFailure(
+        "integration_contract_unavailable",
+        this.warnings[this.warnings.length - 1] ?? "Kit integration contract is unavailable."
+      );
+    }
+    if (result.exitCode !== 0) {
+      const reason = `visp ${args.join(" ")} exited with code ${result.exitCode}.`;
+      this.warnings.push(reason);
+      return diagnosticFailure("integration_contract_unavailable", reason);
+    }
+
+    const payload = parseUnknownJson(result.stdout);
+    const unsupported = unsupportedIntegrationContractWarning(payload);
+    if (unsupported) {
+      this.warnings.push(unsupported);
+      return diagnosticFailure("unsupported_integration_contract", unsupported);
+    }
+    const contract = payload === undefined ? null : parseData(payload, kitIntegrationContractSchema);
+    if (!contract) {
+      const reason = `visp ${args.join(" ")} output could not be parsed against the expected schema.`;
+      this.warnings.push(reason);
+      return diagnosticFailure("integration_contract_unavailable", reason);
+    }
+    return { ok: true, value: contract };
   }
 
   /**
@@ -264,15 +437,32 @@ export class KitCommandBridge {
   }
 
   private async run(args: string[]): Promise<RunResult | null> {
-    return runCommand(this.binary, [...args, "--json"], this.projectPath, this.timeoutMs, this.warnings);
+    const result = await runCommand(
+      this.binary,
+      [...args, "--json"],
+      this.projectPath,
+      this.timeoutMs
+    );
+    if (!result.ok) {
+      this.warnings.push(result.reason);
+      return null;
+    }
+    return result.value;
   }
 
-  private async contextPackPaths(taskId: string, status: KitStatus | null): Promise<string[]> {
+  private async contextPackPaths(
+    taskId: string,
+    status: KitStatus | null,
+    pinnedContract?: KitIntegrationContract
+  ): Promise<string[]> {
     const paths: string[] = [];
-    const contract = await this.integrationContract({ quiet: true });
+    const contract = pinnedContract ?? (await this.integrationContract({ quiet: true }));
     const contractPath = contract?.activeTask?.id === taskId ? contract.artifacts.contextPack : undefined;
     if (contractPath && !contractPath.includes("<")) {
       paths.push(isAbsolute(contractPath) ? contractPath : join(this.projectPath, contractPath));
+    }
+    if (pinnedContract) {
+      return paths;
     }
     const featureRoot = join(this.projectPath, ".visp", "features");
     if (status?.activeFeature) {
@@ -305,15 +495,56 @@ export class KitCommandBridge {
  * .visp/hyper tree visp-hyper creates), so this is the real-kit signal.
  */
 export async function hasKitArtifacts(projectPath: string): Promise<boolean> {
-  for (const artifact of ["policy.json", "project.json"]) {
+  return (await probeKitArtifacts(projectPath)).state !== "absent";
+}
+
+type KitArtifactProbe =
+  | { state: "present" }
+  | { state: "absent" }
+  | { state: "unknown"; reason: string };
+
+/**
+ * Probe durable Kit-owned sentinels without treating Hyper's own `.visp/hyper`,
+ * shared `.visp/memory`, or shared `.visp/prompts` trees as Kit authority.
+ * Residual feature/config/state artifacts still mean the project is configured;
+ * deleting one policy file must not silently enable local fallback.
+ */
+async function probeKitArtifacts(projectPath: string): Promise<KitArtifactProbe> {
+  const artifacts = [
+    "policy.json",
+    "project.json",
+    "config.json",
+    "status.json",
+    "overrides.json",
+    "workflow.json",
+    "budget.json",
+    "features",
+    "agent",
+    "cache",
+    "reports",
+    "runs",
+    "presets",
+    "state",
+    "hooks"
+  ];
+  for (const artifact of artifacts) {
     try {
       await stat(join(projectPath, ".visp", artifact));
-      return true;
-    } catch {
-      // keep probing
+      return { state: "present" };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        continue;
+      }
+      return {
+        state: "unknown",
+        reason: `Could not determine whether Kit signal .visp/${artifact} exists: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      };
     }
   }
-  return false;
+  return { state: "absent" };
 }
 
 function withTask(args: string[], taskId?: string): string[] {
@@ -330,31 +561,42 @@ async function runCommand(
   binary: string,
   args: string[],
   cwd: string,
-  timeout: number,
-  warnings: string[]
-): Promise<RunResult | null> {
+  timeout: number
+): Promise<CommandOutcome> {
   try {
     const { stdout } = await execFileResolved(binary, args, { cwd, timeout });
-    return { exitCode: 0, stdout };
+    return { ok: true, value: { exitCode: 0, stdout } };
   } catch (error) {
     const failure = error as NodeJS.ErrnoException & { code?: string | number; stdout?: string; killed?: boolean; signal?: string };
 
     if (failure.code === "ENOENT" || failure.code === "EINVAL") {
-      warnings.push(`visp binary "${binary}" was not found.`);
-      return null;
+      return {
+        ok: false,
+        reasonCode: "binary_not_found",
+        reason: `visp binary "${binary}" was not found.`
+      };
     }
     if (failure.killed || failure.signal === "SIGTERM") {
-      warnings.push(`visp ${args.join(" ")} timed out after ${timeout}ms.`);
-      return null;
+      return {
+        ok: false,
+        reasonCode: "command_timeout",
+        reason: `visp ${args.join(" ")} timed out after ${timeout}ms.`
+      };
     }
 
     // Non-zero exit: surface stdout so callers can still parse a JSON body.
     if (typeof failure.code === "number") {
-      return { exitCode: failure.code, stdout: failure.stdout ?? "" };
+      return {
+        ok: true,
+        value: { exitCode: failure.code, stdout: failure.stdout ?? "" }
+      };
     }
 
-    warnings.push(`visp ${args.join(" ")} failed: ${failure.message ?? String(error)}`);
-    return null;
+    return {
+      ok: false,
+      reasonCode: "command_failed",
+      reason: `visp ${args.join(" ")} failed: ${failure.message ?? String(error)}`
+    };
   }
 }
 
@@ -371,8 +613,19 @@ function parseJson<T>(stdout: string, schema: OutputSchema<T>): T | null {
   if (data === undefined) {
     return null;
   }
+  return parseData(data, schema);
+}
+
+function parseData<T>(data: unknown, schema: OutputSchema<T>): T | null {
   const result = schema.safeParse(data);
   return result.success ? result.data : null;
+}
+
+function diagnosticFailure(
+  reasonCode: KitBridgeDiagnosticReasonCode,
+  reason: string
+): KitBridgeDiagnostic<never> {
+  return { ok: false, reasonCode, reason };
 }
 
 function hashText(value: string): string {

@@ -60,11 +60,11 @@ function prependToPath(dir: string): void {
   process.env.PATH = `${dir}${process.platform === "win32" ? ";" : ":"}${originalPath ?? ""}`;
 }
 
-function kit13ReadContract(projectPath: string) {
+function kit20ReadContract(projectPath: string) {
   return {
     stdout: {
       success: true,
-      contractVersion: "1.3",
+      contractVersion: "2.0",
       kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.3" },
       targetPath: projectPath,
       initialized: true,
@@ -144,7 +144,7 @@ describe("kit context-pack adoption in start", () => {
           activeTask: { id: "T009", title: "Adopt context pack", status: "ready" }
         }
       },
-      integration: kit13ReadContract(projectPath)
+      integration: kit20ReadContract(projectPath)
     });
     prependToPath(dirname(shim.binary));
 
@@ -187,7 +187,7 @@ describe("kit context-pack adoption in start", () => {
       }
     ]);
     expect(manifest.kitReadContract).toMatchObject({
-      contractVersion: "1.3",
+      contractVersion: "2.0",
       readContractVersion: "0.1",
       freshnessPolicy: {
         contextPackHashPinned: true,

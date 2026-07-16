@@ -4,7 +4,11 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
-import { createVispShim } from "./helpers/visp-shim.js";
+import {
+  createVispShim,
+  gateResultFixture,
+  policyValidateFixture
+} from "./helpers/visp-shim.js";
 
 const originalPath = process.env.PATH;
 
@@ -57,13 +61,13 @@ function kitReadContractArtifacts(): Array<Record<string, unknown>> {
   ];
 }
 
-function kit13IntegrationContract(
+function kit20IntegrationContract(
   projectPath: string,
   requiredArtifacts: Array<Record<string, unknown>> = kitReadContractArtifacts()
 ): Record<string, unknown> {
   return {
     success: true,
-    contractVersion: "1.3",
+    contractVersion: "2.0",
     kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
     targetPath: projectPath,
     initialized: true,
@@ -117,7 +121,7 @@ async function writeActiveKitReadContract(projectPath: string): Promise<void> {
       version: "0.1",
       sessionId: "vh_test",
       kitReadContract: {
-        contractVersion: "1.3",
+        contractVersion: "2.0",
         readContractVersion: "0.1",
         requiredArtifacts: kitReadContractArtifacts(),
         freshnessPolicy: {
@@ -171,10 +175,16 @@ describe("doctor command", () => {
         }
       },
       integration: {
-        stdout: kit13IntegrationContract(projectPath)
+        stdout: kit20IntegrationContract(projectPath)
       },
-      policy: { stdout: { success: true, errors: [] } },
-      gate: { stdout: { success: true, stage: "next", allowed: true, failedRules: [] } }
+      policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+      gate: {
+        stdout: gateResultFixture({
+          targetPath: projectPath,
+          stage: "next",
+          feature: { id: "001", slug: "demo" }
+        })
+      }
     });
     prependToPath(dirname(shim.binary));
 
@@ -221,10 +231,16 @@ describe("doctor command", () => {
         }
       },
       integration: {
-        stdout: kit13IntegrationContract(projectPath, kitReadContractArtifacts().slice(0, 1))
+        stdout: kit20IntegrationContract(projectPath, kitReadContractArtifacts().slice(0, 1))
       },
-      policy: { stdout: { success: true, errors: [] } },
-      gate: { stdout: { success: true, stage: "next", allowed: true, failedRules: [] } }
+      policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+      gate: {
+        stdout: gateResultFixture({
+          targetPath: projectPath,
+          stage: "next",
+          feature: { id: "001", slug: "demo" }
+        })
+      }
     });
     prependToPath(dirname(shim.binary));
 
@@ -257,19 +273,13 @@ describe("doctor command", () => {
       integration: {
         stdout: {
           success: true,
-          contractVersion: "1.1",
+          contractVersion: "2.0",
           kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.1" },
           targetPath: projectPath,
           initialized: true,
           activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
           activeTask: { id: "T001", title: "Demo task", status: "ready" },
           commands: {},
-          capabilities: {
-            governance: { failClosedGates: true },
-            contextGrounding: { taskScopedContextPacks: true },
-            evidence: { verification: true, review: true, reconciliation: true },
-            enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
-          },
           workflow: {
             freshnessChecks: [".visp/features/<feature>/context/<task-id>.context.json"]
           },
@@ -286,8 +296,14 @@ describe("doctor command", () => {
           warnings: []
         }
       },
-      policy: { stdout: { success: true, errors: [] } },
-      gate: { stdout: { success: true, stage: "next", allowed: true, failedRules: [] } }
+      policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+      gate: {
+        stdout: gateResultFixture({
+          targetPath: projectPath,
+          stage: "next",
+          feature: { id: "001", slug: "demo" }
+        })
+      }
     });
     prependToPath(dirname(shim.binary));
 
@@ -302,7 +318,7 @@ describe("doctor command", () => {
     expect(summary.success).toBe(true);
     expect(contract?.status).toBe("warn");
     expect(contract?.detail).toContain("does not advertise provenance freshness");
-    expect(summary.nextCommand).toContain("contract 1.2 provenance freshness");
+    expect(summary.nextCommand).toContain("provenance freshness");
   });
 
   it("warns, but does not fail, when the strict Kit backend is absent", async () => {
