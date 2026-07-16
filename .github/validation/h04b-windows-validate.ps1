@@ -31,6 +31,33 @@ function Get-LowerHash([string] $Path, [string] $Algorithm) {
   return (Get-FileHash -LiteralPath $Path -Algorithm $Algorithm).Hash.ToLowerInvariant()
 }
 
+function Get-GitBlobHash([string] $Path, [string] $Algorithm) {
+  $tempPath = Join-Path $RunnerTemp ("h04b-git-blob-" + [Guid]::NewGuid().ToString("N"))
+  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = "git"
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  foreach ($argument in @("cat-file", "blob", ("{0}:{1}" -f $env:PR_HEAD_SHA, $Path))) { [void]$startInfo.ArgumentList.Add($argument) }
+  $process = [System.Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  try {
+    if (-not $process.Start()) { throw "Could not start git cat-file for $Path." }
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $output = [System.IO.File]::Create($tempPath)
+    try { $process.StandardOutput.BaseStream.CopyTo($output) }
+    finally { $output.Dispose() }
+    $process.WaitForExit()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    if ($process.ExitCode -ne 0) { throw ("git cat-file failed for {0} with exit {1}: {2}" -f $Path, $process.ExitCode, $stderr) }
+    if ($stderr.Length -ne 0) { throw ("git cat-file wrote stderr for {0}: {1}" -f $Path, $stderr) }
+    return Get-LowerHash $tempPath $Algorithm
+  } finally {
+    $process.Dispose()
+    if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force }
+  }
+}
+
 function Assert-Candidate {
   Assert-Equal $env:GITHUB_EVENT_NAME "pull_request" "event"
   Assert-Equal $env:GITHUB_BASE_REF "develop" "PR base"
@@ -39,8 +66,8 @@ function Assert-Candidate {
   Assert-Equal $env:PR_HEAD_REPOSITORY "djkeshawa/visp-hyper-agent" "head repository"
   Assert-Equal $env:PR_BASE_SHA $BaselineSha "base SHA"
 
-  git -c core.autocrlf=false checkout-index --force --all
   Assert-Equal (git rev-parse HEAD).Trim() $env:PR_HEAD_SHA "checked-out head"
+  Assert-Equal ([string]@(git status --porcelain --untracked-files=all).Count) "0" "checkout status before validation"
 
   $expectedPaths = @(
     ".github/validation/h04b-installed-mcp-validate.mjs"
@@ -66,7 +93,7 @@ function Assert-Candidate {
     "tests/mcp-server.test.ts" = "37b092c0e0272afb4eaaf9230bbfd874ac29acab1f1b1a181e8dee5e3ff791e9"
   }
   foreach ($entry in $codeHashes.GetEnumerator()) {
-    $actual = Get-LowerHash $entry.Key "SHA256"
+    $actual = Get-GitBlobHash $entry.Key "SHA256"
     Assert-Equal $actual $entry.Value "SHA256 for $($entry.Key)"
     Write-Host "candidate_sha256 $($entry.Key) $actual"
   }
@@ -87,9 +114,10 @@ function Assert-Candidate {
   Assert-Equal ([string]$forbidden.Count) "0" "forbidden Kit entries"
 
   foreach ($path in $expectedPaths[0..3]) {
-    Write-Host "temporary_sha256 $path $(Get-LowerHash $path 'SHA256')"
+    $actual = if ($path -eq $kitPath) { Get-LowerHash $path "SHA256" } else { Get-GitBlobHash $path "SHA256" }
+    Write-Host "temporary_sha256 $path $actual"
   }
-  Assert-Equal ([string]@(git status --porcelain --untracked-files=all).Count) "0" "checkout status"
+  Assert-Equal ([string]@(git status --porcelain --untracked-files=all).Count) "0" "checkout status after validation"
   Write-Host "kit_artifact size=$KitSize sha1=$KitSha1 sha256=$KitSha256 entries=39"
 }
 
