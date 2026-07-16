@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { deriveOutputStatus } from "./output-status.js";
 
 /**
  * A single MCP tool advertised over `tools/list` and invocable via `tools/call`.
@@ -99,19 +100,11 @@ function structuredContentFor(
   return {
     tool: toolName,
     isError: execution.isError,
-    status: extractStatus(execution.text, execution.isError),
+    status: deriveOutputStatus(execution.text, execution.isError),
     frames: extractFrames(execution.text),
     resourceUris: extractResourceUris(execution.text),
     text: execution.text
   };
-}
-
-function extractStatus(text: string, isError: boolean): string {
-  const status = text.match(/\bstatus:\s*([A-Z_]+)/iu)?.[1];
-  if (status) {
-    return status.toUpperCase();
-  }
-  return isError ? "ERROR" : "OK";
 }
 
 function extractFrames(text: string): Array<{ name: string; boundary: "begin" | "end" }> {
