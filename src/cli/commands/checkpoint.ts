@@ -4,9 +4,13 @@ import { execFileResolved } from "../../core/executable-resolver.js";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
-import type { KitReconcileSummary, KitReviewSummary, KitVerifySummary } from "../../kit/kit-schemas.js";
 import { recordFailurePattern } from "../../memory/failure-patterns.js";
 import { createCheckpointSnapshot, writeCheckpointSnapshot } from "../../quality/checkpoint-snapshot.js";
+import {
+  aggregateKitCheckpointEvidence,
+  renderKitCheckpointEvidence,
+  unavailableKitCheckpointEvidence
+} from "../../quality/kit-checkpoint-evidence.js";
 import { collectLocalEvidence } from "../../quality/local-evidence.js";
 import { harvestSkillProposals } from "./remember.js";
 import {
@@ -26,7 +30,7 @@ import { readRoutingState, updateRoutingState } from "../../routing/routing-stat
 import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
 import { printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 import { collectChangedFiles } from "../../governance/scope-guard.js";
-import type { AssuranceLevel, EvidenceVerdict } from "../../core/types.js";
+import type { EvidenceVerdict } from "../../core/types.js";
 
 // Default tier recorded in telemetry when the orchestrator does not report
 // which tier actually executed the task via `--tier`.
@@ -44,14 +48,35 @@ export function checkpointCommand(): Command {
         throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
       }
 
-      await writeCheckpointMarkdown(projectPath, session.id, session.goal, options.task);
-
       if (!options.task) {
+        await writeCheckpointMarkdown(projectPath, session.id, session.goal);
         console.log("Checkpoint written to .visp/hyper/current/checkpoints.md");
         return;
       }
 
       const taskId = options.task;
+      const [kit, contextFreshness] = await Promise.all([
+        detectVisp(projectPath),
+        checkContextFreshness(projectPath)
+      ]);
+      if (kit.state === "configured-unhealthy") {
+        printWarnings(kit.warnings);
+        console.log(
+          renderKitCheckpointEvidence({
+            taskId,
+            evidence: unavailableKitCheckpointEvidence({
+              reasonCode: kit.reasonCode,
+              reason: kit.reason
+            }),
+            contextFreshness: contextFreshness.status,
+            warnings: contextFreshness.warnings
+          })
+        );
+        return;
+      }
+
+      await writeCheckpointMarkdown(projectPath, session.id, session.goal, taskId);
+
       const currentTaskId = session.pipeline?.currentTaskId;
       if (currentTaskId !== taskId) {
         console.log(
@@ -86,81 +111,71 @@ export function checkpointCommand(): Command {
 
       const task = currentTask(graph, session.pipeline!);
       const taskClass = task?.riskLevel ?? "unknown";
-      const contextFreshness = await checkContextFreshness(projectPath);
 
-      const kit = await detectVisp(projectPath);
-      let verifyPassed: boolean;
-      let reviewPassed: boolean;
-      let verifyVerdict: EvidenceVerdict;
-      let reviewVerdict: EvidenceVerdict;
-      let reconcileVerdict: EvidenceVerdict | undefined;
-      let assuranceLevel: AssuranceLevel;
-      let evidenceSource: "kit" | "local";
-      let localFindings: string[] = [];
-      let failureFindings: string[] = [];
-
-      if (kit.available) {
+      if (kit.state === "healthy") {
         const bridge = new KitCommandBridge({ projectPath });
         const verify = await bridge.verify(taskId);
         const review = await bridge.review(taskId);
-        verifyPassed = verify?.success === true;
-        reviewPassed = review?.success === true;
-        verifyVerdict = verify === null ? "inconclusive" : verify.success ? "passed" : "failed";
-        reviewVerdict = review === null ? "inconclusive" : review.success ? "passed" : "failed";
-        assuranceLevel = "kit_strict";
-        evidenceSource = "kit";
-        failureFindings = [
-          ...summaryFindings("verify", verify),
-          ...summaryFindings("review", review)
-        ];
+        const blockingFindings =
+          contextFreshness.blocking && contextFreshness.finding
+            ? [contextFreshness.finding]
+            : [];
+        const preReconcileEvidence = aggregateKitCheckpointEvidence({
+          verify,
+          review,
+          blockingFindings
+        });
+        let reconcile: Awaited<ReturnType<KitCommandBridge["reconcile"]>> | undefined;
 
         // Kit's integration contract defines the checkpoint sequence as
-        // [verify, review, reconcile]. Only run reconcile once verify+review
-        // have passed (a failed checkpoint blocks regardless). A parsed
-        // reconcile result with success:false is a reconcile GATE BLOCK and must
-        // fail the checkpoint; a null result means reconcile was unavailable or
-        // unparseable — that degrades with a warning (kit-unavailable contract),
-        // never a hard block.
-        if (verifyVerdict === "passed" && reviewVerdict === "passed") {
-          const reconcile = await bridge.reconcile(taskId);
-          if (reconcile === null) {
-            bridge.warnings.push(
-              "reconcile evidence was unavailable or unparseable; checkpoint is inconclusive."
-            );
-            reconcileVerdict = "inconclusive";
-            reviewPassed = false;
-          } else if (reconcile.success !== true) {
-            reconcileVerdict = "failed";
-            reviewPassed = false;
-            failureFindings = [...failureFindings, ...summaryFindings("reconcile", reconcile)];
-          } else {
-            reconcileVerdict = "passed";
-          }
+        // [verify, review, reconcile]. Reconcile updates traceability, so it may
+        // run only after coherent verify/review passes on a current context.
+        if (
+          !contextFreshness.blocking &&
+          preReconcileEvidence.verifyVerdict === "passed" &&
+          preReconcileEvidence.reviewVerdict === "passed"
+        ) {
+          reconcile = await bridge.reconcile(taskId);
         }
 
         printWarnings(bridge.warnings);
-      } else {
-        const config = await readConfig(projectPath);
-        const evidence = await collectLocalEvidence({
-          projectPath,
-          task: {
-            id: taskId,
-            allowedFiles: task?.allowedFiles,
-            validationCommands: task?.validationCommands
-          },
-          blockedPaths: config.blockedPaths,
-          configValidationCommands: config.validationCommands
-        });
-        verifyPassed = evidence.verifyPassed;
-        reviewPassed = evidence.reviewPassed;
-        verifyVerdict = evidence.verifyVerdict;
-        reviewVerdict = evidence.reviewVerdict;
-        assuranceLevel = evidence.assuranceLevel;
-        localFindings = evidence.findings;
-        evidenceSource = "local";
-        failureFindings = localFindings;
-        printWarnings([...kit.warnings, ...evidence.warnings]);
+        console.log(
+          renderKitCheckpointEvidence({
+            taskId,
+            evidence: aggregateKitCheckpointEvidence({
+              verify,
+              review,
+              reconcile,
+              blockingFindings
+            }),
+            contextFreshness: contextFreshness.status,
+            warnings: contextFreshness.warnings
+          })
+        );
+        return;
       }
+
+      // Only a genuinely Kit-absent project may use Hyper's local_checked path.
+      const localConfig = await readConfig(projectPath);
+      const evidence = await collectLocalEvidence({
+        projectPath,
+        task: {
+          id: taskId,
+          allowedFiles: task?.allowedFiles,
+          validationCommands: task?.validationCommands
+        },
+        blockedPaths: localConfig.blockedPaths,
+        configValidationCommands: localConfig.validationCommands
+      });
+      const verifyPassed = evidence.verifyPassed;
+      let reviewPassed = evidence.reviewPassed;
+      const verifyVerdict = evidence.verifyVerdict;
+      let reviewVerdict = evidence.reviewVerdict;
+      const assuranceLevel = evidence.assuranceLevel;
+      let localFindings = evidence.findings;
+      const evidenceSource = "local" as const;
+      let failureFindings = localFindings;
+      printWarnings([...kit.warnings, ...evidence.warnings]);
       if (contextFreshness.blocking) {
         reviewPassed = false;
         reviewVerdict = "failed";
@@ -168,14 +183,12 @@ export function checkpointCommand(): Command {
           ...failureFindings,
           contextFreshness.finding ?? "context freshness check failed"
         ];
-        if (evidenceSource === "local") {
-          localFindings = [...localFindings, contextFreshness.finding ?? "context freshness check failed"];
-        }
+        localFindings = [...localFindings, contextFreshness.finding ?? "context freshness check failed"];
       }
 
-      const verdict: EvidenceVerdict = verifyVerdict === "failed" || reviewVerdict === "failed" || reconcileVerdict === "failed"
+      const verdict: EvidenceVerdict = verifyVerdict === "failed" || reviewVerdict === "failed"
         ? "failed"
-        : verifyVerdict === "inconclusive" || reviewVerdict === "inconclusive" || reconcileVerdict === "inconclusive"
+        : verifyVerdict === "inconclusive" || reviewVerdict === "inconclusive"
           ? "inconclusive"
           : "passed";
       const passed = verdict === "passed";
@@ -327,40 +340,6 @@ export function checkpointCommand(): Command {
         console.log(line);
       }
     });
-}
-
-function summaryFindings(
-  label: "verify" | "review" | "reconcile",
-  summary: KitVerifySummary | KitReviewSummary | KitReconcileSummary | null
-): string[] {
-  if (!summary) {
-    return [`${label} evidence was unavailable or unparseable`];
-  }
-  if (summary.success) {
-    return [];
-  }
-  const findings = [
-    `${label} failed`,
-    ...(summary.errors ?? []).map((entry) => `${label} error: ${entry}`),
-    ...(summary.warnings ?? []).map((entry) => `${label} warning: ${entry}`),
-    ...(summary.findings ?? []).map((entry) => `${label} finding: ${stringifyFinding(entry)}`)
-  ];
-  return [...new Set(findings.filter((entry) => entry.trim().length > 0))];
-}
-
-function stringifyFinding(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    for (const key of ["title", "message", "description", "summary"]) {
-      if (typeof record[key] === "string") {
-        return record[key];
-      }
-    }
-  }
-  return JSON.stringify(value) ?? String(value);
 }
 
 async function writeCheckpointMarkdown(

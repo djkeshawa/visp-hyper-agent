@@ -14,7 +14,6 @@ import {
   escalate
 } from "../src/routing/routing-engine.js";
 import type { RoutingState } from "../src/routing/routing-state.js";
-import { writeRoutingState } from "../src/routing/routing-state.js";
 import {
   authoritativeContextPackFixture,
   authoritativeTaskGraphFixture,
@@ -23,6 +22,7 @@ import {
   policyValidateFixture,
   type ShimSpec
 } from "./helpers/visp-shim.js";
+import { toolOnlyPath } from "./helpers/tool-path.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -126,6 +126,29 @@ async function readTelemetryFile(projectPath: string): Promise<any> {
   return JSON.parse(await readFile(join(projectPath, ".visp", "hyper", "telemetry.json"), "utf8"));
 }
 
+async function startLocalQuick(projectPath: string, exitCode: number): Promise<void> {
+  await writeFile(
+    join(projectPath, "package.json"),
+    JSON.stringify({
+      name: "demo",
+      scripts: { test: `node -e "process.exit(${exitCode})"` }
+    }),
+    "utf8"
+  );
+  process.env.PATH = await toolOnlyPath(["git", "npm"]);
+  await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+  await runCli([
+    "node",
+    "visp-hyper",
+    "--project",
+    projectPath,
+    "quick",
+    "local parser cleanup",
+    "--tool",
+    "codex"
+  ]);
+}
+
 describe("telemetry store and budget round-trip", () => {
   let logs: string[];
 
@@ -203,32 +226,17 @@ describe("telemetry store and budget round-trip", () => {
     expect(after.data.attempts).toHaveLength(1);
   });
 
-  it("AC001c: checkpoint --task records a telemetry attempt with verify + taskClass", async () => {
+  it("AC001c: a local checkpoint records a telemetry attempt with verify + taskClass", async () => {
     const projectPath = await createProject();
-    await writeTaskGraph(projectPath);
-
-    const shim = await createVispShim(
-      kitStatusSpec(projectPath, {
-        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
-        ...allowedRunGates(projectPath),
-        verify: { stdout: { success: true } },
-        review: { stdout: { success: true } },
-        reconcile: { stdout: { success: true } },
-        next: { stdout: { success: true, nextCommand: "visp implement" } }
-      })
-    );
-    prependToPath(dirname(shim.binary));
-
-    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
-    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
-    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+    await startLocalQuick(projectPath, 0);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "Q001"]);
 
     const telemetry = await readTelemetryFile(projectPath);
     expect(telemetry.attempts).toHaveLength(1);
-    expect(telemetry.attempts[0].taskId).toBe("T001");
+    expect(telemetry.attempts[0].taskId).toBe("Q001");
     expect(telemetry.attempts[0].verifyPassed).toBe(true);
     expect(telemetry.attempts[0].reviewPassed).toBe(true);
-    expect(telemetry.attempts[0].taskClass).toBe("high");
+    expect(telemetry.attempts[0].taskClass).toBe("low");
     expect(telemetry.attempts[0].tier).toBe("implementer");
     expect(telemetry.attempts[0].attempt).toBe(1);
     expect(telemetry.attempts[0].firstAttempt).toBe(true);
@@ -503,7 +511,7 @@ describe("routing CLI integration", () => {
     expect(output).toContain(`suggested_tier: ${STRONGEST_TIER}`);
   });
 
-  it("AC005b: checkpoint failure quarantines its class; a separate local next renders a matching quarantine", async () => {
+  it("AC005b: configured Kit failure preserves Hyper routing; a local failure quarantines its class", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
 
@@ -520,39 +528,30 @@ describe("routing CLI integration", () => {
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
     await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
-    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+    const routingPath = join(projectPath, ".visp", "hyper", "routing.json");
+    const routingBeforeCheckpoint = await readFile(routingPath, "utf8");
 
-    const routing = await readRoutingFile(projectPath);
-    expect(routing.quarantines).toHaveLength(1);
-    expect(routing.quarantines[0].taskClass).toBe("high");
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+    const kitOutput = logs.join("\n");
+
+    expect(await readFile(routingPath, "utf8")).toBe(routingBeforeCheckpoint);
+    expect((await readTelemetry(projectPath)).data.attempts).toEqual([]);
+    expect(kitOutput).toContain("evidence_source: kit");
+    expect(kitOutput).toContain("status: FAILED");
+    expect(kitOutput).not.toContain("instruction:");
+    expect(kitOutput).not.toContain("BEGIN_VISP_ADAPTATION");
+    expect(kitOutput).not.toContain("BEGIN_VISP_TASK_ACTION");
 
     // Exercise local routing in a separate project that has never carried Kit
     // policy, project, feature, or context artifacts. Quick creates an explicit
-    // synthetic local task; its quarantine matches that task's low-risk class.
+    // synthetic local task. Its failed checkpoint owns the low-risk quarantine.
     const localProjectPath = await createProject();
-    await runCli(["node", "visp-hyper", "--project", localProjectPath, "init"]);
-    logs = [];
-    await runCli([
-      "node",
-      "visp-hyper",
-      "--project",
-      localProjectPath,
-      "quick",
-      "local parser cleanup",
-      "--tool",
-      "codex"
-    ]);
+    await startLocalQuick(localProjectPath, 2);
+    await runCli(["node", "visp-hyper", "--project", localProjectPath, "checkpoint", "--task", "Q001"]);
     const localRouting = await readRoutingFile(localProjectPath);
-    await writeRoutingState(
-      localProjectPath,
-      escalate({
-        state: localRouting,
-        taskId: "Q001",
-        taskClass: "low",
-        sessionCount: 1,
-        now: "2026-07-16T00:00:00.000Z"
-      })
-    );
+    expect(localRouting.quarantines).toHaveLength(1);
+    expect(localRouting.quarantines[0].taskClass).toBe("low");
 
     logs = [];
     await runCli(["node", "visp-hyper", "--project", localProjectPath, "next"]);
@@ -564,21 +563,7 @@ describe("routing CLI integration", () => {
 
   it("checkpoint --tier scout records tier scout in telemetry", async () => {
     const projectPath = await createProject();
-    await writeTaskGraph(projectPath);
-
-    const shim = await createVispShim(
-      kitStatusSpec(projectPath, {
-        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
-        ...allowedRunGates(projectPath),
-        verify: { stdout: { success: true } },
-        review: { stdout: { success: true } },
-        next: { stdout: { success: true, nextCommand: "visp implement" } }
-      })
-    );
-    prependToPath(dirname(shim.binary));
-
-    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
-    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+    await startLocalQuick(projectPath, 0);
     await runCli([
       "node",
       "visp-hyper",
@@ -586,7 +571,7 @@ describe("routing CLI integration", () => {
       projectPath,
       "checkpoint",
       "--task",
-      "T001",
+      "Q001",
       "--tier",
       "scout"
     ]);

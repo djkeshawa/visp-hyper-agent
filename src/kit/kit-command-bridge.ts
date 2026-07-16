@@ -273,15 +273,23 @@ export class KitCommandBridge {
   }
 
   async verify(taskId?: string): Promise<KitVerifySummary | null> {
-    return this.invoke(withTask(["verify"], taskId), kitVerifySummarySchema);
+    return this.invoke(withTask(["verify"], taskId), kitVerifySummarySchema, {
+      rejectSuccessfulNonZero: true
+    });
   }
 
   async review(taskId?: string): Promise<KitReviewSummary | null> {
-    return this.invoke(withTask(["review"], taskId), kitReviewSummarySchema);
+    return this.invoke(withTask(["review"], taskId), kitReviewSummarySchema, {
+      rejectSuccessfulNonZero: true
+    });
   }
 
   async reconcile(taskId?: string): Promise<KitReconcileSummary | null> {
-    return this.invoke(withTask(["reconcile"], taskId), kitReconcileSummarySchema);
+    return this.invoke(
+      [...withTask(["reconcile"], taskId), "--update-traceability"],
+      kitReconcileSummarySchema,
+      { rejectSuccessfulNonZero: true }
+    );
   }
 
   async recordBudget(input: {
@@ -413,16 +421,28 @@ export class KitCommandBridge {
   private async invoke<T>(
     args: string[],
     schema: OutputSchema<T>,
-    options: { allowNonZeroExit?: boolean } = {}
+    options: { allowNonZeroExit?: boolean; rejectSuccessfulNonZero?: boolean } = {}
   ): Promise<T | null> {
     const result = await this.run(args);
     if (!result) {
       return null;
     }
     if (result.exitCode !== 0 && !options.allowNonZeroExit) {
-      // A non-zero exit may still carry a valid JSON body; only warn if it does not.
+      // A non-zero exit may carry an authoritative failure body. It must never
+      // carry a trusted success for checkpoint evidence.
       const parsed = parseJson(result.stdout, schema);
       if (parsed) {
+        if (
+          options.rejectSuccessfulNonZero &&
+          typeof parsed === "object" &&
+          parsed !== null &&
+          (parsed as { success?: unknown }).success === true
+        ) {
+          this.warnings.push(
+            `visp ${args.join(" ")} exited with code ${result.exitCode} while reporting success=true.`
+          );
+          return null;
+        }
         return parsed;
       }
       this.warnings.push(`visp ${args.join(" ")} exited with code ${result.exitCode}.`);

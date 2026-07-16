@@ -249,7 +249,7 @@ describe("checkpoint --task local evidence integration", () => {
     );
   }
 
-  async function injectPipeline(projectPath: string): Promise<void> {
+  async function injectPipeline(projectPath: string, validationCommands?: string[]): Promise<void> {
     const statePath = join(projectPath, ".visp", "hyper", "state.json");
     const state = JSON.parse(await readFile(statePath, "utf8"));
     const sessionId = state.activeSessionId;
@@ -257,7 +257,30 @@ describe("checkpoint --task local evidence integration", () => {
       taskIds: ["T001", "T002"],
       currentTaskId: "T001",
       completed: [],
-      stepHistory: []
+      stepHistory: [],
+      ...(validationCommands
+        ? {
+            syntheticTasks: [
+              {
+                id: "T001",
+                title: "First task",
+                description: "Implement the first task",
+                dependsOn: [],
+                allowedFiles: ["src/feature.ts"],
+                validationCommands,
+                status: "ready"
+              },
+              {
+                id: "T002",
+                title: "Second task",
+                description: "Implement the second task",
+                dependsOn: ["T001"],
+                allowedFiles: ["src/other.ts"],
+                status: "pending"
+              }
+            ]
+          }
+        : {})
     };
     await writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
   }
@@ -269,12 +292,11 @@ describe("checkpoint --task local evidence integration", () => {
 
   it("AC001/AC002: passing local evidence advances the pipeline", async () => {
     const projectPath = await createRepo();
-    await writeTaskGraph(projectPath, ["node --version"]);
 
     process.env.PATH = await gitNodeOnlyPath();
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement T001", "--tool", "codex"]);
-    await injectPipeline(projectPath);
+    await injectPipeline(projectPath, ["node --version"]);
 
     // A real, in-scope change so review has something to inspect.
     await writeFile(join(projectPath, "src", "feature.ts"), "export const value = 2;\n", "utf8");
@@ -293,12 +315,11 @@ describe("checkpoint --task local evidence integration", () => {
 
   it("AC001/AC002: failing validation keeps the current task and reports findings", async () => {
     const projectPath = await createRepo();
-    await writeTaskGraph(projectPath, ["node -e process.exit(2)"]);
 
     process.env.PATH = await gitNodeOnlyPath();
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement T001", "--tool", "codex"]);
-    await injectPipeline(projectPath);
+    await injectPipeline(projectPath, ["node -e process.exit(2)"]);
 
     await writeFile(join(projectPath, "src", "feature.ts"), "export const value = 2;\n", "utf8");
 
@@ -331,7 +352,7 @@ describe("checkpoint --task local evidence integration", () => {
     expect(memoryPack).toContain("verify failed: node -e process.exit(2) (exit 2)");
   });
 
-  it("kit-present parity: a working visp shim reports evidence_source: kit", async () => {
+  it("kit-present parity: Kit summaries remain advisory without an authoritative transition", async () => {
     const projectPath = await createRepo();
     await writeTaskGraph(projectPath, ["pnpm typecheck"]);
 
@@ -357,7 +378,21 @@ describe("checkpoint --task local evidence integration", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
     const output = logs.join("\n");
     expect(output).toContain("evidence_source: kit");
-    expect(output).toContain("status: PASSED");
-    expect(output).toContain("next_task: T002");
+    expect(output).toContain("verify: PASSED");
+    expect(output).toContain("review: PASSED");
+    expect(output).toContain("reconcile: PASSED");
+    expect(output).toContain("assurance_level: advisory");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: kit_post_checkpoint_transition_unavailable");
+    expect(output).not.toContain("assurance_level: kit_strict");
+    expect(output).not.toContain("next_task:");
+    expect(output).not.toContain("pipeline_complete:");
+    expect(output).not.toContain("instruction:");
+    expect(output).not.toContain("BEGIN_VISP_ADAPTATION");
+    expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+
+    const pipeline = await readPipeline(projectPath);
+    expect(pipeline.currentTaskId).toBe("T001");
+    expect(pipeline.completed).not.toContain("T001");
   });
 });

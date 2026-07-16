@@ -338,6 +338,34 @@ describe("KitCommandBridge", () => {
     }
   });
 
+  it.each(["verify", "review", "reconcile"] as const)(
+    "FAIL_CLOSED: rejects successful %s evidence from a nonzero Kit exit",
+    async (stage) => {
+      const shim = await createVispShim({
+        [stage]: { stdout: { success: true }, exitCode: 1 }
+      });
+      const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+      expect(await bridge[stage]("T001")).toBeNull();
+      expect(bridge.warnings).toEqual([
+        expect.stringContaining("exited with code 1 while reporting success=true")
+      ]);
+    }
+  );
+
+  it("preserves authoritative failed verify evidence from a nonzero Kit exit", async () => {
+    const shim = await createVispShim({
+      verify: { stdout: { success: false, errors: ["verification failed"] }, exitCode: 1 }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.verify("T001")).toEqual({
+      success: false,
+      errors: ["verification failed"]
+    });
+    expect(bridge.warnings).toEqual([]);
+  });
+
   it("AC004: gate exiting non-zero with valid JSON returns allowed=false without throwing", async () => {
     const shim = await createVispShim({
       gate: {
@@ -365,19 +393,28 @@ describe("KitCommandBridge", () => {
     expect(argv).toEqual(["gate", "implement", "--task", "T001", "--json"]);
   });
 
-  it("AC003: verify/review/reconcile pass the task id as a --task flag", async () => {
+  it("CHECKPOINT_ARGV: verify/review/reconcile pass the task id and reconcile updates traceability", async () => {
     const shim = await createVispShim({
       verify: { stdout: { success: true } },
-      review: { stdout: { success: true } }
+      review: { stdout: { success: true } },
+      reconcile: { stdout: { success: true } }
     });
     const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
 
     await bridge.verify("T009");
     await bridge.review("T009");
+    await bridge.reconcile("T009");
 
     const lines = (await readFile(shim.argvLogPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
     expect(lines[0]).toEqual(["verify", "--task", "T009", "--json"]);
     expect(lines[1]).toEqual(["review", "--task", "T009", "--json"]);
+    expect(lines[2]).toEqual([
+      "reconcile",
+      "--task",
+      "T009",
+      "--update-traceability",
+      "--json"
+    ]);
   });
 
   it("AC005: unparseable output yields null plus a warning, no exception", async () => {

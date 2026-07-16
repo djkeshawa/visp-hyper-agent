@@ -36,28 +36,42 @@ async function createProject(): Promise<string> {
   return projectPath;
 }
 
-async function writeTaskGraph(projectPath: string, options: { provenance?: boolean } = {}): Promise<void> {
+type TaskGraphOptions = {
+  provenance?: boolean;
+  singleTask?: boolean;
+  validationCommands?: string[];
+};
+
+async function writeTaskGraph(projectPath: string, options: TaskGraphOptions = {}): Promise<void> {
   const featureDir = join(projectPath, ".visp", "features", FEATURE_DIR);
   const includeProvenance = options.provenance ?? true;
+  const firstTask = authoritativeTaskFixture({
+    ...(options.validationCommands ? { validationCommands: options.validationCommands } : {})
+  });
+  const tasks = [
+    firstTask,
+    ...(options.singleTask
+      ? []
+      : [
+          authoritativeTaskFixture({
+            id: "T002",
+            title: "Second task",
+            description: "Implement the second task.",
+            requirementIds: ["REQ002"],
+            acceptanceCriterionIds: ["AC002"],
+            dependsOn: ["T001"],
+            allowedFiles: ["src/other.ts"],
+            expectedFiles: ["tests/other.test.ts"],
+            status: "pending"
+          })
+        ])
+  ];
   await mkdir(join(featureDir, "context"), { recursive: true });
   await mkdir(join(projectPath, ".visp"), { recursive: true });
   await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
   const taskGraph = JSON.stringify(
     authoritativeTaskGraphFixture({
-      tasks: [
-        authoritativeTaskFixture(),
-        authoritativeTaskFixture({
-          id: "T002",
-          title: "Second task",
-          description: "Implement the second task.",
-          requirementIds: ["REQ002"],
-          acceptanceCriterionIds: ["AC002"],
-          dependsOn: ["T001"],
-          allowedFiles: ["src/other.ts"],
-          expectedFiles: ["tests/other.test.ts"],
-          status: "pending"
-        })
-      ]
+      tasks
     })
   );
   await writeFile(join(featureDir, "task-graph.json"), taskGraph, "utf8");
@@ -65,6 +79,7 @@ async function writeTaskGraph(projectPath: string, options: { provenance?: boole
     join(featureDir, "context", "T001.context.json"),
     JSON.stringify(
       authoritativeContextPackFixture({
+        selectedTask: firstTask,
         artifactProvenance: includeProvenance
           ? [
               {
@@ -211,9 +226,9 @@ function expectNoInventedRecovery(output: string): void {
   expect.soft(recoveryCommandLines(output)).toEqual([]);
 }
 
-async function createStrictSession(projectPath: string): Promise<void> {
+async function createStrictSession(projectPath: string, options: TaskGraphOptions = {}): Promise<void> {
   await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
-  await writeTaskGraph(projectPath);
+  await writeTaskGraph(projectPath, options);
   const shim = await createVispShim(
     kitStatusSpec({
       policy: { stdout: policyValidateFixture() },
@@ -967,6 +982,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const pipeline = activePipeline(await readState(projectPath));
     expect(pipeline.currentTaskId).toBe("T001");
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect(argv.some((args) => args[0] === "reconcile")).toBe(false);
   });
 
   it("checkpoint carries freshness warnings for context packs without provenance", async () => {
@@ -996,7 +1013,6 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect(output).toContain("warnings:");
     expect(output).toContain("has no artifactProvenance");
     expect(output).toContain("checkpoint can pin only the context-pack file");
-    expect(output).toContain("status: PASSED");
   });
 
   it("AC005: blocked implement gate prints PIPELINE_BLOCKED without creating a session", async () => {
@@ -1320,128 +1336,266 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const pipeline = activePipeline(await readState(projectPath));
     expect(pipeline.currentTaskId).toBe("T001");
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect(argv.some((args) => args[0] === "reconcile")).toBe(false);
   });
 
-  it("AC008: checkpoint --task advances on success and stays/fails on failure", async () => {
+  it("FAIL_CLOSED: configured-unhealthy checkpoint never invokes local evidence or mutates strict state", async () => {
     const projectPath = await createProject();
-    await writeTaskGraph(projectPath);
+    await createStrictSession(projectPath, { validationCommands: ["visp evidence-probe"] });
+    const pipelineBefore = activePipeline(await readState(projectPath));
 
-    const shim = await createVispShim(
-      kitStatusSpec({
-        policy: { stdout: policyValidateFixture() },
-        ...allowedRunGateSpec(),
-        verify: { stdout: { success: true } },
-        review: { stdout: { success: true } },
-        reconcile: { stdout: { success: true } },
-        next: { stdout: { success: true, nextCommand: "visp implement" } }
-      })
-    );
-    prependToPath(dirname(shim.binary));
-
-    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
-    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+    const unhealthyShim = await createVispShim({
+      status: {
+        stdout: {
+          success: false,
+          initialized: true,
+          activeFeature: { id: "001", slug: "pipeline" },
+          activeTask: { id: "T001", title: "First task", status: "ready" }
+        }
+      },
+      "evidence-probe": { stdout: "local evidence executed" }
+    });
+    prependToPath(dirname(unhealthyShim.binary));
 
     logs = [];
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
-    let output = logs.join("\n");
-    expect(output).toContain("BEGIN_VISP_CHECKPOINT_RESULT");
-    expect(output).toContain("status: PASSED");
-    expect(output).toContain("next_task: T002");
 
-    let pipeline = activePipeline(await readState(projectPath));
-    expect(pipeline.currentTaskId).toBe("T002");
-    expect(pipeline.completed).toContain("T001");
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: status_failed");
+    expect.soft(output).not.toContain("evidence_source: local");
+    expect.soft(output).not.toContain("assurance_level: kit_strict");
+    expect.soft(output).not.toContain("instruction:");
+    expect.soft(output).not.toContain("BEGIN_VISP_ADAPTATION");
+    expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
 
-    // Now fail T002.
+    const argv = await readArgvLog(unhealthyShim.argvLogPath);
+    expect.soft(argv).toContainEqual(["status", "--json"]);
+    expect.soft(argv.some((args) => args[0] === "evidence-probe")).toBe(false);
+
+    const pipelineAfter = activePipeline(await readState(projectPath));
+    expect.soft(pipelineAfter.currentTaskId).toBe(pipelineBefore.currentTaskId);
+    expect.soft(pipelineAfter.completed).toEqual(pipelineBefore.completed);
+    expect.soft(pipelineAfter.injectedTasks ?? []).toEqual(pipelineBefore.injectedTasks ?? []);
+    expect.soft(pipelineAfter.decisionLog ?? []).toEqual(pipelineBefore.decisionLog ?? []);
+    const addedSteps = pipelineAfter.stepHistory.slice(pipelineBefore.stepHistory.length);
+    expect.soft(
+      addedSteps.some(
+        (step: any) =>
+          step.detail === "local-evidence" ||
+          step.action === "checkpoint-passed" ||
+          step.action === "checkpoint-failed"
+      )
+    ).toBe(false);
+  });
+
+  it.each([
+    { label: "one-task completion", singleTask: true },
+    { label: "two-task advancement", singleTask: false }
+  ])("FAIL_CLOSED: successful summaries do not authorize $label without post-checkpoint state", async ({ singleTask }) => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath, { singleTask });
+
+    const checkpointShim = await createVispShim(
+      kitStatusSpec({
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        reconcile: { stdout: { success: true } },
+        next: {
+          stdout: {
+            success: true,
+            nextCommand: "visp pr",
+            state: "ready",
+            allowed: true
+          }
+        }
+      })
+    );
+    prependToPath(dirname(checkpointShim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toMatch(/status: (?:BLOCKED|INCONCLUSIVE)/u);
+    expect.soft(output).toContain("reason_code: kit_post_checkpoint_transition_unavailable");
+    expect.soft(output).not.toContain("status: PASSED");
+    expect.soft(output).not.toContain("assurance_level: kit_strict");
+    expect.soft(output).not.toContain("instruction:");
+    expect.soft(output).not.toContain("BEGIN_VISP_ADAPTATION");
+    expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect.soft(output).not.toContain("next_task:");
+    expect.soft(output).not.toContain("pipeline_complete: true");
+
+    const pipeline = activePipeline(await readState(projectPath));
+    expect.soft(pipeline.currentTaskId).toBe("T001");
+    expect.soft(pipeline.completed).not.toContain("T001");
+    expect.soft(pipeline.injectedTasks ?? []).toEqual([]);
+  });
+
+  it("FAIL_CLOSED: repeated failed Kit checkpoints never inject Hyper remediation or strict assurance", async () => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+
     const failShim = await createVispShim(
       kitStatusSpec({
-        verify: { stdout: { success: false } },
+        verify: { stdout: { success: false, errors: ["verification failed"] } },
         review: { stdout: { success: true } }
       })
     );
     prependToPath(dirname(failShim.binary));
 
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
     logs = [];
-    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T002"]);
-    output = logs.join("\n");
-    expect(output).toContain("status: FAILED");
-    expect(output).toContain("verify: FAILED");
-    expect(output).toContain("Fix the reported findings");
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
 
-    pipeline = activePipeline(await readState(projectPath));
-    expect(pipeline.currentTaskId).toBe("T002");
-    expect(pipeline.stepHistory.some((step: any) => step.action === "checkpoint-failed")).toBe(true);
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: FAILED");
+    expect.soft(output).not.toContain("assurance_level: kit_strict");
+    expect.soft(output).not.toContain("instruction:");
+    expect.soft(output).not.toContain("BEGIN_VISP_ADAPTATION");
+    expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect.soft(output).not.toContain("next_task:");
+    expect.soft(output).not.toContain("pipeline_complete: true");
+
+    const pipeline = activePipeline(await readState(projectPath));
+    expect.soft(pipeline.currentTaskId).toBe("T001");
+    expect.soft(pipeline.completed).not.toContain("T001");
+    expect.soft(pipeline.injectedTasks ?? []).toEqual([]);
+    expect.soft(pipeline.decisionLog ?? []).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ action: "inject-remediation" })])
+    );
   });
 
-  it("runs reconcile after verify+review and a reconcile gate BLOCK fails the checkpoint", async () => {
+  it("FAIL_CLOSED: incoherent successful Kit evidence cannot trigger reconcile", async () => {
     const projectPath = await createProject();
-    await writeTaskGraph(projectPath);
+    await createStrictSession(projectPath);
 
     const shim = await createVispShim(
       kitStatusSpec({
-        policy: { stdout: policyValidateFixture() },
-        ...allowedRunGateSpec(),
-        verify: { stdout: { success: true } },
+        verify: {
+          stdout: { success: true, errors: ["verification process was interrupted"] }
+        },
         review: { stdout: { success: true } },
-        // Reconcile gate BLOCKS: a parsed result with success:false.
-        reconcile: { stdout: { success: false, errors: ["provenance drift"] } },
-        next: { stdout: { success: true, nextCommand: "visp implement" } }
+        reconcile: { stdout: { success: true } }
       })
     );
     prependToPath(dirname(shim.binary));
 
-    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
-    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
-
     logs = [];
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
     const output = logs.join("\n");
-    expect(output).toContain("verify: PASSED");
-    expect(output).toContain("status: FAILED");
-    expect(output).toContain("reconcile");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: kit_verify_incoherent");
+    expect.soft(output).toContain("verify error: verification process was interrupted");
+    expect.soft(output).not.toContain("assurance_level: kit_strict");
+    expect.soft(output).not.toContain("instruction:");
+    expect.soft(output).not.toContain("next_task:");
+    expect.soft(output).not.toContain("pipeline_complete: true");
 
-    const pipeline = activePipeline(await readState(projectPath));
-    // Did not advance; still on T001.
-    expect(pipeline.currentTaskId).toBe("T001");
-    expect(pipeline.completed).not.toContain("T001");
-
-    // The shim recorded a reconcile invocation.
-    const argv = (await readFile(shim.argvLogPath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[]);
-    expect(argv.some((args) => args[0] === "reconcile")).toBe(true);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "reconcile")).toBe(false);
   });
 
-  it("is inconclusive and does not advance when reconciliation is unavailable", async () => {
-    const projectPath = await createProject();
-    await writeTaskGraph(projectPath);
-
-    // Shim provides verify+review but NOT reconcile → the reconcile invocation
-    // yields a non-JSON/unknown-subcommand result → null → warn, not block.
-    const shim = await createVispShim(
-      kitStatusSpec({
-        policy: { stdout: policyValidateFixture() },
-        ...allowedRunGateSpec(),
+  it.each([
+    {
+      stage: "verify",
+      checkpoint: {
+        verify: { stdout: { success: false, errors: ["verification failed"] } },
+        review: { stdout: { success: true } }
+      }
+    },
+    {
+      stage: "review",
+      checkpoint: {
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: false, errors: ["review failed"] } }
+      }
+    },
+    {
+      stage: "reconcile",
+      checkpoint: {
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
-        next: { stdout: { success: true, nextCommand: "visp implement" } }
-      })
-    );
-    prependToPath(dirname(shim.binary));
+        reconcile: { stdout: { success: false, errors: ["provenance drift"] } }
+      }
+    }
+  ])("FAIL_CLOSED: failed $stage evidence never grants strict assurance or Hyper remediation", async ({ stage, checkpoint }) => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
 
-    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
-    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+    const shim = await createVispShim(kitStatusSpec(checkpoint as ShimSpec));
+    prependToPath(dirname(shim.binary));
 
     logs = [];
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
     const output = logs.join("\n");
-    expect(output).toContain("status: INCONCLUSIVE");
-    expect(output).not.toContain("next_task: T002");
+    expect.soft(output).toContain("status: FAILED");
+    expect.soft(output.toLowerCase()).toContain(stage);
+    expect.soft(output).not.toContain("assurance_level: kit_strict");
+    expect.soft(output).not.toContain("instruction:");
+    expect.soft(output).not.toContain("BEGIN_VISP_ADAPTATION");
+    expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect.soft(output).not.toContain("next_task:");
+    expect.soft(output).not.toContain("pipeline_complete: true");
 
     const pipeline = activePipeline(await readState(projectPath));
-    expect(pipeline.currentTaskId).toBe("T001");
-    expect(pipeline.completed).not.toContain("T001");
+    expect.soft(pipeline.currentTaskId).toBe("T001");
+    expect.soft(pipeline.completed).not.toContain("T001");
+    expect.soft(pipeline.injectedTasks ?? []).toEqual([]);
+
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "reconcile")).toBe(stage === "reconcile");
+  });
+
+  it.each([
+    {
+      stage: "verify",
+      checkpoint: {
+        verify: { stdout: "malformed verify result" },
+        review: { stdout: { success: true } }
+      }
+    },
+    {
+      stage: "review",
+      checkpoint: {
+        verify: { stdout: { success: true } },
+        review: { stdout: "malformed review result" }
+      }
+    },
+    {
+      stage: "reconcile",
+      checkpoint: {
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        reconcile: { stdout: "malformed reconcile result" }
+      }
+    }
+  ])("FAIL_CLOSED: inconclusive $stage evidence never grants strict assurance or advancement", async ({ stage, checkpoint }) => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+
+    const shim = await createVispShim(kitStatusSpec(checkpoint as ShimSpec));
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output.toLowerCase()).toContain(stage);
+    expect.soft(output).not.toContain("assurance_level: kit_strict");
+    expect.soft(output).not.toContain("instruction:");
+    expect.soft(output).not.toContain("BEGIN_VISP_ADAPTATION");
+    expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect.soft(output).not.toContain("next_task:");
+    expect.soft(output).not.toContain("pipeline_complete: true");
+
+    const pipeline = activePipeline(await readState(projectPath));
+    expect.soft(pipeline.currentTaskId).toBe("T001");
+    expect.soft(pipeline.completed).not.toContain("T001");
+    expect.soft(pipeline.injectedTasks ?? []).toEqual([]);
   });
 });
 
