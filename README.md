@@ -263,7 +263,7 @@ Runtime files:
 Source modules:
 
 - `src/cli/commands/` — command behavior (`run` and `start` are the orchestrators).
-- `src/kit/` — Visp Kit integration: artifact reader plus the typed `visp --json` command bridge with graceful fallback when the binary or kit is absent.
+- `src/kit/` — Visp Kit integration: artifact reader plus the typed `visp --json` command bridge that distinguishes genuine Kit absence from configured-but-unhealthy authority failures.
 - `src/pipeline/` — pure task-DAG state machine (topological ordering, evidence-gated advancement, action blocks).
 - `src/context/` — deterministic relevance scanner (the kit-less context fallback).
 - `src/memory/` — file memory, the llm-memory HTTP provider, and the health-checked provider factory.
@@ -287,12 +287,12 @@ Supported profiles: `generic`, `codex`, `claude-code`, `copilot`, `opencode`.
 - Visp-Kit artifacts are consumed via its CLI and files; this tool does not generate kit specs or plans.
 - Routing directives are advisory text; the coding tool owns actual model selection.
 
-## Roadmap
-
-- ArcadeDB-backed semantic recall behind the `SemanticMemoryProvider` seam.
-- Cross-project telemetry and skill sharing.
-
 ## Development
+
+Keep source and test changes separate from documentation-only cleanup, and run
+`pnpm check` before committing either scope. The local `.visp/` directory is
+ignored workflow evidence: if it is deleted before a task closes, recreate the
+task and collect fresh evidence rather than claiming the earlier task complete.
 
 ```bash
 pnpm check     # typecheck + test + build

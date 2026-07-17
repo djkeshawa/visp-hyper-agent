@@ -110,15 +110,19 @@ Configured unhealthy is not Kit absence. Direct `start` and `quick` remain an op
 
 These additions are future design only. They require separate authorization, tests in Kit, adapter tests in Hyper, and packed-binary compatibility evidence. This inventory does not authorize WorkflowAction `3.0` or a wider compatibility window.
 
-## Documentation contradictions to correct later
+## Historical documentation cleanup
 
-| Document | Current contradiction | Required clarification |
+This table preserves the Phase 0 audit history. The obsolete repo-local vision,
+roadmap, Claude, and Kit-agent guidance files were removed during repository
+cleanup; `README.md` remains the current user-facing documentation.
+
+| Document | Historical contradiction | Cleanup disposition |
 |---|---|---|
-| `docs/VISION-PLAN.md` | Says a missing binary or uninitialized Kit falls back and that existing fallback is never removed; it also presents Hyper's local DAG as progression truth. | Limit fallback to explicit genuine Kit-less mode and identify Kit as strict task/progression authority. |
-| `docs/ROADMAP-V2.md` | Presents standalone Hyper gate ownership and Quick as a default while treating Kit strict mode as optional. | Qualify these behaviors as local/advisory only; configured strict projects fail closed. |
-| `README.md` | Describes graceful Kit/binary fallback without separating absence from configured-unhealthy state. | Document the three operating modes and their assurance ceilings. |
-| `CLAUDE.md` | Broad “degrade, never crash” guidance conflicts with required strict fail-closed behavior, and repository-state notes are stale. | Permit degradation only for non-authoritative capabilities and refresh the repository description. |
-| `AGENTS.md` | Requires reconciliation with `--update-traceability`, while the bridge omits the flag. | Preserve the rule and correct the invocation in a separate tests-first task. |
+| `docs/VISION-PLAN.md` | Says a missing binary or uninitialized Kit falls back and that existing fallback is never removed; it also presents Hyper's local DAG as progression truth. | Removed; strict authority and genuine Kit-less behavior remain documented in `README.md` and the accepted ADR. |
+| `docs/ROADMAP-V2.md` | Presents standalone Hyper gate ownership and Quick as a default while treating Kit strict mode as optional. | Removed rather than retaining a second, contradictory product roadmap. |
+| `README.md` | Describes graceful Kit/binary fallback without separating absence from configured-unhealthy state. | Updated to distinguish genuine Kit absence from configured-but-unhealthy authority failure. |
+| `CLAUDE.md` | Broad “degrade, never crash” guidance conflicts with required strict fail-closed behavior, and repository-state notes are stale. | Removed with the obsolete host-specific repository guidance. |
+| `AGENTS.md` | Requires reconciliation with `--update-traceability`, while the bridge omits the flag. | Removed with obsolete Kit-agent guidance; runtime reconciliation remains a separate tests-first correction. |
 
 ## Existing tests and missing safety regressions
 
