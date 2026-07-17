@@ -135,7 +135,7 @@ async function startLocalQuick(projectPath: string, exitCode: number): Promise<v
     }),
     "utf8"
   );
-  process.env.PATH = await toolOnlyPath(["git", "npm"]);
+  process.env.PATH = await toolOnlyPath(["git", "npm", "sh"]);
   await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
   await runCli([
     "node",

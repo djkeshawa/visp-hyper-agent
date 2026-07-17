@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type ToolName = "generic" | "codex" | "claude-code" | "copilot" | "opencode";
@@ -75,7 +75,7 @@ const MODEL_TOKENS: Record<string, string> = {
  * or the host tool's own configuration and are off-limits.
  */
 export function isKitOwnedDestination(path: string): boolean {
-  const normalized = path.split(sep).join("/").replace(/^\.\//, "");
+  const normalized = path.replace(/\\/gu, "/").replace(/^\.\//u, "");
   if (normalized === "AGENTS.md") {
     return true;
   }

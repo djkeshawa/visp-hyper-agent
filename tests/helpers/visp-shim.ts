@@ -282,7 +282,7 @@ export async function createVispShim(spec: ShimSpec): Promise<VispShim> {
   const argvLogPath = join(dir, "argv.log");
 
   const body = `"use strict";
-const { appendFileSync } = require("node:fs");
+const { appendFileSync, writeSync } = require("node:fs");
 
 const spec = ${JSON.stringify(spec)};
 const argvLogPath = ${JSON.stringify(argvLogPath)};
@@ -302,8 +302,8 @@ if (!response) {
 
 const finish = () => {
   const out = typeof response.stdout === "string" ? response.stdout : JSON.stringify(response.stdout);
-  process.stdout.write(out);
-  process.exit(response.exitCode ?? 0);
+  writeSync(process.stdout.fd, out);
+  process.exitCode = response.exitCode ?? 0;
 };
 
 if (typeof response.delayMs === "number" && response.delayMs > 0) {

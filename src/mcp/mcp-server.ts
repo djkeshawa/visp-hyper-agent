@@ -1,4 +1,7 @@
+import { read, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { Readable } from "node:stream";
+import { deriveOutputStatus } from "./output-status.js";
 
 /**
  * A single MCP tool advertised over `tools/list` and invocable via `tools/call`.
@@ -75,6 +78,40 @@ export type JsonRpcMessage = {
 };
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
+const STDIO_READ_BUFFER_SIZE = 64 * 1024;
+const STDIO_RETRY_MS = 1;
+
+class FileDescriptorInput extends Readable {
+  private readonly buffer = Buffer.allocUnsafe(STDIO_READ_BUFFER_SIZE);
+  private reading = false;
+
+  constructor(private readonly fd: number) {
+    super();
+  }
+
+  override _read(): void {
+    if (this.reading || this.destroyed) {
+      return;
+    }
+    this.reading = true;
+    read(this.fd, this.buffer, 0, this.buffer.length, null, (error, bytesRead) => {
+      this.reading = false;
+      if (error) {
+        if (error.code === "EAGAIN" || error.code === "EWOULDBLOCK") {
+          setTimeout(() => this._read(), STDIO_RETRY_MS);
+          return;
+        }
+        this.destroy(error);
+        return;
+      }
+      if (bytesRead === 0) {
+        this.push(null);
+        return;
+      }
+      this.push(Buffer.from(this.buffer.subarray(0, bytesRead)));
+    });
+  }
+}
 
 function result(id: number | string | null, value: object): object {
   return { jsonrpc: "2.0", id, result: value };
@@ -82,6 +119,10 @@ function result(id: number | string | null, value: object): object {
 
 function error(id: number | string | null, code: number, message: string): object {
   return { jsonrpc: "2.0", id, error: { code, message } };
+}
+
+function writeProtocolMessage(message: object): void {
+  writeSync(process.stdout.fd, `${JSON.stringify(message)}\n`);
 }
 
 function capabilities(ctx: McpContext): Record<string, object> {
@@ -99,19 +140,11 @@ function structuredContentFor(
   return {
     tool: toolName,
     isError: execution.isError,
-    status: extractStatus(execution.text, execution.isError),
+    status: deriveOutputStatus(execution.text, execution.isError),
     frames: extractFrames(execution.text),
     resourceUris: extractResourceUris(execution.text),
     text: execution.text
   };
-}
-
-function extractStatus(text: string, isError: boolean): string {
-  const status = text.match(/\bstatus:\s*([A-Z_]+)/iu)?.[1];
-  if (status) {
-    return status.toUpperCase();
-  }
-  return isError ? "ERROR" : "OK";
 }
 
 function extractFrames(text: string): Array<{ name: string; boundary: "begin" | "end" }> {
@@ -240,9 +273,11 @@ export async function handleMessage(ctx: McpContext, msg: JsonRpcMessage): Promi
  * when stdin closes.
  */
 export async function runStdioServer(ctx: McpContext): Promise<void> {
-  const rl = createInterface({ input: process.stdin });
+  const input = new FileDescriptorInput(process.stdin.fd);
+  const rl = createInterface({ input });
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    input.on("error", reject);
     rl.on("line", (line) => {
       const trimmed = line.trim();
       if (trimmed.length === 0) {
@@ -254,7 +289,7 @@ export async function runStdioServer(ctx: McpContext): Promise<void> {
         parsed = JSON.parse(trimmed) as JsonRpcMessage;
       } catch {
         process.stderr.write("visp-hyper mcp: parse error on incoming line\n");
-        process.stdout.write(`${JSON.stringify(error(null, -32700, "Parse error"))}\n`);
+        writeProtocolMessage(error(null, -32700, "Parse error"));
         return;
       }
 
@@ -262,7 +297,7 @@ export async function runStdioServer(ctx: McpContext): Promise<void> {
       void handleMessage(ctx, parsed)
         .then((response) => {
           if (response !== null) {
-            process.stdout.write(`${JSON.stringify(response)}\n`);
+            writeProtocolMessage(response);
           }
         })
         .catch((err: unknown) => {

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -27,11 +27,19 @@ const HAS_KIT_ARTIFACTS =
   existsSync(join(REPO_ROOT, ".visp", "policy.json")) || existsSync(join(REPO_ROOT, ".visp", "project.json"));
 const SIBLING_KIT = join(REPO_ROOT, "..", "visp-kit", "dist", "index.js");
 const LOCAL_BINARY = (() => {
-  if (vispOnPath()) return "visp";
-  if (!existsSync(SIBLING_KIT)) return null;
-  const wrapper = join(mkdtempSync(join(tmpdir(), "visp-live-contract-")), "visp.cmd");
-  writeFileSync(wrapper, `@echo off\r\nnode "${SIBLING_KIT}" %*\r\n`, "utf8");
-  return wrapper;
+  if (existsSync(SIBLING_KIT)) {
+    const directory = mkdtempSync(join(tmpdir(), "visp-live-contract-"));
+    if (process.platform === "win32") {
+      const wrapper = join(directory, "visp.cmd");
+      writeFileSync(wrapper, `@echo off\r\nnode "${SIBLING_KIT}" %*\r\n`, "utf8");
+      return wrapper;
+    }
+    const wrapper = join(directory, "visp");
+    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${SIBLING_KIT}" "$@"\n`, "utf8");
+    chmodSync(wrapper, 0o755);
+    return wrapper;
+  }
+  return vispOnPath() ? "visp" : null;
 })();
 const RUN_LIVE = LOCAL_BINARY !== null && HAS_KIT_ARTIFACTS;
 

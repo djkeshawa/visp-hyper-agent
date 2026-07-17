@@ -47,6 +47,38 @@ function stubContext(executeImpl?: McpContext["execute"]): McpContext {
   };
 }
 
+type StructuredToolCallResponse = {
+  jsonrpc: string;
+  id: number;
+  result: {
+    content: Array<{ type: string; text: string }>;
+    isError: boolean;
+    structuredContent: {
+      tool: string;
+      isError: boolean;
+      status: string;
+      frames: Array<{ name: string; boundary: "begin" | "end" }>;
+      resourceUris: string[];
+      text: string;
+    };
+  };
+};
+
+async function callStructuredTool(
+  text: string,
+  isError = false,
+  id = 2
+): Promise<StructuredToolCallResponse> {
+  const ctx = stubContext(async () => ({ text, isError }));
+  ctx.tools = [{ ...ctx.tools[0]!, outputSchema: { type: "object" } }];
+  return (await handleMessage(ctx, {
+    jsonrpc: "2.0",
+    id,
+    method: "tools/call",
+    params: { name: "alpha", arguments: {} }
+  })) as StructuredToolCallResponse;
+}
+
 async function gitInit(projectPath: string): Promise<void> {
   await execFileAsync("git", ["init", "-b", "main"], { cwd: projectPath });
   await execFileAsync("git", ["add", "."], { cwd: projectPath });
@@ -259,6 +291,210 @@ describe("handleMessage tools surface (AC003)", () => {
       boundary: "begin"
     });
     expect(response.result.structuredContent.text).toBe(response.result.content[0]?.text);
+  });
+
+  describe("structured MCP domain status (H02C)", () => {
+    it.each([
+      [
+        "policy",
+        [
+          "BEGIN_VISP_POLICY_BLOCKED",
+          "reason: policy validation denied implementation",
+          "resource: visp-hyper://current/policy",
+          "END_VISP_POLICY_BLOCKED"
+        ].join("\n"),
+        "VISP_POLICY_BLOCKED",
+        "visp-hyper://current/policy"
+      ],
+      [
+        "pipeline",
+        [
+          "BEGIN_VISP_PIPELINE_BLOCKED",
+          "reason: no authoritative task is ready",
+          "resource: visp-hyper://current/pipeline",
+          "END_VISP_PIPELINE_BLOCKED"
+        ].join("\n"),
+        "VISP_PIPELINE_BLOCKED",
+        "visp-hyper://current/pipeline"
+      ]
+    ])(
+      "AC001: maps a status-less %s blocked frame to BLOCKED",
+      async (_kind, text, frameName, resourceUri) => {
+        const response = await callStructuredTool(text, false, 21);
+
+        expect.soft(response).toMatchObject({
+          jsonrpc: "2.0",
+          id: 21,
+          result: {
+            isError: false,
+            structuredContent: {
+              tool: "alpha",
+              isError: false,
+              status: "BLOCKED",
+              text
+            }
+          }
+        });
+        expect.soft(response.result.content).toEqual([{ type: "text", text }]);
+        expect.soft(response.result.structuredContent.frames).toEqual([
+          { name: frameName, boundary: "begin" },
+          { name: frameName, boundary: "end" }
+        ]);
+        expect.soft(response.result.structuredContent.resourceUris).toEqual([resourceUri]);
+      }
+    );
+
+    it.each([
+      [
+        "workflow action",
+        [
+          "BEGIN_VISP_WORKFLOW_ACTION_V2",
+          JSON.stringify({ protocolVersion: "2.0", verdict: "INCONCLUSIVE", nextCommand: "visp status" }),
+          "END_VISP_WORKFLOW_ACTION_V2"
+        ].join("\n"),
+        "VISP_WORKFLOW_ACTION_V2"
+      ],
+      [
+        "checkpoint validation",
+        [
+          "BEGIN_VISP_CHECKPOINT_RESULT",
+          "verdict: INCONCLUSIVE",
+          "reason: authoritative validation is unavailable",
+          "END_VISP_CHECKPOINT_RESULT"
+        ].join("\n"),
+        "VISP_CHECKPOINT_RESULT"
+      ]
+    ])(
+      "AC002: maps a status-less inconclusive %s frame to INCONCLUSIVE",
+      async (_kind, text, frameName) => {
+        const response = await callStructuredTool(text, false, 22);
+
+        expect.soft(response.result.isError).toBe(false);
+        expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+        expect.soft(response.result.structuredContent.text).toBe(text);
+        expect.soft(response.result.structuredContent.frames).toEqual([
+          { name: frameName, boundary: "begin" },
+          { name: frameName, boundary: "end" }
+        ]);
+      }
+    );
+
+    it("AC003: maps unknown status-less successful output to INCONCLUSIVE", async () => {
+      const text = "captured output with no Visp domain signal";
+      const response = await callStructuredTool(text, false, 23);
+
+      expect.soft(response.result.isError).toBe(false);
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+      expect.soft(response.result.structuredContent.status).not.toBe("OK");
+      expect.soft(response.result.structuredContent.text).toBe(text);
+    });
+
+    it.each([
+      ["conflicting explicit statuses", "status: PASSED\nstatus: BLOCKED"],
+      [
+        "a passing status inside a blocked frame",
+        [
+          "BEGIN_VISP_POLICY_BLOCKED",
+          "status: PASSED",
+          "reason: policy still blocks the action",
+          "END_VISP_POLICY_BLOCKED"
+        ].join("\n")
+      ]
+    ])("AC004: maps %s to INCONCLUSIVE", async (_kind, text) => {
+      const response = await callStructuredTool(text, false, 24);
+
+      expect.soft(response.result.isError).toBe(false);
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+      expect.soft(response.result.structuredContent.text).toBe(text);
+    });
+
+    it("AC005: preserves a coherent explicit status, frames, URI, text, and JSON-RPC shape", async () => {
+      const text = [
+        "BEGIN_VISP_CHECKPOINT_RESULT",
+        "status: PASSED",
+        "resource: visp-hyper://current/checkpoint-snapshot",
+        "END_VISP_CHECKPOINT_RESULT"
+      ].join("\n");
+
+      expect(await callStructuredTool(text, false, 25)).toEqual({
+        jsonrpc: "2.0",
+        id: 25,
+        result: {
+          content: [{ type: "text", text }],
+          isError: false,
+          structuredContent: {
+            tool: "alpha",
+            isError: false,
+            status: "PASSED",
+            frames: [
+              { name: "VISP_CHECKPOINT_RESULT", boundary: "begin" },
+              { name: "VISP_CHECKPOINT_RESULT", boundary: "end" }
+            ],
+            resourceUris: ["visp-hyper://current/checkpoint-snapshot"],
+            text
+          }
+        }
+      });
+    });
+
+    it("AC005: maps a ready WorkflowAction V2 frame to OK", async () => {
+      const text = [
+        "BEGIN_VISP_WORKFLOW_ACTION_V2",
+        JSON.stringify({ protocolVersion: "2.0", verdict: "ready", nextCommand: "visp context T001" }),
+        "END_VISP_WORKFLOW_ACTION_V2"
+      ].join("\n");
+      const response = await callStructuredTool(text, false, 27);
+
+      expect.soft(response.result.isError).toBe(false);
+      expect.soft(response.result.structuredContent.status).toBe("OK");
+      expect.soft(response.result.content).toEqual([{ type: "text", text }]);
+      expect.soft(response.result.structuredContent.text).toBe(text);
+      expect.soft(response.result.structuredContent.frames).toEqual([
+        { name: "VISP_WORKFLOW_ACTION_V2", boundary: "begin" },
+        { name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }
+      ]);
+    });
+
+    it("maps an unsupported explicit status to INCONCLUSIVE", async () => {
+      const response = await callStructuredTool("status: UNKNOWN", false, 28);
+
+      expect.soft(response.result.isError).toBe(false);
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+    });
+
+    it("maps a malformed WorkflowAction V2 frame to INCONCLUSIVE", async () => {
+      const text = [
+        "BEGIN_VISP_WORKFLOW_ACTION_V2",
+        "{not valid JSON}",
+        "END_VISP_WORKFLOW_ACTION_V2"
+      ].join("\n");
+      const response = await callStructuredTool(text, false, 29);
+
+      expect.soft(response.result.isError).toBe(false);
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+      expect.soft(response.result.structuredContent.text).toBe(text);
+    });
+
+    it("AC006: preserves ERROR for a transport failure without domain evidence", async () => {
+      const text = "tool process exited before producing Visp domain output";
+
+      expect(await callStructuredTool(text, true, 26)).toEqual({
+        jsonrpc: "2.0",
+        id: 26,
+        result: {
+          content: [{ type: "text", text }],
+          isError: true,
+          structuredContent: {
+            tool: "alpha",
+            isError: true,
+            status: "ERROR",
+            frames: [],
+            resourceUris: [],
+            text
+          }
+        }
+      });
+    });
   });
 
   it("tools/call for an unknown tool is an invalid-params error and does not execute", async () => {
@@ -691,16 +927,28 @@ describe("serve --mcp stdio integration (AC002/AC005)", () => {
   it("answers an MCP session over stdio and exits 0 when stdin closes", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-serve-"));
 
-    const child = spawn("node", [distIndex, "serve", "--mcp", "--project", projectPath], {
+    const child = spawn(process.execPath, [distIndex, "serve", "--mcp", "--project", projectPath], {
       stdio: ["pipe", "pipe", "pipe"]
     });
 
     const stdoutLines: string[] = [];
+    let stderr = "";
     let buffer = "";
     const callId = 100;
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
 
     const callArrived = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("timed out waiting for tools/call response")), 20_000);
+      let settled = false;
+      const fail = (message: string): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error(`${message}${stderr ? `: ${stderr.trim()}` : ""}`));
+      };
+      const timer = setTimeout(() => fail("timed out waiting for tools/call response"), 20_000);
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         buffer += chunk;
@@ -714,12 +962,17 @@ describe("serve --mcp stdio integration (AC002/AC005)", () => {
           stdoutLines.push(line);
           const parsed = JSON.parse(line) as { id?: number };
           if (parsed.id === callId) {
+            settled = true;
             clearTimeout(timer);
             resolve();
           }
         }
       });
-      child.stdout.on("error", reject);
+      child.stdout.on("error", (error) => fail(`MCP stdout failed: ${error.message}`));
+      child.on("error", (error) => fail(`MCP child failed to start: ${error.message}`));
+      child.on("exit", (code, signal) => {
+        if (!settled) fail(`MCP child exited before tools/call response (code=${code}, signal=${signal})`);
+      });
     });
 
     const send = (msg: JsonRpcMessage): void => {
