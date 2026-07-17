@@ -354,6 +354,12 @@ describe("checkpoint --task local evidence integration", () => {
 
   it("kit-present parity: Kit summaries remain advisory without an authoritative transition", async () => {
     const projectPath = await createRepo();
+    process.env.PATH = await gitNodeOnlyPath();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement T001", "--tool", "codex"]);
+    await injectPipeline(projectPath);
+
+    // A previously local session may later become Kit-backed. Checkpoint must
+    // then preserve Kit authority without requiring direct start to bypass it.
     await writeTaskGraph(projectPath, ["pnpm typecheck"]);
 
     const shim = await createVispShim({
@@ -370,9 +376,6 @@ describe("checkpoint --task local evidence integration", () => {
       reconcile: { stdout: { success: true } }
     });
     process.env.PATH = `${dirname(shim.binary)}${delimiter}${originalPath ?? ""}`;
-
-    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement T001", "--tool", "codex"]);
-    await injectPipeline(projectPath);
 
     logs = [];
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);

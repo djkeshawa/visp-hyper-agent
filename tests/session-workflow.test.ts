@@ -1,9 +1,12 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { delimiter, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { initializeProject } from "../src/core/session-manager.js";
+import { createVispShim } from "./helpers/visp-shim.js";
+
+const originalPath = process.env.PATH;
 
 const requiredCurrentFiles = [
   "session.md",
@@ -17,6 +20,8 @@ const requiredCurrentFiles = [
 
 describe("local session workflow", () => {
   afterEach(() => {
+    process.env.PATH = originalPath;
+    process.exitCode = undefined;
     vi.restoreAllMocks();
   });
 
@@ -134,4 +139,39 @@ describe("local session workflow", () => {
     );
     expect(manifest.selectedFiles.length).toBeGreaterThan(0);
   });
+
+  it.each([
+    {
+      name: "healthy",
+      status: { success: true, initialized: true, activeFeature: { id: "001", slug: "pipeline" } },
+      expectedStatus: "BLOCKED"
+    },
+    {
+      name: "configured-unhealthy",
+      status: { success: false, initialized: true },
+      expectedStatus: "INCONCLUSIVE"
+    }
+  ])(
+    "start stops before session creation when Kit is $name",
+    async ({ status, expectedStatus }) => {
+      const projectPath = await mkdtemp(join(tmpdir(), "visp-hyper-start-kit-"));
+      const logs: string[] = [];
+      vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+        logs.push(String(message));
+      });
+      await mkdir(join(projectPath, ".visp"), { recursive: true });
+      await writeFile(join(projectPath, ".visp", "policy.json"), JSON.stringify({ rules: [] }), "utf8");
+      const shim = await createVispShim({ status: { stdout: status } });
+      process.env.PATH = `${dirname(shim.binary)}${delimiter}${originalPath ?? ""}`;
+
+      await runCli(["node", "visp-hyper", "--project", projectPath, "start", "fix the parser"]);
+      const output = logs.join("\n");
+
+      expect(output).toContain("BEGIN_VISP_KIT_AUTHORITY_RESULT");
+      expect(output).toContain(`status: ${expectedStatus}`);
+      expect(output).not.toContain("BEGIN_VISP_AGENT_HANDOFF");
+      await expect(readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")).rejects.toThrow();
+      expect(process.exitCode).toBe(1);
+    }
+  );
 });

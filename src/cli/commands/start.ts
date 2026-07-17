@@ -9,10 +9,10 @@ import type { ContextFile, ContextManifest, ContextPackOptions, HyperConfig, Ses
 import { buildHandoffProtocol, renderHandoff } from "../../handoff/handoff-protocol.js";
 import { isBlockedPath } from "../../governance/blocked-files.js";
 import {
-  KitCommandBridge,
   detectVisp,
   type KitContextPackArtifact
 } from "../../kit/kit-command-bridge.js";
+import { renderKitAuthorityStop, type KitAvailability } from "../../kit/kit-availability.js";
 import { readKitArtifacts } from "../../kit/kit-reader.js";
 import type { KitContextPack, KitIntegrationContract } from "../../kit/kit-schemas.js";
 import { readMemoryPack } from "../../memory/file-memory-provider.js";
@@ -40,7 +40,16 @@ export function startCommand(): Command {
     )
     .action(async function (this: Command, goal: string, options: { tool?: ToolProfile }) {
       const projectPath = resolveProjectPath(this);
-      const { handoff } = await executeStart(projectPath, goal, options);
+      const kit = await detectVisp(projectPath);
+      if (kit.state !== "absent") {
+        console.log(renderDirectCommandKitStop("start", kit));
+        process.exitCode = 1;
+        return;
+      }
+      const { handoff } = await executeStart(projectPath, goal, {
+        ...options,
+        authority: { mode: "local" }
+      });
       console.log(handoff);
     });
 }
@@ -50,20 +59,40 @@ export type StartResult = {
   handoff: string;
 };
 
-export type StrictKitStartInput = {
-  adoption: KitAdoption;
-};
-
 export type StartOptions = {
   tool?: ToolProfile;
-  strictKit?: StrictKitStartInput;
+  authority:
+    | { mode: "local" }
+    | {
+        mode: "kit";
+        adoption: KitAdoption;
+      };
 };
+
+/** Render the shared fail-closed result for local-only command entry points. */
+export function renderDirectCommandKitStop(
+  command: "start" | "quick",
+  kit: Exclude<KitAvailability, { state: "absent" }>
+): string {
+  if (kit.state === "configured-unhealthy") {
+    return renderKitAuthorityStop({
+      status: "INCONCLUSIVE",
+      reasonCode: kit.reasonCode,
+      reason: `Direct ${command} is local-only, and the configured Kit could not be evaluated: ${kit.reason}`
+    });
+  }
+  return renderKitAuthorityStop({
+    status: "BLOCKED",
+    reasonCode: `direct_${command}_requires_kitless_project`,
+    reason: `Direct ${command} is local-only. This project has a healthy Kit; use visp-hyper run to consume its authoritative workflow.`
+  });
+}
 
 /**
  * Run the full start pipeline (session creation, kit context adoption, memory
  * fusion, and all `.visp/hyper/current/` writes) and return the created session
- * plus the rendered handoff block. Shared by both `start` and `run` so there is
- * a single implementation; callers are responsible for printing the handoff.
+ * plus the rendered handoff block. Callers must supply an already resolved
+ * authority mode so a configured Kit failure can never become local fallback.
  */
 export async function executeStart(
   projectPath: string,
@@ -73,7 +102,7 @@ export async function executeStart(
   await initializeProject(projectPath);
   const config = await readConfig(projectPath);
   const tool = options.tool ?? config.defaultTool;
-  const adoption = options.strictKit?.adoption ?? (await adoptKitContextPack(projectPath, config));
+  const adoption = options.authority.mode === "kit" ? options.authority.adoption : undefined;
   const kit = await readKitArtifacts(projectPath);
   const memory = await readMemoryPack(projectPath);
   const memoryFusion = await fuseRecalledMemory(projectPath, config, goal);
@@ -240,39 +269,6 @@ export async function prepareStrictKitAdoption(
     artifact: input.artifact,
     contract: input.contract,
     authorityWarnings: []
-  });
-}
-
-/**
- * When the external visp kit is available and has an active task with an on-disk
- * context pack, adopt that pack as the context source. Returns `undefined` (so the
- * caller falls back to the relevance scanner) whenever the kit is unavailable, has
- * no active task, exposes no readable pack, or the pack yields zero usable files.
- */
-async function adoptKitContextPack(projectPath: string, config: HyperConfig): Promise<KitAdoption | undefined> {
-  const kit = await detectVisp(projectPath);
-  if (!kit.available) {
-    return undefined;
-  }
-  const activeTaskId = kit.status.activeTask?.id;
-  if (!activeTaskId) {
-    return undefined;
-  }
-
-  const bridge = new KitCommandBridge({ projectPath });
-  const artifact = await bridge.readContextPackArtifact(activeTaskId);
-  if (!artifact) {
-    return undefined;
-  }
-  const contract = await bridge.integrationContract({ quiet: true });
-
-  return buildKitAdoption({
-    projectPath,
-    config,
-    taskId: activeTaskId,
-    artifact,
-    contract,
-    authorityWarnings: [...kit.warnings, ...bridge.warnings]
   });
 }
 

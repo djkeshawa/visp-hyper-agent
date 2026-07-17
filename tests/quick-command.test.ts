@@ -146,30 +146,37 @@ describe("quick command", () => {
     expect(state.currentTaskId).toBe("Q001");
   });
 
-  it("AC007: prints the run hint when a Visp Kit is detected, and not otherwise", async () => {
-    const kitless = await createRepo();
-    process.env.PATH = await gitNodeOnlyPath();
-    await runCli(["node", "visp-hyper", "--project", kitless, "quick", "fix the parser"]);
-    expect(logs.join("\n")).not.toContain("this project has a Visp Kit");
+  it.each([
+    {
+      name: "healthy",
+      status: { success: true, initialized: true, activeFeature: { id: "001", slug: "pipeline" } },
+      expectedStatus: "BLOCKED"
+    },
+    {
+      name: "configured-unhealthy",
+      status: { success: false, initialized: true },
+      expectedStatus: "INCONCLUSIVE"
+    }
+  ])(
+    "AC007: stops before quick side effects when Kit is $name",
+    async ({ status, expectedStatus }) => {
+      const projectPath = await createRepo();
+      await mkdir(join(projectPath, ".visp"), { recursive: true });
+      await writeFile(join(projectPath, ".visp", "policy.json"), JSON.stringify({ rules: [] }), "utf8");
+      const shim = await createVispShim({ status: { stdout: status } });
+      process.env.PATH = `${dirname(shim.binary)}${delimiter}${originalPath ?? ""}`;
 
-    const kitProject = await createRepo();
-    await mkdir(join(kitProject, ".visp"), { recursive: true });
-    await writeFile(join(kitProject, ".visp", "policy.json"), JSON.stringify({ rules: [] }), "utf8");
-    const shim = await createVispShim({
-      status: {
-        stdout: {
-          success: true,
-          initialized: true,
-          activeFeature: { id: "001", slug: "pipeline" }
-        }
-      }
-    });
-    process.env.PATH = `${dirname(shim.binary)}${delimiter}${originalPath ?? ""}`;
+      await runCli(["node", "visp-hyper", "--project", projectPath, "quick", "fix the parser"]);
+      const output = logs.join("\n");
 
-    logs = [];
-    await runCli(["node", "visp-hyper", "--project", kitProject, "quick", "fix the parser"]);
-    expect(logs.join("\n")).toContain("this project has a Visp Kit");
-  });
+      expect(output).toContain("BEGIN_VISP_KIT_AUTHORITY_RESULT");
+      expect(output).toContain(`status: ${expectedStatus}`);
+      expect(output).not.toContain("BEGIN_VISP_AGENT_HANDOFF");
+      expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+      await expect(readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")).rejects.toThrow();
+      expect(process.exitCode).toBe(1);
+    }
+  );
 
   it("legacy state without syntheticTasks still parses", async () => {
     const projectPath = await createRepo();

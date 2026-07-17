@@ -10,7 +10,7 @@ import { ProjectValidationRunner } from "../../quality/validation-runner.js";
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
-import { executeStart } from "./start.js";
+import { executeStart, renderDirectCommandKitStop } from "./start.js";
 import { resolveProjectPath } from "./shared.js";
 
 const QUICK_TASK_ID = "Q001";
@@ -26,6 +26,12 @@ export function quickCommand(): Command {
     )
     .action(async function (this: Command, goal: string, options: { files?: string[]; tool?: ToolProfile }) {
       const projectPath = resolveProjectPath(this);
+      const kit = await detectVisp(projectPath);
+      if (kit.state !== "absent") {
+        console.log(renderDirectCommandKitStop("quick", kit));
+        process.exitCode = 1;
+        return;
+      }
 
       const files = normalizeFiles(options.files ?? [], projectPath);
       const detected = await new ProjectValidationRunner().detect(projectPath);
@@ -41,7 +47,10 @@ export function quickCommand(): Command {
         riskLevel: "low"
       };
 
-      const { session, handoff } = await executeStart(projectPath, goal, { tool: options.tool });
+      const { session, handoff } = await executeStart(projectPath, goal, {
+        tool: options.tool,
+        authority: { mode: "local" }
+      });
 
       await updateActiveSession(projectPath, (current) => ({
         ...current,
@@ -59,13 +68,6 @@ export function quickCommand(): Command {
       console.log(buildActionBlock(task, { sessionId: session.id }));
       await printAndRecordRouting(projectPath, task);
 
-      const kit = await detectVisp(projectPath);
-      if (kit.available) {
-        console.log("");
-        console.log(
-          "hint: this project has a Visp Kit — `visp-hyper run` drives the full gated workflow."
-        );
-      }
     });
 }
 

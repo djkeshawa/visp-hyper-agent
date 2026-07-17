@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { AddressInfo } from "node:net";
+import { AddressInfo, type Socket } from "node:net";
 
 export interface RecordedRequest {
   method: string;
@@ -35,6 +35,7 @@ export interface MockMemoryServer {
  */
 export async function startMockMemoryServer(spec: RouteSpec): Promise<MockMemoryServer> {
   const requests: RecordedRequest[] = [];
+  const sockets = new Set<Socket>();
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
@@ -66,6 +67,10 @@ export async function startMockMemoryServer(spec: RouteSpec): Promise<MockMemory
       }
     });
   });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
@@ -73,7 +78,7 @@ export async function startMockMemoryServer(spec: RouteSpec): Promise<MockMemory
   return {
     url: `http://127.0.0.1:${port}`,
     requests,
-    close: () => closeServer(server)
+    close: () => closeServer(server, sockets)
   };
 }
 
@@ -88,8 +93,14 @@ function parseBody(raw: string): unknown {
   }
 }
 
-function closeServer(server: Server): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
+function closeServer(server: Server, sockets: ReadonlySet<Socket>): Promise<void> {
+  const closed = new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
+  // Fetch keeps HTTP connections alive. Destroy only fixture-owned sockets so
+  // the close callback is deterministic under captured and terminal output.
+  for (const socket of sockets) {
+    socket.destroy();
+  }
+  return closed;
 }

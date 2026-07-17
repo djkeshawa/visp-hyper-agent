@@ -41,7 +41,10 @@ export function runCommand(): Command {
       // Genuine Kit absence preserves the explicit local workflow. A configured
       // Kit that cannot be evaluated is an authority failure, not absence.
       if (kit.state === "absent") {
-        const { handoff } = await executeStart(projectPath, goal, options);
+        const { handoff } = await executeStart(projectPath, goal, {
+          ...options,
+          authority: { mode: "local" }
+        });
         console.log(handoff);
         return;
       }
@@ -216,7 +219,7 @@ export function runCommand(): Command {
       // precondition has produced a valid authoritative result.
       const { session, handoff } = await executeStart(projectPath, goal, {
         ...options,
-        strictKit: { adoption: strictKitAdoption }
+        authority: { mode: "kit", adoption: strictKitAdoption }
       });
       await updateActiveSession(projectPath, (current) => ({ ...current, pipeline }));
 
