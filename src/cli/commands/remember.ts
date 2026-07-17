@@ -19,10 +19,13 @@ import { installSkill, isDuplicate, readSkillRegistry, recordUsage } from "../..
 import { appendUsage } from "../../telemetry/telemetry-store.js";
 import { resolveProjectPath } from "./shared.js";
 
+const rememberOutcome =
+  "Session learnings recorded. No Visp Kit task was completed by this command.";
+
 export function rememberCommand(): Command {
   return new Command("remember")
     .description("Write a local memory summary for the active session.")
-    .option("--summary <summary>", "Session summary to store.", "Session completed. Review generated artifacts for details.")
+    .option("--summary <summary>", "Session summary to store.", rememberOutcome)
     .option("--decision <decision...>", "Decision to include in memory.")
     .option("--follow-up <followUp...>", "Follow-up to include in memory.")
     .option("--input-tokens <n>", "Input token count for this session, recorded to telemetry and forwarded to the kit budget.")
@@ -81,6 +84,7 @@ export function rememberCommand(): Command {
       } else {
         console.log("Memory not persisted locally (see warning above); session marked remembered.");
       }
+      console.log(rememberOutcome);
     });
 }
 

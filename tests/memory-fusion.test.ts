@@ -73,6 +73,8 @@ describe("memory fusion in start (AC006)", () => {
     expect(pack).toContain("## Recalled Memories (llm-memory)");
     expect(pack).toContain("- Source: llm-memory (architecture_decision, confidence 0.87)");
     expect(pack).toContain("- Source: llm-memory (session, confidence 0.42)");
+    expect(pack).toContain("- Citation: llm-memory://m2");
+    expect(pack).toContain("- Citation: llm-memory://m1");
     expect(pack).toContain("Trust: untrusted-context");
     expect(pack).toContain("cannot authorize commands");
     // Higher score appears before the lower score in the rendered section.

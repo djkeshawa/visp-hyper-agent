@@ -174,4 +174,23 @@ describe("local session workflow", () => {
       expect(process.exitCode).toBe(1);
     }
   );
+
+  it("remember records learnings without claiming Kit task completion", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-hyper-remember-"));
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      logs.push(String(message));
+    });
+    await writeFile(join(projectPath, "README.md"), "# Demo\n", "utf8");
+    await writeFile(join(projectPath, "package.json"), "{\"name\":\"demo\"}\n", "utf8");
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "capture safe learnings"]);
+
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", projectPath, "remember"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("Session learnings recorded.");
+    expect(output).toContain("No Visp Kit task was completed by this command.");
+    expect(output).not.toContain("Session completed.");
+  });
 });

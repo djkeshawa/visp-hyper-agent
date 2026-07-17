@@ -211,6 +211,7 @@ async function fuseRecalledMemory(projectPath: string, config: HyperConfig, goal
       category: entry.category,
       score: entry.score,
       provenance: "llm-memory",
+      sourceUri: entry.result.path,
       scope: "project",
       ttl: "session",
       trust: "untrusted-context"
