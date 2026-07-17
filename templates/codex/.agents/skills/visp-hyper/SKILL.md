@@ -19,9 +19,12 @@ prints an Agent Handoff Protocol that governs the whole session.
    allowed/forbidden file scopes, and note the validation commands.
 3. Do the work within scope, then run the validation commands and confirm they pass.
 4. If a BLOCKED block prints, run the named next command instead of coding.
-5. Advance with `visp-hyper checkpoint --task <id>`; on FAILED, fix only the reported
-   findings and re-run.
-6. End with `visp-hyper remember --summary "<learnings>"`.
+5. Run `visp-hyper checkpoint --task <id>` to collect local validation evidence.
+   Hyper checkpoint results are local evidence only.
+   Strict progression and remediation require the exact current ready Kit action.
+   In a genuinely Kit-less workflow, local evidence may guide local progression.
+6. Record learnings with `visp-hyper remember --summary "<learnings>"`.
+   Remember records session learnings and does not complete a Kit task.
 
 ## Cost routing
 

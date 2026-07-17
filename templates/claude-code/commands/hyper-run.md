@@ -50,10 +50,12 @@ Follow these steps in order. Do not skip ahead.
    `implementer` for the specific failure and re-run — do not checkpoint a result
    you have not verified.
 
-6. **Checkpoint.** Run `visp-hyper checkpoint --task <id>` (via Bash). On PASSED,
-   proceed to the next task with `/hyper-next`. On FAILED, delegate a corrective
-   implement pass for only the reported findings and re-run the checkpoint — never
-   skip a failed gate.
+6. **Checkpoint.** Run `visp-hyper checkpoint --task <id>` (via Bash) to collect
+   local validation evidence.
+   Hyper checkpoint results are local evidence only.
+   Strict progression and remediation require the exact current ready Kit action.
+   In a genuinely Kit-less workflow, local evidence may guide local progression.
 
-7. **Finish the session** as the handoff instructs (checkpoint, review, or
-   `visp-hyper remember`).
+7. **Record learnings.** Run `visp-hyper remember --summary "<learnings>"` when the
+   handoff requests it.
+   Remember records session learnings and does not complete a Kit task.

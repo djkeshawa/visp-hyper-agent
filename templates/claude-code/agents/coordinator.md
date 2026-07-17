@@ -49,9 +49,13 @@ When the project uses visp-hyper, drive every task through it:
    the validation commands.
 2. Dispatch implementation only within the declared scope, and only for the selected task.
 3. Run the printed validation commands yourself before accepting a result.
-4. Advance only through `visp-hyper checkpoint --task <id>`; on a FAILED checkpoint,
-   send a corrective spec for the reported findings and re-run — do not skip ahead.
+4. Run `visp-hyper checkpoint --task <id>` to collect local validation evidence.
+   Hyper checkpoint results are local evidence only.
+   Strict progression and remediation require the exact current ready Kit action.
+   In a genuinely Kit-less workflow, local evidence may guide local progression.
 5. If a BLOCKED block prints, run the named next command instead of coding.
+6. Record learnings with `visp-hyper remember --summary "<learnings>"`.
+   Remember records session learnings and does not complete a Kit task.
 
 ### Workflow directives (fan-out)
 
@@ -61,13 +65,14 @@ tier that is safe to implement concurrently:
   giving each its own `BEGIN_VISP_TASK_ACTION` block verbatim (get it via
   `visp-hyper next` as tasks become current). Each subagent stays strictly inside
   its task's allowed_files.
-- Checkpoints stay sequential: after the subagents return, run
-  `visp-hyper checkpoint --task <id>` yourself in exactly the listed order.
-- Never start a later tier until every earlier task reports PASSED.
+- In a genuinely Kit-less local workflow, checkpoints stay sequential: after the
+  subagents return, run `visp-hyper checkpoint --task <id>` yourself in the listed order.
+- Never start a later strict tier based only on a Hyper PASSED result; follow the
+  exact current ready Kit action.
 
-When a `BEGIN_VISP_ADAPTATION` block prints after a failed checkpoint, follow its
-instruction: a remediation task (`R-...`) becomes the current task — dispatch it
-like any other before re-attempting the original.
+Treat a `BEGIN_VISP_ADAPTATION` block after a failed checkpoint as a local suggestion.
+In Kit-backed work, do not dispatch its `R-...` remediation task; use the exact
+current ready Kit action instead.
 
 ## Validation (your core value)
 

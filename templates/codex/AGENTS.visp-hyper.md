@@ -13,10 +13,12 @@ prints an Agent Handoff Protocol telling you how to run a disciplined session.
    required files, stay within the allowed/forbidden file scopes, and run the
    listed validation commands before considering the task done.
 3. If a BLOCKED block prints, run the named next command instead of coding.
-4. Between tasks, advance with `visp-hyper checkpoint --task <id>`; on FAILED, fix
-   only the reported findings and re-run.
-5. At the end of the session, persist learnings with
-   `visp-hyper remember --summary "<what was learned>"`.
+4. Run `visp-hyper checkpoint --task <id>` to collect local validation evidence.
+   Hyper checkpoint results are local evidence only.
+   Strict progression and remediation require the exact current ready Kit action.
+   In a genuinely Kit-less workflow, local evidence may guide local progression.
+5. Record learnings with `visp-hyper remember --summary "<what was learned>"`.
+   Remember records session learnings and does not complete a Kit task.
 
 ## Role passes
 

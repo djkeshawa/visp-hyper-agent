@@ -92,6 +92,31 @@ describe("non-claude installs (AC001b)", () => {
   });
 });
 
+describe("installed workflow authority wording", () => {
+  const localEvidence = "Hyper checkpoint results are local evidence only.";
+  const kitAuthority = "Strict progression and remediation require the exact current ready Kit action.";
+  const remembrance = "Remember records session learnings and does not complete a Kit task.";
+
+  it.each([
+    ["generic", ["visp-hyper-instructions.md"]],
+    ["opencode", ["visp-hyper-instructions.md"]],
+    ["codex", ["AGENTS.visp-hyper.md", ".agents/skills/visp-hyper/SKILL.md"]],
+    ["claude-code", [".claude/agents/coordinator.md", ".claude/commands/hyper-run.md"]]
+  ] as const)("keeps %s installed guidance mode-neutral", async (tool, paths) => {
+    const project = await makeProject();
+    await installAssets(tool, project, { templatesDir: REAL_TEMPLATES });
+
+    for (const path of paths) {
+      const body = await readFile(join(project, path), "utf8");
+      expect(body).toContain(localEvidence);
+      expect(body).toContain(kitAuthority);
+      expect(body).toContain(remembrance);
+      expect(body).not.toMatch(/On PASSED,?\s+proceed/iu);
+      expect(body).not.toMatch(/Advance (between tasks |only )?(with|through) `visp-hyper checkpoint/iu);
+    }
+  });
+});
+
 describe("non-clobbering install (AC002)", () => {
   it("skips all on re-run without force and overwrites with force", async () => {
     const project = await makeProject();
