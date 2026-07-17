@@ -4,8 +4,12 @@ import { loadTaskGraph } from "../../pipeline/pipeline-engine.js";
 import {
   checkScope,
   collectChangedFiles,
-  type ChangedFilesMode
+  type ChangedFilesMode,
+  type ScopeViolation
 } from "../../governance/scope-guard.js";
+import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
+import type { WorkflowActionV2 } from "../../kit/kit-schemas.js";
 import { resolveProjectPath } from "./shared.js";
 
 type GuardOptions = { staged?: boolean; all?: boolean; base?: string };
@@ -18,7 +22,6 @@ export function guardCommand(): Command {
     .addOption(new Option("--base <ref>", "Check changes between <ref>...HEAD."))
     .action(async function (this: Command, options: GuardOptions) {
       const projectPath = resolveProjectPath(this);
-      const config = await readConfig(projectPath);
 
       // Explicit precedence: base > all > staged.
       const mode: ChangedFilesMode =
@@ -28,17 +31,61 @@ export function guardCommand(): Command {
             ? { mode: "all" }
             : { mode: "staged" };
 
-      const scope = await resolveScope(projectPath);
+      const kit = await detectVisp(projectPath);
+      if (kit.state === "configured-unhealthy") {
+        stopInconclusive(kit.reasonCode, kit.reason);
+        return;
+      }
+
+      const config = await readConfig(projectPath);
+      let scope: GuardScope;
+      if (kit.state === "healthy") {
+        const bridge = new KitCommandBridge({ projectPath });
+        const diagnostic = await bridge.nextActionDiagnostic();
+        if (!diagnostic.ok) {
+          for (const warning of bridge.warnings) console.warn(`warning: ${warning}`);
+          stopInconclusive(diagnostic.reasonCode, diagnostic.reason);
+          return;
+        }
+        const action = diagnostic.value;
+        if (action.verdict !== "ready") {
+          stopInconclusive(
+            `workflow_action_${action.verdict}`,
+            action.findings.join("; ") || `Kit workflow action verdict is ${action.verdict}.`,
+            action.nextCommand
+          );
+          return;
+        }
+        if (!action.taskId) {
+          stopInconclusive(
+            "workflow_action_missing_task",
+            "Kit returned a ready workflow action without a task id.",
+            action.nextCommand
+          );
+          return;
+        }
+        scope = kitScope(action, config.blockedPaths);
+      } else {
+        const localScope = await resolveScope(projectPath);
+        scope = {
+          authority: "local",
+          taskId: localScope?.taskId ?? null,
+          allowedFiles: localScope?.allowedFiles,
+          blockedPaths: config.blockedPaths
+        };
+      }
+
       const { files, warnings } = await collectChangedFiles(projectPath, mode);
-      const violations = checkScope(files, {
-        allowedFiles: scope?.allowedFiles,
-        blockedPaths: config.blockedPaths
-      });
+      if (scope.authority === "kit" && warnings.length > 0) {
+        stopInconclusive("changed_files_unavailable", warnings.join("; "));
+        return;
+      }
+      const violations = checkGuardScope(files, scope);
 
       const blocked = violations.length > 0;
       const lines: string[] = [
         "BEGIN_VISP_GUARD_RESULT",
-        `scope: ${scope?.taskId ?? "none"}`,
+        `scope: ${scope.taskId ?? "none"}`,
         `checked: ${files.length} file(s) (${describeMode(mode)})`,
         "violations:"
       ];
@@ -71,6 +118,52 @@ export function guardCommand(): Command {
 
 function describeMode(mode: ChangedFilesMode): string {
   return mode.mode === "base" ? `base ${mode.baseRef}` : mode.mode;
+}
+
+type GuardScope = {
+  authority: "kit" | "local";
+  taskId: string | null;
+  allowedFiles?: string[];
+  blockedPaths: string[];
+};
+
+function kitScope(action: WorkflowActionV2, configuredBlockedPaths: string[]): GuardScope {
+  return {
+    authority: "kit",
+    taskId: action.taskId,
+    allowedFiles: action.writablePaths,
+    blockedPaths: [...new Set([...configuredBlockedPaths, ...action.forbiddenPaths])]
+  };
+}
+
+function checkGuardScope(files: string[], scope: GuardScope): ScopeViolation[] {
+  const violations = checkScope(files, {
+    allowedFiles: scope.allowedFiles,
+    blockedPaths: scope.blockedPaths
+  });
+  if (scope.authority !== "kit" || (scope.allowedFiles?.length ?? 0) > 0) {
+    return violations;
+  }
+
+  const alreadyBlocked = new Set(violations.map((violation) => violation.file));
+  return [
+    ...violations,
+    ...files
+      .filter((file) => !alreadyBlocked.has(file))
+      .map((file): ScopeViolation => ({ file, rule: "outside-allowed" }))
+  ];
+}
+
+function stopInconclusive(reasonCode: string, reason: string, nextAllowedCommand?: string): void {
+  console.log(
+    renderKitAuthorityStop({
+      status: "INCONCLUSIVE",
+      reasonCode,
+      reason,
+      nextAllowedCommand
+    })
+  );
+  process.exitCode = 1;
 }
 
 /**

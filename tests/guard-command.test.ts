@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,7 @@ import { execFileResolved } from "../src/core/executable-resolver.js";
 import { initializeProject } from "../src/core/session-manager.js";
 import { checkScope, collectChangedFiles } from "../src/governance/scope-guard.js";
 import { toolOnlyPath } from "./helpers/tool-path.js";
+import { createVispShim, type ShimSpec } from "./helpers/visp-shim.js";
 
 // Resolve every helper's git call the same way the product does, so bare
 // commands still spawn when the test replaces PATH with an isolated tool dir.
@@ -47,6 +48,47 @@ async function stage(projectPath: string, file: string): Promise<void> {
  */
 async function gitNodeOnlyPath(): Promise<string> {
   return toolOnlyPath(["git"]);
+}
+
+function workflowActionFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    protocolVersion: "2.0",
+    phase: "implement",
+    taskId: "T900",
+    goal: "Use the authoritative guard scope",
+    requiredReads: [],
+    writablePaths: ["src"],
+    forbiddenPaths: [],
+    acceptanceOracles: [],
+    validationCommands: ["pnpm test"],
+    assuranceLevel: "kit_strict",
+    verdict: "ready",
+    findings: [],
+    nextCommand: "visp implement",
+    ...overrides
+  };
+}
+
+function healthyKitSpec(extra: ShimSpec = {}): ShimSpec {
+  return {
+    status: {
+      stdout: {
+        success: true,
+        initialized: true,
+        activeFeature: { id: "001", slug: "strict-guard" },
+        activeTask: { id: "T900", title: "Guard scope", status: "ready" }
+      }
+    },
+    next: { stdout: workflowActionFixture() },
+    ...extra
+  };
+}
+
+async function configureKit(projectPath: string, spec: ShimSpec = healthyKitSpec()): Promise<void> {
+  await mkdir(join(projectPath, ".visp"), { recursive: true });
+  await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+  const shim = await createVispShim(spec);
+  process.env.PATH = `${dirname(shim.binary)}${delimiter}${originalPath ?? ""}`;
 }
 
 /**
@@ -284,5 +326,125 @@ describe("guard command integration", () => {
     expect(output).toContain("warning:");
     expect(output).toContain("status: PASSED");
     expect(process.exitCode).toBeFalsy();
+  });
+
+  it("AC003: configured guard uses the ready Kit action instead of local session scope", async () => {
+    const projectPath = await createRepo();
+    await writeQuickSession(projectPath, { id: "Q001", allowedFiles: ["lib"] });
+    await writeFile(join(projectPath, "src", "ok.ts"), "export const ok = 1;\n", "utf8");
+    await stage(projectPath, "src/ok.ts");
+    await configureKit(projectPath);
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("scope: T900");
+    expect(output).toContain("status: PASSED");
+    expect(output).not.toContain("scope: Q001");
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it("AC003: configured guard applies Kit forbidden paths inside writable scope", async () => {
+    const projectPath = await createRepo();
+    await writeFile(join(projectPath, "src", "secret.ts"), "export const secret = 1;\n", "utf8");
+    await stage(projectPath, "src/secret.ts");
+    await configureKit(
+      projectPath,
+      healthyKitSpec({
+        next: {
+          stdout: workflowActionFixture({ forbiddenPaths: ["src/secret.ts"] })
+        }
+      })
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("src/secret.ts: blocked path");
+    expect(output).toContain("status: BLOCKED");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC003: an empty Kit writable scope blocks every observed change", async () => {
+    const projectPath = await createRepo();
+    await writeFile(join(projectPath, "src", "nope.ts"), "export const nope = 1;\n", "utf8");
+    await stage(projectPath, "src/nope.ts");
+    await configureKit(
+      projectPath,
+      healthyKitSpec({
+        next: { stdout: workflowActionFixture({ writablePaths: [] }) }
+      })
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("src/nope.ts: outside allowed files");
+    expect(output).toContain("status: BLOCKED");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: configured-unhealthy guard is inconclusive without local fallback", async () => {
+    const projectPath = await createRepo();
+    await writeQuickSession(projectPath, { id: "Q001", allowedFiles: ["src"] });
+    await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+    await writeFile(join(projectPath, "src", "ok.ts"), "export const ok = 1;\n", "utf8");
+    await stage(projectPath, "src/ok.ts");
+    process.env.PATH = await gitNodeOnlyPath();
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_KIT_AUTHORITY_RESULT");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(output).not.toContain("scope: Q001");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it.each([
+    {
+      name: "malformed",
+      next: { stdout: "not-json" },
+      reasonCode: "strict_next_unavailable"
+    },
+    {
+      name: "non-ready",
+      next: {
+        stdout: workflowActionFixture({
+          taskId: null,
+          writablePaths: [],
+          verdict: "blocked",
+          findings: ["VSP001: scan required"],
+          nextCommand: "visp scan"
+        }),
+        exitCode: 1
+      },
+      reasonCode: "workflow_action_blocked"
+    }
+  ])("AC004: $name Kit action is inconclusive and non-zero", async ({ next, reasonCode }) => {
+    const projectPath = await createRepo();
+    await configureKit(projectPath, healthyKitSpec({ next }));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain(`reason_code: ${reasonCode}`);
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: configured guard treats an unreadable Git diff as inconclusive", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-guard-nogit-strict-"));
+    await configureKit(projectPath);
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: changed_files_unavailable");
+    expect(output).not.toContain("status: PASSED");
+    expect(process.exitCode).toBe(1);
   });
 });
