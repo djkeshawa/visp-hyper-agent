@@ -115,6 +115,24 @@ describe("installed workflow authority wording", () => {
       expect(body).not.toMatch(/Advance (between tasks |only )?(with|through) `visp-hyper checkpoint/iu);
     }
   });
+
+  it("keeps the remaining Claude commands from granting strict progress or remediation", async () => {
+    const project = await makeProject();
+    await installAssets("claude-code", project, { templatesDir: REAL_TEMPLATES });
+
+    for (const path of [
+      ".claude/commands/hyper-next.md",
+      ".claude/commands/hyper-checkpoint.md",
+      ".claude/commands/hyper-fanout.md"
+    ]) {
+      const body = await readFile(join(project, path), "utf8");
+      expect(body).toContain(localEvidence);
+      expect(body).toContain(kitAuthority);
+      expect(body).not.toMatch(/proceed only on PASSED/iu);
+      expect(body).not.toMatch(/On a FAILED result, fix/iu);
+      expect(body).not.toMatch(/until every earlier task reports PASSED/iu);
+    }
+  });
 });
 
 describe("non-clobbering install (AC002)", () => {
