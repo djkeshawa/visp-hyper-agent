@@ -6,6 +6,9 @@ import { readTextIfExists, vispPath } from "../../core/fs-utils.js";
 import { getActiveSession } from "../../core/session-manager.js";
 import type { SessionRecord } from "../../core/types.js";
 import { requiredReads, renderHandoff } from "../../handoff/handoff-protocol.js";
+import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
+import type { WorkflowActionV2 } from "../../kit/kit-schemas.js";
 import { buildActionBlock, currentTask, loadTaskGraph, readySet } from "../../pipeline/pipeline-engine.js";
 import { compareCurrentToCheckpoint, emptyDelta, type CheckpointDelta } from "../../quality/checkpoint-snapshot.js";
 import { contextPackPathIfExists, resolveProjectPath } from "./shared.js";
@@ -59,6 +62,33 @@ export function resumeCommand(): Command {
     .addOption(new Option("--json", "Print a machine-readable resume summary."))
     .action(async function (this: Command, options: ResumeOptions) {
       const projectPath = resolveProjectPath(this);
+      const kit = await detectVisp(projectPath);
+      if (kit.state === "configured-unhealthy") {
+        stopInconclusive(kit.reasonCode, kit.reason);
+        return;
+      }
+      if (kit.state === "healthy") {
+        const bridge = new KitCommandBridge({ projectPath });
+        const diagnostic = await bridge.nextActionDiagnostic();
+        if (!diagnostic.ok) {
+          for (const warning of bridge.warnings) console.warn(`warning: ${warning}`);
+          stopInconclusive(diagnostic.reasonCode, diagnostic.reason);
+          return;
+        }
+        const action = diagnostic.value;
+        if (action.verdict !== "ready") {
+          stopInconclusive(
+            `workflow_action_${action.verdict}`,
+            action.findings.join("; ") || `Kit workflow action verdict is ${action.verdict}.`,
+            action.nextCommand
+          );
+          return;
+        }
+
+        console.log(options.json ? JSON.stringify(action, null, 2) : formatKitResume(action));
+        return;
+      }
+
       const summary = await buildResumeSummary(projectPath);
 
       if (options.json) {
@@ -71,6 +101,32 @@ export function resumeCommand(): Command {
         process.exitCode = 1;
       }
     });
+}
+
+function formatKitResume(action: WorkflowActionV2): string {
+  return [
+    "BEGIN_VISP_RESUME",
+    "authority: kit",
+    `task: ${action.taskId ?? "none"}`,
+    `next: ${action.nextCommand}`,
+    "END_VISP_RESUME",
+    "",
+    "BEGIN_VISP_WORKFLOW_ACTION_V2",
+    JSON.stringify(action),
+    "END_VISP_WORKFLOW_ACTION_V2"
+  ].join("\n");
+}
+
+function stopInconclusive(reasonCode: string, reason: string, nextAllowedCommand?: string): void {
+  console.log(
+    renderKitAuthorityStop({
+      status: "INCONCLUSIVE",
+      reasonCode,
+      reason,
+      nextAllowedCommand
+    })
+  );
+  process.exitCode = 1;
 }
 
 export async function buildResumeSummary(projectPath: string): Promise<ResumeSummary> {

@@ -2,13 +2,16 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startCommand } from "../src/cli/commands/start.js";
 import { runCli } from "../src/cli/index.js";
+import { toolOnlyPath } from "./helpers/tool-path.js";
+import { createVispShim, type ShimSpec } from "./helpers/visp-shim.js";
 
 const execFileAsync = promisify(execFile);
+const originalPath = process.env.PATH;
 
 async function createProject(): Promise<string> {
   const projectPath = await mkdtemp(join(tmpdir(), "visp-cli-workflow-"));
@@ -24,8 +27,51 @@ async function createProject(): Promise<string> {
   return projectPath;
 }
 
+function workflowActionFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    protocolVersion: "2.0",
+    phase: "implement",
+    taskId: "T900",
+    goal: "Resume the authoritative task",
+    requiredReads: [],
+    writablePaths: ["src/feature.ts"],
+    forbiddenPaths: [".env"],
+    acceptanceOracles: [],
+    validationCommands: ["pnpm test"],
+    assuranceLevel: "kit_strict",
+    verdict: "ready",
+    findings: [],
+    nextCommand: "visp verify --task T900",
+    ...overrides
+  };
+}
+
+function healthyKitSpec(extra: ShimSpec = {}): ShimSpec {
+  return {
+    status: {
+      stdout: {
+        success: true,
+        initialized: true,
+        activeFeature: { id: "001", slug: "strict-resume" },
+        activeTask: { id: "T900", title: "Resume task", status: "ready" }
+      }
+    },
+    next: { stdout: workflowActionFixture() },
+    ...extra
+  };
+}
+
+async function configureKit(projectPath: string, spec: ShimSpec = healthyKitSpec()): Promise<void> {
+  await mkdir(join(projectPath, ".visp"), { recursive: true });
+  await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+  const shim = await createVispShim(spec);
+  process.env.PATH = `${dirname(shim.binary)}${delimiter}${originalPath ?? ""}`;
+}
+
 describe("CLI workflow", () => {
   afterEach(() => {
+    process.env.PATH = originalPath;
+    process.exitCode = undefined;
     vi.restoreAllMocks();
   });
 
@@ -144,6 +190,95 @@ describe("CLI workflow", () => {
     expect(summary.checkpointDelta.changedSinceCheckpoint).toContain("src/feature.ts");
     expect(summary.checkpointDelta.clearedSinceCheckpoint).toContain("src/new-file.ts");
     expect(summary.checkpointDelta.unchangedSinceCheckpoint).not.toContain("src/feature.ts");
+  });
+
+  it("AC005: configured resume returns the ready Kit action and exact next command", async () => {
+    const projectPath = await createProject();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => logs.push(String(message)));
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "local stale goal"]);
+    const action = workflowActionFixture();
+    await configureKit(projectPath, healthyKitSpec({ next: { stdout: action } }));
+
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", projectPath, "resume"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_WORKFLOW_ACTION_V2");
+    expect(output).toContain(JSON.stringify(action));
+    expect(output).toContain("next: visp verify --task T900");
+    expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect(output).not.toContain("BEGIN_VISP_AGENT_HANDOFF");
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it("AC005: configured resume JSON is the canonical ready action", async () => {
+    const projectPath = await createProject();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => logs.push(String(message)));
+    const action = workflowActionFixture();
+    await configureKit(projectPath, healthyKitSpec({ next: { stdout: action } }));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "resume", "--json"]);
+
+    expect(JSON.parse(logs.join("\n"))).toEqual(action);
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it("AC006: configured-unhealthy resume does not fall back to a local session", async () => {
+    const projectPath = await createProject();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => logs.push(String(message)));
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "local stale goal"]);
+    await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+    process.env.PATH = await toolOnlyPath(["git"]);
+
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", projectPath, "resume"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_KIT_AUTHORITY_RESULT");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).not.toContain("BEGIN_VISP_RESUME");
+    expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect(output).not.toContain("BEGIN_VISP_AGENT_HANDOFF");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it.each([
+    {
+      name: "malformed",
+      next: { stdout: "not-json" },
+      reasonCode: "strict_next_unavailable"
+    },
+    {
+      name: "non-ready",
+      next: {
+        stdout: workflowActionFixture({
+          taskId: null,
+          writablePaths: [],
+          verdict: "blocked",
+          findings: ["VSP001: scan required"],
+          nextCommand: "visp scan"
+        }),
+        exitCode: 1
+      },
+      reasonCode: "workflow_action_blocked"
+    }
+  ])("AC006: $name Kit action is inconclusive without local output", async ({ next, reasonCode }) => {
+    const projectPath = await createProject();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => logs.push(String(message)));
+    await configureKit(projectPath, healthyKitSpec({ next }));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "resume"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain(`reason_code: ${reasonCode}`);
+    expect(output).not.toContain("BEGIN_VISP_RESUME");
+    expect(output).not.toContain("BEGIN_VISP_WORKFLOW_ACTION_V2");
+    expect(process.exitCode).toBe(1);
   });
 
   it("rejects unsupported tool values", async () => {
