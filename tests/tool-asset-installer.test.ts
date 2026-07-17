@@ -100,6 +100,7 @@ describe("installed workflow authority wording", () => {
   it.each([
     ["generic", ["visp-hyper-instructions.md"]],
     ["opencode", ["visp-hyper-instructions.md"]],
+    ["copilot", [".github/instructions/visp-hyper.instructions.md"]],
     ["codex", ["AGENTS.visp-hyper.md", ".agents/skills/visp-hyper/SKILL.md"]],
     ["claude-code", [".claude/agents/coordinator.md", ".claude/commands/hyper-run.md"]]
   ] as const)("keeps %s installed guidance mode-neutral", async (tool, paths) => {
