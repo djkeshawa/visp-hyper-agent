@@ -87,7 +87,7 @@ function firstError(...checks: Array<string | null>): string | null {
 const TOOL_SPECS: ToolSpec[] = [
   {
     name: "hyper_quick",
-    description: "Start a zero-config evidence-gated task; follow the printed action block.",
+    description: "Start a local task only in a genuinely Kit-less project; configured Kit projects fail closed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -167,7 +167,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "hyper_checkpoint",
-    description: "Run verify+review evidence; only proceed when status PASSED.",
+    description: "Collect Hyper verify+review evidence; PASSED does not authorize strict Kit progression.",
     inputSchema: {
       type: "object",
       properties: {
@@ -217,7 +217,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "hyper_remember",
-    description: "Write a local memory summary for the active session.",
+    description: "Record learnings for the active session; this does not complete a Kit task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -783,7 +783,8 @@ async function getPrompt(
               "",
               "Then call `hyper_next` to get the current bounded action before editing.",
               "Respect allowed and forbidden files from the context pack.",
-              "Before reporting completion, run the relevant validation commands and then `hyper_checkpoint` or `hyper_review` as appropriate."
+              "Run the relevant validation commands and use `hyper_checkpoint` or `hyper_review` only as local evidence.",
+              "A Hyper checkpoint is local evidence only; strict progression and remediation require the exact current ready Kit action."
             ].join("\n")
           }
         }
@@ -808,7 +809,8 @@ async function getPrompt(
               "",
               "Follow only the printed Visp Hyper handoff and task action.",
               "Read the MCP resources produced by the run before inspecting source files.",
-              "Do not edit files outside the bounded action block."
+              "Do not edit files outside the bounded action block.",
+              "For Kit-backed work, strict progression and remediation require the exact current ready Kit action."
             ].join("\n")
           }
         }

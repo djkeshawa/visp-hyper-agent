@@ -4,6 +4,7 @@
 - **Decision date:** 2026-07-16
 - **Scope:** Phase 0 product and repository boundary
 - **Related inventory:** `docs/architecture/phase-0-duplicate-semantics-inventory.md`
+- **Follow-up decision:** `docs/adr/0002-direct-entry-points-are-kitless-only.md`
 
 ## Context
 
@@ -66,7 +67,7 @@ Neither Kit nor Hyper calls an LLM. The coding host owns model execution. Hyper'
 
 Configured-but-unhealthy Kit is not genuine Kit absence. A broad availability boolean is insufficient to choose between those modes.
 
-The direct `start` and `quick` product semantics are intentionally not settled by this ADR. A later product decision must choose between requiring an always-explicit local mode and blocking those commands when a project is configured for strict Kit operation.
+The direct `start` and `quick` product semantics were intentionally left open by this ADR. ADR 0002 now settles that choice: both commands are Kit-less-only and must stop before side effects whenever Kit is healthy or configured but unhealthy.
 
 ### Memory is context, not authority
 

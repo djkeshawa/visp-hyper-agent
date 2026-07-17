@@ -30,6 +30,22 @@ describe("tool profiles", () => {
     expect(renderHandoff(sessionFor("opencode"))).toContain("tool_profile_label: OpenCode");
   });
 
+  it("keeps checkpoint progression and remembrance wording authority-neutral", () => {
+    const profiles: ToolProfile[] = ["generic", "codex", "claude-code", "copilot", "opencode"];
+
+    for (const profile of profiles) {
+      const protocol = buildHandoffProtocol(sessionFor(profile));
+      expect(protocol.profileInstructions).toContain(
+        "A Hyper checkpoint is local evidence only; strict progression and remediation require the exact current ready Kit action."
+      );
+      expect(protocol.profileInstructions.join("\n")).not.toMatch(/PASSED.*(continue|clears|advance)/iu);
+      expect(protocol.workflow).toContain(
+        "Record session learnings with `visp-hyper remember`; it does not complete a Kit task."
+      );
+      expect(protocol.completionInstruction).toContain("does not complete a Kit task");
+    }
+  });
+
   it("rejects unknown tool values through the start command option parser", async () => {
     const command = startCommand();
     command.exitOverride();

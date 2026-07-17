@@ -241,6 +241,20 @@ describe("handleMessage tools surface (AC003)", () => {
     expect(report?.outputSchema?.properties).toHaveProperty("resourceUris");
   });
 
+  it("tools/list keeps direct-entry, checkpoint, and remembrance authority explicit", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-authority-wording-"));
+    const response = (await handleMessage(createToolContext(projectPath), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list"
+    })) as { result: { tools: Array<{ name: string; description: string }> } };
+    const descriptions = new Map(response.result.tools.map((tool) => [tool.name, tool.description]));
+
+    expect(descriptions.get("hyper_quick")).toContain("genuinely Kit-less");
+    expect(descriptions.get("hyper_checkpoint")).toContain("does not authorize strict Kit progression");
+    expect(descriptions.get("hyper_remember")).toContain("does not complete a Kit task");
+  });
+
   it("tools/call routes name+arguments to execute and wraps the result", async () => {
     const calls: Array<{ name: string; args: object }> = [];
     const ctx = stubContext(async (name, args) => {
@@ -836,6 +850,16 @@ describe("handleMessage resources and prompts surface", () => {
     })) as { result: { messages: Array<{ content: { text: string } }> } };
     expect(prompt.result.messages[0]?.content.text).toContain("hyper_run");
     expect(prompt.result.messages[0]?.content.text).toContain("ship the audit trail");
+
+    const resumePrompt = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "prompts/get",
+      params: { name: "hyper_resume", arguments: {} }
+    })) as { result: { messages: Array<{ content: { text: string } }> } };
+    const resumeText = resumePrompt.result.messages[0]?.content.text ?? "";
+    expect(resumeText).toContain("strict progression and remediation require the exact current ready Kit action");
+    expect(resumeText).toContain("A Hyper checkpoint is local evidence only");
   });
 });
 
