@@ -9,3 +9,5 @@ visp-hyper remember --summary "$ARGUMENTS"
 ```
 
 Capture the durable decisions, gotchas, and follow-ups — not a play-by-play.
+
+Remember records session learnings and does not complete a Kit task.

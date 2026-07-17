@@ -134,6 +134,19 @@ describe("installed workflow authority wording", () => {
       expect(body).not.toMatch(/until every earlier task reports PASSED/iu);
     }
   });
+
+  it("keeps Claude review advisory and remembrance separate from Kit completion", async () => {
+    const project = await makeProject();
+    await installAssets("claude-code", project, { templatesDir: REAL_TEMPLATES });
+
+    const review = await readFile(join(project, ".claude/commands/hyper-review.md"), "utf8");
+    expect(review).toContain("Hyper review warnings are local evidence only.");
+    expect(review).toContain(kitAuthority);
+    expect(review).not.toMatch(/address each warning it reports/iu);
+
+    const remember = await readFile(join(project, ".claude/commands/hyper-remember.md"), "utf8");
+    expect(remember).toContain(remembrance);
+  });
 });
 
 describe("non-clobbering install (AC002)", () => {
