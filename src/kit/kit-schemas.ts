@@ -17,6 +17,7 @@ const kitActiveTaskSchema = z.object({
 
 export const kitStatusSchema = z.object({
   success: z.boolean(),
+  targetPath: z.string().min(1),
   initialized: z.boolean(),
   activeFeature: kitFeatureRefSchema.nullish(),
   activeTask: kitActiveTaskSchema.nullish(),
@@ -72,7 +73,7 @@ const kitAppliedOverrideSchema = z
 export const kitGateResultSchema = z
   .object({
     success: z.boolean(),
-    targetPath: z.string(),
+    targetPath: z.string().min(1),
     stage: kitGateStageSchema,
     strictnessMode: z.enum(["relaxed", "standard", "strict", "locked"]),
     allowed: z.boolean(),
@@ -99,6 +100,7 @@ export type KitGateResult = z.infer<typeof kitGateResultSchema>;
 export const kitPolicyValidationResultSchema = z
   .object({
     success: z.boolean(),
+    targetPath: z.string().min(1),
     validation: z
       .object({
         passed: z.boolean(),
@@ -124,13 +126,13 @@ const kitAuthoritativeTaskSchema = z
     id: kitAuthoritativeIdSchema,
     title: z.string().min(1),
     description: z.string().min(1),
-    requirementIds: z.array(kitAuthoritativeIdSchema),
-    acceptanceCriterionIds: z.array(kitAuthoritativeIdSchema),
+    requirementIds: z.array(kitAuthoritativeIdSchema).min(1),
+    acceptanceCriterionIds: z.array(kitAuthoritativeIdSchema).min(1),
     dependsOn: z.array(kitAuthoritativeIdSchema),
-    allowedFiles: z.array(z.string().min(1)),
+    allowedFiles: z.array(z.string().min(1)).min(1),
     expectedFiles: z.array(z.string().min(1)).optional(),
     forbiddenFiles: z.array(z.string().min(1)).optional(),
-    validationCommands: z.array(z.string().min(1)),
+    validationCommands: z.array(z.string().min(1)).min(1),
     status: z.enum(["pending", "ready", "in_progress", "blocked", "done", "verified"]),
     parallelizable: z.boolean(),
     riskLevel: z.enum(["low", "medium", "high"])
@@ -318,8 +320,8 @@ export const kitAuthoritativeContextPackSchema = z
     recommendation: z.string().min(1),
     warnings: z.array(z.string().min(1)),
     selectedTask: kitAuthoritativeTaskSchema,
-    includedRequirements: z.array(kitAuthoritativeRequirementSchema),
-    includedAcceptanceCriteria: z.array(kitAuthoritativeAcceptanceCriterionSchema),
+    includedRequirements: z.array(kitAuthoritativeRequirementSchema).min(1),
+    includedAcceptanceCriteria: z.array(kitAuthoritativeAcceptanceCriterionSchema).min(1),
     includedPlanDecisions: z.array(kitAuthoritativePlanDecisionSchema),
     includedRisks: z.array(kitAuthoritativePlanRiskSchema),
     includedDependencyTasks: z.array(kitAuthoritativeDependencyTaskSchema),
@@ -332,11 +334,11 @@ export const kitAuthoritativeContextPackSchema = z
       })
       .passthrough(),
     artifactProvenance: z.array(kitArtifactProvenanceSchema),
-    includedFiles: z.array(kitAuthoritativeContextFileSchema),
+    includedFiles: z.array(kitAuthoritativeContextFileSchema).min(1),
     includedSnippets: z.array(kitAuthoritativeContextSnippetSchema),
-    validationCommands: z.array(z.string().min(1)),
-    constraints: z.array(z.string().min(1)),
-    instructions: z.array(z.string().min(1)),
+    validationCommands: z.array(z.string().min(1)).min(1),
+    constraints: z.array(z.string().min(1)).min(1),
+    instructions: z.array(z.string().min(1)).min(1),
     strictnessMode: z.enum(["relaxed", "standard", "strict", "locked"]).optional(),
     policyStatus: z.enum(["valid", "missing", "invalid", "default"]).optional(),
     gateStatus: z.enum(["allowed", "blocked", "warnings", "not_evaluated"]).optional(),
@@ -354,13 +356,89 @@ export const kitAuthoritativeContextPackSchema = z
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime()
   })
-  .passthrough();
+  .passthrough()
+  .superRefine((pack, context) => {
+    if (pack.selectedTask.id !== pack.taskId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["selectedTask", "id"],
+        message: "selectedTask.id must match taskId."
+      });
+    }
+    const includedRequirementIds = pack.includedRequirements.map((requirement) => requirement.id);
+    if (!sameIdSet(pack.selectedTask.requirementIds, includedRequirementIds)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["includedRequirements"],
+        message: "includedRequirements must match selectedTask.requirementIds."
+      });
+    }
+    const includedAcceptanceCriterionIds = pack.includedAcceptanceCriteria.map(
+      (criterion) => criterion.id
+    );
+    if (!sameIdSet(pack.selectedTask.acceptanceCriterionIds, includedAcceptanceCriterionIds)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["includedAcceptanceCriteria"],
+        message: "includedAcceptanceCriteria must match selectedTask.acceptanceCriterionIds."
+      });
+    }
+    const selectedRequirementIds = new Set(pack.selectedTask.requirementIds);
+    const nestedAcceptanceCriteria = pack.includedRequirements.flatMap(
+      (requirement) => requirement.acceptanceCriteria
+    );
+    if (
+      pack.includedRequirements.some((requirement) => requirement.featureId !== pack.featureId) ||
+      pack.includedAcceptanceCriteria.some(
+        (criterion) => !selectedRequirementIds.has(criterion.requirementId)
+      ) ||
+      nestedAcceptanceCriteria.some(
+        (criterion) =>
+          !pack.includedRequirements.some(
+            (requirement) =>
+              requirement.id === criterion.requirementId &&
+              requirement.acceptanceCriteria.some((entry) => entry.id === criterion.id)
+          )
+      ) ||
+      !sameIdSet(
+        nestedAcceptanceCriteria.map((criterion) => criterion.id),
+        includedAcceptanceCriterionIds
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["includedAcceptanceCriteria"],
+        message: "included requirement and acceptance-criterion mappings must match the selected feature and task."
+      });
+    }
+    if (!sameOrderedStrings(pack.selectedTask.validationCommands, pack.validationCommands)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["validationCommands"],
+        message: "validationCommands must match selectedTask.validationCommands."
+      });
+    }
+  });
 export type KitAuthoritativeContextPack = z.infer<typeof kitAuthoritativeContextPackSchema>;
+
+function sameIdSet(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length &&
+    new Set(left).size === left.length &&
+    new Set(right).size === right.length &&
+    left.every((id) => right.includes(id))
+  );
+}
+
+function sameOrderedStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
 
 // Verify / review / reconcile share a minimal summary surface. We keep a
 // passthrough `findings`-like array when present without over-specifying it.
 const kitSummaryBaseShape = {
   success: z.boolean(),
+  taskId: z.string().nullable().optional(),
   warnings: z.array(z.string()).optional(),
   errors: z.array(z.string()).optional(),
   findings: z.array(z.unknown()).optional()
@@ -372,7 +450,15 @@ export type KitVerifySummary = z.infer<typeof kitVerifySummarySchema>;
 export const kitReviewSummarySchema = z.object(kitSummaryBaseShape);
 export type KitReviewSummary = z.infer<typeof kitReviewSummarySchema>;
 
-export const kitReconcileSummarySchema = z.object(kitSummaryBaseShape);
+export const kitReconcileSummarySchema = z.object({
+  ...kitSummaryBaseShape,
+  taskId: z.string().nullable().optional(),
+  traceabilityUpdate: z.object({
+    requested: z.boolean(),
+    performed: z.boolean(),
+    updatedFiles: z.array(z.string())
+  }).optional()
+});
 export type KitReconcileSummary = z.infer<typeof kitReconcileSummarySchema>;
 
 export const kitBudgetResultSchema = z.object({
@@ -520,7 +606,7 @@ export const kitIntegrationContractSchema = z
       cliName: z.string(),
       version: z.string()
     }),
-    targetPath: z.string(),
+    targetPath: z.string().min(1),
     initialized: z.boolean(),
     activeFeature: kitIntegrationContractFeatureSchema.nullable(),
     activeTask: kitIntegrationContractTaskSchema.nullable(),

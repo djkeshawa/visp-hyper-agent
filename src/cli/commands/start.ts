@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { Command, Option } from "commander";
@@ -295,6 +296,13 @@ export async function prepareStrictKitAdoption(
     contract: KitIntegrationContract;
   }
 ): Promise<KitAdoption | undefined> {
+  if (
+    input.contract.orchestrator?.readContractVersion !== "0.1" ||
+    !input.artifact.prompt ||
+    !input.artifact.currentPrompt
+  ) {
+    return undefined;
+  }
   const config = await readConfig(projectPath);
   return buildKitAdoption({
     projectPath,
@@ -317,7 +325,7 @@ async function buildKitAdoption(input: {
   const { projectPath, config, taskId, artifact, contract } = input;
 
   const context = await contextFilesFromPack(artifact.pack, projectPath, config.blockedPaths);
-  if (context.files.length === 0) {
+  if (context.files.length === 0 || context.integrityFailed) {
     for (const warning of context.warnings) {
       console.warn(`warning: ${warning}`);
     }
@@ -396,49 +404,115 @@ async function contextFilesFromPack(
   pack: KitContextPack,
   projectPath: string,
   blockedPaths: string[]
-): Promise<{ files: ContextFile[]; warnings: string[] }> {
+): Promise<{ files: ContextFile[]; warnings: string[]; integrityFailed: boolean }> {
   const entries = pack.includedFiles ?? pack.files ?? [];
   const files: ContextFile[] = [];
   const warnings: string[] = [];
+  const selectedPaths = new Set<string>();
+  let integrityFailed = false;
   for (const entry of entries) {
     const provided = entry.content ?? entry.snippet;
+    const plannedNewFile = entry.includeMode === "new-file" && entry.hash === "new-file";
     let resolved;
     try {
       resolved = await resolveProjectFile(projectPath, entry.path, {
-        mode: provided === undefined ? "read" : "write",
+        mode: plannedNewFile || provided !== undefined ? "write" : "read",
         blockedPaths
       });
     } catch {
       warnings.push("Skipped an unsafe or unreadable context entry.");
+      integrityFailed = true;
       continue;
     }
 
-    const content = provided ?? (await readPackFile(resolved.absolutePath));
-    if (content === undefined) {
+    if (selectedPaths.has(resolved.logicalPath)) {
+      warnings.push(`Rejected duplicate context file ${resolved.logicalPath}.`);
+      integrityFailed = true;
+      continue;
+    }
+    selectedPaths.add(resolved.logicalPath);
+
+    if (plannedNewFile) {
+      if (resolved.exists) {
+        warnings.push(
+          `Rejected planned new file ${resolved.logicalPath}: the target already exists.`
+        );
+        integrityFailed = true;
+        continue;
+      }
+      if (provided !== undefined && provided.trim().length === 0) {
+        warnings.push(`Rejected blank context file ${resolved.logicalPath}.`);
+        integrityFailed = true;
+        continue;
+      }
+      files.push({
+        path: resolved.logicalPath,
+        reason: entry.reason ?? "visp-kit planned new file",
+        content:
+          provided === undefined
+            ? "Planned new file; no existing source content."
+            : truncateContent(provided)
+      });
+      continue;
+    }
+
+    const source =
+      provided === undefined
+        ? await readPackFile(resolved.absolutePath)
+        : { content: provided, sha256: hashContent(provided) };
+    if (source === undefined) {
       warnings.push(`Skipped unreadable context file ${resolved.logicalPath}.`);
+      integrityFailed = true;
+      continue;
+    }
+    if (source.content.trim().length === 0) {
+      warnings.push(`Rejected blank context file ${resolved.logicalPath}.`);
+      integrityFailed = true;
+      continue;
+    }
+    if (!entry.hash || !/^[a-f0-9]{64}$/u.test(entry.hash)) {
+      warnings.push(`Rejected context file ${resolved.logicalPath}: missing or invalid SHA-256.`);
+      integrityFailed = true;
+      continue;
+    }
+    if (source.sha256 !== entry.hash) {
+      warnings.push(
+        `Rejected context file ${resolved.logicalPath}: content did not match the authoritative SHA-256.`
+      );
+      integrityFailed = true;
       continue;
     }
     files.push({
       path: resolved.logicalPath,
       reason: entry.reason ?? "visp-kit context pack",
-      content,
-      ...(entry.hash ? { sourceHash: entry.hash, sourceHashAlgorithm: "sha256" as const, sourceHashSource: "visp-kit" as const } : {})
+      content: truncateContent(source.content),
+      sourceHash: entry.hash,
+      sourceHashAlgorithm: "sha256" as const,
+      sourceHashSource: "visp-kit" as const
     });
   }
-  return { files, warnings };
+  return { files, warnings, integrityFailed };
 }
 
 function normalizeRelative(projectPath: string, path: string): string {
   return relative(projectPath, path).replace(/\\/g, "/");
 }
 
-async function readPackFile(path: string): Promise<string | undefined> {
+async function readPackFile(path: string): Promise<{ content: string; sha256: string } | undefined> {
   try {
     const content = await readFile(path, "utf8");
-    return content.length > maxContentLength ? `${content.slice(0, maxContentLength)}\n\n[truncated]\n` : content;
+    return { content, sha256: hashContent(content) };
   } catch {
     return undefined;
   }
+}
+
+function hashContent(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function truncateContent(content: string): string {
+  return content.length > maxContentLength ? `${content.slice(0, maxContentLength)}\n\n[truncated]\n` : content;
 }
 
 function missingProvenanceWarning(taskId: string): string {

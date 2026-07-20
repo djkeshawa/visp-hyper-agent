@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectVisp, KitCommandBridge } from "../src/kit/kit-command-bridge.js";
 import {
+  kitAuthoritativeContextPackSchema,
   kitContextPackSchema,
   kitGateResultSchema,
   kitIntegrationContractSchema,
@@ -11,21 +12,45 @@ import {
 } from "../src/kit/kit-schemas.js";
 import {
   authoritativeContextPackFixture,
+  authoritativeTaskFixture,
   createVispShim,
   gateResultFixture,
-  policyValidateFixture
+  policyValidateFixture as basePolicyValidateFixture,
+  type ShimSpec
 } from "./helpers/visp-shim.js";
 
 const initializedStatus = {
   success: true,
+  targetPath: ".",
   initialized: true,
   activeFeature: { id: "002", slug: "demo", key: "002-demo" },
   activeTask: { id: "T001", title: "Kit Schemas", status: "ready" },
   featureState: "context_ready",
   // Extra unknown fields that real visp output includes:
-  targetPath: "/somewhere",
   taskSummary: { total: 2, ready: 1 }
 };
+
+function policyValidateFixture(
+  overrides: Parameters<typeof basePolicyValidateFixture>[0] = {}
+) {
+  return basePolicyValidateFixture({ targetPath: ".", ...overrides });
+}
+
+function reconcileSummaryFixture(
+  taskId: string | null,
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    success: true,
+    taskId,
+    traceabilityUpdate: {
+      requested: true,
+      performed: true,
+      updatedFiles: [".visp/features/002-demo/traceability.json"]
+    },
+    ...overrides
+  };
+}
 
 async function createKitProject(): Promise<string> {
   const projectPath = await mkdtemp(join(tmpdir(), "visp-kit-project-"));
@@ -34,25 +59,70 @@ async function createKitProject(): Promise<string> {
   return projectPath;
 }
 
-function integrationContractFixture(contractVersion = "2.0") {
+const PINNED_FEATURE_DIR = "001-pipeline";
+
+function integrationContractFixture(contractVersion = "2.0", taskId = "T001") {
+  const contextPack = `.visp/features/${PINNED_FEATURE_DIR}/context/${taskId}.context.json`;
+  const contextPrompt = `.visp/features/${PINNED_FEATURE_DIR}/context/${taskId}.prompt.md`;
   return {
     success: true,
     contractVersion,
     kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.1" },
-    targetPath: "/repo",
+    targetPath: ".",
     initialized: true,
     activeFeature: null,
     activeTask: null,
     commands: {},
+    workflow: {
+      implementationReadSet: [
+        ".visp/features/<feature>/context/<task-id>.context.json",
+        ".visp/prompts/current-task.prompt.md",
+        ".visp/policy.json"
+      ]
+    },
     artifacts: {
       kitSignals: [".visp/policy.json", ".visp/project.json"],
       projectStatus: ".visp/status.json",
       projectProfile: ".visp/project.json",
       featureRoot: ".visp/features",
-      featureDir: ".visp/features/001-demo",
-      taskGraph: ".visp/features/001-demo/task-graph.json",
-      contextPack: ".visp/features/001-demo/context/T001.context.json",
-      contextPrompt: ".visp/features/001-demo/context/T001.prompt.md"
+      featureDir: `.visp/features/${PINNED_FEATURE_DIR}`,
+      taskGraph: `.visp/features/${PINNED_FEATURE_DIR}/task-graph.json`,
+      contextPack,
+      contextPrompt
+    },
+    orchestrator: {
+      readContractVersion: "0.1",
+      requiredArtifacts: [
+        {
+          id: "context-pack",
+          path: contextPack,
+          role: "task context",
+          mimeType: "application/json",
+          requiredFor: ["implementation"],
+          freshness: "hash-pinned"
+        },
+        {
+          id: "context-prompt",
+          path: contextPrompt,
+          role: "feature task prompt",
+          mimeType: "text/markdown",
+          requiredFor: ["implementation"],
+          freshness: "read-latest"
+        },
+        {
+          id: "current-task-prompt",
+          path: ".visp/prompts/current-task.prompt.md",
+          role: "current task prompt",
+          mimeType: "text/markdown",
+          requiredFor: ["implementation"],
+          freshness: "read-latest"
+        }
+      ],
+      freshnessPolicy: {
+        contextPackHashPinned: true,
+        provenanceArtifactsHashPinned: true,
+        staleContextBlocks: ["implementation", "checkpoint", "pr"]
+      }
     },
     warnings: []
   };
@@ -60,24 +130,41 @@ function integrationContractFixture(contractVersion = "2.0") {
 
 async function createPinnedContextProject(payload: unknown, taskId = "T001") {
   const projectPath = await mkdtemp(join(tmpdir(), "visp-authoritative-ctx-"));
-  const contextDir = join(projectPath, ".visp", "features", "001-demo", "context");
-  const contextPath = join(contextDir, "T001.context.json");
+  const contextDir = join(projectPath, ".visp", "features", PINNED_FEATURE_DIR, "context");
+  const contextPath = join(contextDir, `${taskId}.context.json`);
+  const promptPath = join(contextDir, `${taskId}.prompt.md`);
+  const currentPromptPath = join(projectPath, ".visp", "prompts", "current-task.prompt.md");
   await mkdir(contextDir, { recursive: true });
+  await mkdir(join(projectPath, ".visp", "prompts"), { recursive: true });
   await writeFile(contextPath, JSON.stringify(payload), "utf8");
+  await writeFile(promptPath, `# Strict Visp Task Prompt\n\n- Selected task ID: ${taskId}\n`, "utf8");
+  await writeFile(
+    currentPromptPath,
+    [
+      "# Visp Task Implementation Prompt",
+      "",
+      `- Selected task ID: ${taskId}`,
+      "",
+      "Feature-specific prompt:",
+      `.visp/features/${PINNED_FEATURE_DIR}/context/${taskId}.prompt.md`,
+      ""
+    ].join("\n"),
+    "utf8"
+  );
 
   const contract = kitIntegrationContractSchema.parse({
-    ...integrationContractFixture(),
+    ...integrationContractFixture("2.0", taskId),
     targetPath: projectPath,
     activeFeature: {
       id: "001",
-      slug: "demo",
-      key: "001-demo",
-      path: ".visp/features/001-demo"
+      slug: "pipeline",
+      key: PINNED_FEATURE_DIR,
+      path: `.visp/features/${PINNED_FEATURE_DIR}`
     },
     activeTask: { id: taskId, title: "First task", status: "ready" }
   });
 
-  return { projectPath, contextPath, contract };
+  return { projectPath, contextPath, promptPath, currentPromptPath, contract };
 }
 
 describe("detectVisp", () => {
@@ -92,6 +179,22 @@ describe("detectVisp", () => {
       expect(result.status.initialized).toBe(true);
       expect(result.status.activeTask?.id).toBe("T001");
     }
+  });
+
+  it("MODE_CONFIGURED_UNHEALTHY: status authority for another project is rejected", async () => {
+    const projectPath = await createKitProject();
+    const otherProject = await mkdtemp(join(tmpdir(), "visp-other-project-"));
+    const shim = await createVispShim({
+      status: { stdout: { ...initializedStatus, targetPath: otherProject } }
+    });
+
+    const result = await detectVisp(projectPath, { binary: shim.binary });
+
+    expect(result).toMatchObject({
+      state: "configured-unhealthy",
+      available: false,
+      reasonCode: "status_malformed"
+    });
   });
 
   it("MODE_CONFIGURED_UNHEALTHY: missing binary is not Kit absence", async () => {
@@ -202,7 +305,7 @@ describe("detectVisp", () => {
   it("MODE_CONFIGURED_UNHEALTHY: uninitialized status is not Kit absence", async () => {
     const projectPath = await createKitProject();
     const shim = await createVispShim({
-      status: { stdout: { success: true, initialized: false } }
+      status: { stdout: { success: true, targetPath: ".", initialized: false } }
     });
 
     const result = await detectVisp(projectPath, { binary: shim.binary });
@@ -315,12 +418,63 @@ describe("KitCommandBridge", () => {
     );
   });
 
+  it("FAIL_CLOSED: rejects policy authority issued for another project", async () => {
+    const projectPath = await createKitProject();
+    const otherProject = await mkdtemp(join(tmpdir(), "visp-other-policy-project-"));
+    const shim = await createVispShim({
+      policy: { stdout: policyValidateFixture({ targetPath: otherProject }) }
+    });
+    const bridge = new KitCommandBridge({ projectPath, binary: shim.binary });
+
+    expect(await bridge.policyValidate()).toBeNull();
+    expect(bridge.warnings).toEqual([
+      expect.stringMatching(/policy validate reported targetPath=.*expected/i)
+    ]);
+  });
+
+  it.each(["status", "policy", "gate", "integration"] as const)(
+    "FAIL_CLOSED: rejects an empty targetPath from %s authority",
+    async (surface) => {
+      const projectPath = await createKitProject();
+      const spec = (
+        surface === "status"
+          ? { status: { stdout: { ...initializedStatus, targetPath: "" } } }
+          : surface === "policy"
+            ? { policy: { stdout: policyValidateFixture({ targetPath: "" }) } }
+            : surface === "gate"
+              ? {
+                  gate: {
+                    stdout: gateResultFixture({ stage: "implement", targetPath: "" })
+                  }
+                }
+              : {
+                  integration: {
+                    stdout: { ...integrationContractFixture(), targetPath: "" }
+                  }
+                }
+      ) as ShimSpec;
+      const shim = await createVispShim(spec);
+      const bridge = new KitCommandBridge({ projectPath, binary: shim.binary });
+
+      const result =
+        surface === "status"
+          ? await bridge.status()
+          : surface === "policy"
+            ? await bridge.policyValidate()
+            : surface === "gate"
+              ? await bridge.gateImplement("T001")
+              : await bridge.integrationContract();
+
+      expect(result).toBeNull();
+    }
+  );
+
   it("AC003: parses status/verify/review/reconcile/next and passes --json", async () => {
     const shim = await createVispShim({
       status: { stdout: initializedStatus },
       verify: { stdout: { success: true, warnings: ["w"] } },
       review: { stdout: { success: true, errors: [] } },
-      reconcile: { stdout: { success: false, errors: ["e"] } },
+      reconcile: { stdout: reconcileSummaryFixture(null, { success: false, errors: ["e"] }) },
       next: { stdout: { success: true, nextCommand: "visp pr", state: "ready", allowed: true } }
     });
     const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
@@ -342,7 +496,10 @@ describe("KitCommandBridge", () => {
     "FAIL_CLOSED: rejects successful %s evidence from a nonzero Kit exit",
     async (stage) => {
       const shim = await createVispShim({
-        [stage]: { stdout: { success: true }, exitCode: 1 }
+        [stage]: {
+          stdout: stage === "reconcile" ? reconcileSummaryFixture("T001") : { success: true },
+          exitCode: 1
+        }
       });
       const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
 
@@ -371,6 +528,7 @@ describe("KitCommandBridge", () => {
       gate: {
         stdout: gateResultFixture({
           stage: "implement",
+          targetPath: ".",
           allowed: false,
           failedRules: [{ ruleId: "VSP006", severity: "error", message: "blocked" }],
           blockedCommands: [{ command: "visp pr", reason: "missing verify", ruleId: "VSP014" }],
@@ -397,7 +555,7 @@ describe("KitCommandBridge", () => {
     const shim = await createVispShim({
       verify: { stdout: { success: true } },
       review: { stdout: { success: true } },
-      reconcile: { stdout: { success: true } }
+      reconcile: { stdout: reconcileSummaryFixture("T009") }
     });
     const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
 
@@ -415,6 +573,58 @@ describe("KitCommandBridge", () => {
       "--update-traceability",
       "--json"
     ]);
+  });
+
+  it("RESOURCE_LIMITS: evidence commands can use a longer timeout than authority commands", async () => {
+    const shim = await createVispShim({
+      status: { stdout: initializedStatus, delayMs: 80 },
+      verify: { stdout: { success: true }, delayMs: 80 }
+    });
+    const bridge = new KitCommandBridge({
+      projectPath: process.cwd(),
+      binary: shim.binary,
+      timeoutMs: 20,
+      evidenceTimeoutMs: 500
+    });
+
+    expect(await bridge.status()).toBeNull();
+    expect(await bridge.verify("T001")).toEqual({ success: true });
+    expect(bridge.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/status --json timed out after 20ms/i)])
+    );
+  });
+
+  it("RESOURCE_LIMITS: evidence commands fail closed at their configured timeout", async () => {
+    const shim = await createVispShim({
+      verify: { stdout: { success: true }, delayMs: 80 }
+    });
+    const bridge = new KitCommandBridge({
+      projectPath: process.cwd(),
+      binary: shim.binary,
+      timeoutMs: 500,
+      evidenceTimeoutMs: 20
+    });
+
+    expect(await bridge.verify("T001")).toBeNull();
+    expect(bridge.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/verify --task T001 --json timed out after 20ms/i)])
+    );
+  });
+
+  it("RESOURCE_LIMITS: oversized command output fails closed with an explicit diagnostic", async () => {
+    const shim = await createVispShim({
+      verify: { stdout: { success: true, warnings: ["x".repeat(2_048)] } }
+    });
+    const bridge = new KitCommandBridge({
+      projectPath: process.cwd(),
+      binary: shim.binary,
+      maxOutputBytes: 128
+    });
+
+    expect(await bridge.verify("T001")).toBeNull();
+    expect(bridge.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/exceeded the 128-byte output limit/i)])
+    );
   });
 
   it("AC005: unparseable output yields null plus a warning, no exception", async () => {
@@ -458,7 +668,7 @@ describe("KitCommandBridge", () => {
     // Sanity: proves the negative cases above are meaningful — a valid body parses
     // through to a non-null result with allowed === true.
     const shim = await createVispShim({
-      gate: { stdout: gateResultFixture({ stage: "implement" }) }
+      gate: { stdout: gateResultFixture({ stage: "implement", targetPath: "." }) }
     });
     const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
 
@@ -469,10 +679,27 @@ describe("KitCommandBridge", () => {
     expect(bridge.warnings).toEqual([]);
   });
 
+  it("FAIL_CLOSED: rejects an allowed gate result issued for another project", async () => {
+    const shim = await createVispShim({
+      gate: {
+        stdout: gateResultFixture({
+          stage: "implement",
+          targetPath: join(process.cwd(), "different-project")
+        })
+      }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.gateImplement("T001")).toBeNull();
+    expect(bridge.warnings).toEqual([
+      expect.stringMatching(/reported targetPath=.*different-project.*expected/i)
+    ]);
+  });
+
   it("FAIL_CLOSED: rejects an otherwise allowed implement gate for a different task", async () => {
     const shim = await createVispShim({
       gate: {
-        stdout: gateResultFixture({ stage: "implement", taskId: "T999" })
+        stdout: gateResultFixture({ stage: "implement", taskId: "T999", targetPath: "." })
       }
     });
     const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
@@ -501,6 +728,7 @@ describe("KitCommandBridge", () => {
     };
     const gateResult = gateResultFixture({
       stage: "implement",
+      targetPath: ".",
       warnings: ["Human review remains required."],
       overriddenRules: ["VSP014"],
       appliedOverrides: [appliedOverride],
@@ -558,7 +786,7 @@ describe("KitCommandBridge", () => {
           success: true,
           contractVersion: "2.0",
           kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
-          targetPath: "/repo",
+          targetPath: ".",
           initialized: true,
           activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
           activeTask: { id: "T001", title: "Demo", status: "ready" },
@@ -575,6 +803,11 @@ describe("KitCommandBridge", () => {
           },
           workflow: {
             strictSequence: ["status", "policyValidate", "gateNext", "context", "gateImplement"],
+            implementationReadSet: [
+              ".visp/features/<feature>/context/<task-id>.context.json",
+              ".visp/prompts/current-task.prompt.md",
+              ".visp/policy.json"
+            ],
             failClosedOn: ["policyValidate", "gateImplement"],
             freshnessChecks: [
               ".visp/features/<feature>/context/<task-id>.context.json",
@@ -602,6 +835,22 @@ describe("KitCommandBridge", () => {
                 mimeType: "application/json",
                 requiredFor: ["handoff", "implementation", "checkpoint"],
                 freshness: "hash-pinned"
+              },
+              {
+                id: "context-prompt",
+                path: ".visp/features/001-demo/context/T001.prompt.md",
+                role: "feature task prompt",
+                mimeType: "text/markdown",
+                requiredFor: ["handoff", "implementation", "checkpoint"],
+                freshness: "read-latest"
+              },
+              {
+                id: "current-task-prompt",
+                path: ".visp/prompts/current-task.prompt.md",
+                role: "current task prompt",
+                mimeType: "text/markdown",
+                requiredFor: ["handoff", "implementation", "checkpoint"],
+                freshness: "read-latest"
               }
             ],
             freshnessPolicy: {
@@ -624,11 +873,29 @@ describe("KitCommandBridge", () => {
     expect(contract?.capabilities?.contextGrounding?.artifactProvenance).toBe(true);
     expect(contract?.capabilities?.contextGrounding?.orchestratorReadContract).toBe(true);
     expect(contract?.orchestrator?.readContractVersion).toBe("0.1");
-    expect(contract?.orchestrator?.requiredArtifacts?.[0]?.id).toBe("context-pack");
+    expect(contract?.orchestrator?.requiredArtifacts?.map((artifact) => artifact.id)).toEqual([
+      "context-pack",
+      "context-prompt",
+      "current-task-prompt"
+    ]);
     expect(contract?.workflow?.failClosedOn).toContain("gateImplement");
     expect(contract?.workflow?.freshnessChecks).toContain("contextPack.artifactProvenance[]");
     const argv = JSON.parse((await readFile(shim.argvLogPath, "utf8")).trim()) as string[];
     expect(argv).toEqual(["integration", "contract", "--json"]);
+  });
+
+  it("FAIL_CLOSED: rejects an integration contract issued for another project", async () => {
+    const contract = integrationContractFixture();
+    contract.targetPath = join(process.cwd(), "different-project");
+    const shim = await createVispShim({ integration: { stdout: contract } });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    const diagnostic = await bridge.integrationContractDiagnostic();
+
+    expect(diagnostic.ok).toBe(false);
+    expect(bridge.warnings).toEqual([
+      expect.stringMatching(/reported targetPath=.*different-project.*expected/i)
+    ]);
   });
 
   it.each(["1.3", "3.0"])(
@@ -719,6 +986,191 @@ describe("KitCommandBridge", () => {
     expect(bridge.warnings).toEqual([]);
   });
 
+  it("FAIL_CLOSED: rejects an unsupported orchestrator read contract", async () => {
+    const context = authoritativeContextPackFixture();
+    const { projectPath, contract } = await createPinnedContextProject(context);
+    const unsupportedContract = kitIntegrationContractSchema.parse({
+      ...contract,
+      orchestrator: {
+        ...contract.orchestrator,
+        readContractVersion: "0.2"
+      }
+    });
+    const bridge = new KitCommandBridge({ projectPath });
+
+    expect(await bridge.readAuthoritativeContextPackArtifact("T001", unsupportedContract)).toBeNull();
+    expect(bridge.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/read contract 0\.2 is unsupported; expected 0\.1/i)])
+    );
+  });
+
+  it("FAIL_CLOSED: rejects an uninitialized integration contract", async () => {
+    const context = authoritativeContextPackFixture();
+    const { projectPath, contract } = await createPinnedContextProject(context);
+    const uninitializedContract = kitIntegrationContractSchema.parse({
+      ...contract,
+      initialized: false
+    });
+    const bridge = new KitCommandBridge({ projectPath });
+
+    expect(
+      await bridge.readAuthoritativeContextPackArtifact("T001", uninitializedContract)
+    ).toBeNull();
+    expect(bridge.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/integration contract is not initialized.*T001/i)])
+    );
+  });
+
+  it("FAIL_CLOSED: rejects a read contract missing an implementation prompt artifact", async () => {
+    const context = authoritativeContextPackFixture();
+    const { projectPath, contract } = await createPinnedContextProject(context);
+    const incompleteContract = kitIntegrationContractSchema.parse({
+      ...contract,
+      orchestrator: {
+        ...contract.orchestrator,
+        requiredArtifacts: contract.orchestrator?.requiredArtifacts?.filter(
+          (artifact) => artifact.id !== "current-task-prompt"
+        )
+      }
+    });
+    const bridge = new KitCommandBridge({ projectPath });
+
+    expect(await bridge.readAuthoritativeContextPackArtifact("T001", incompleteContract)).toBeNull();
+    expect(bridge.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/does not require the exact context pack and task prompts/i)])
+    );
+  });
+
+  it("FAIL_CLOSED: rejects duplicate artifact IDs even when only one is required for implementation", async () => {
+    const context = authoritativeContextPackFixture();
+    const { projectPath, contract } = await createPinnedContextProject(context);
+    const first = contract.orchestrator?.requiredArtifacts?.[0];
+    expect(first).toBeDefined();
+    contract.orchestrator!.requiredArtifacts = [
+      ...(contract.orchestrator?.requiredArtifacts ?? []),
+      { ...first!, requiredFor: ["checkpoint"] }
+    ];
+    const bridge = new KitCommandBridge({ projectPath });
+
+    expect(await bridge.readAuthoritativeContextPackArtifact("T001", contract)).toBeNull();
+    expect(bridge.warnings).toEqual([
+      expect.stringMatching(/duplicate artifact identifiers/i)
+    ]);
+  });
+
+  it("FAIL_CLOSED: rejects duplicate required stages before strict adoption", async () => {
+    const context = authoritativeContextPackFixture();
+    const { projectPath, contract } = await createPinnedContextProject(context);
+    const contextPack = contract.orchestrator?.requiredArtifacts?.find(
+      (artifact) => artifact.id === "context-pack"
+    );
+    expect(contextPack).toBeDefined();
+    contextPack!.requiredFor = ["implementation", "implementation"];
+    const bridge = new KitCommandBridge({ projectPath });
+
+    expect(await bridge.readAuthoritativeContextPackArtifact("T001", contract)).toBeNull();
+    expect(bridge.warnings).toEqual([
+      expect.stringMatching(/duplicate artifact identifiers or required stages/i)
+    ]);
+  });
+
+  it("FAIL_CLOSED: rejects a blank feature task prompt", async () => {
+    const context = authoritativeContextPackFixture();
+    const { projectPath, promptPath, contract } = await createPinnedContextProject(context);
+    await writeFile(promptPath, " \n", "utf8");
+    const bridge = new KitCommandBridge({ projectPath });
+
+    expect(await bridge.readAuthoritativeContextPackArtifact("T001", contract)).toBeNull();
+    expect(bridge.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/empty or does not identify task T001/i)])
+    );
+  });
+
+  it("FAIL_CLOSED: rejects a prompt that mentions the task without selecting it", async () => {
+    const context = authoritativeContextPackFixture();
+    const { projectPath, promptPath, contract } = await createPinnedContextProject(context);
+    await writeFile(promptPath, "# Prompt for T001\n", "utf8");
+    const bridge = new KitCommandBridge({ projectPath });
+
+    expect(await bridge.readAuthoritativeContextPackArtifact("T001", contract)).toBeNull();
+    expect(bridge.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/does not identify task T001/i)])
+    );
+  });
+
+  it.each(["feature", "current"] as const)(
+    "FAIL_CLOSED: rejects a %s prompt with conflicting selected task IDs",
+    async (promptKind) => {
+      const context = authoritativeContextPackFixture();
+      const { projectPath, promptPath, currentPromptPath, contract } =
+        await createPinnedContextProject(context);
+      const selectedPromptPath = promptKind === "feature" ? promptPath : currentPromptPath;
+      const promptText =
+        promptKind === "feature"
+          ? "# Task prompt\n\n- Selected task ID: T001\n- Selected task ID: T999\n"
+          : [
+              "# Current task",
+              "",
+              "- Selected task ID: T001",
+              "- Selected task ID: T999",
+              "",
+              "Feature-specific prompt:",
+              contract.artifacts.contextPrompt,
+              ""
+            ].join("\n");
+      await writeFile(selectedPromptPath, promptText, "utf8");
+      const bridge = new KitCommandBridge({ projectPath });
+
+      expect(await bridge.readAuthoritativeContextPackArtifact("T001", contract)).toBeNull();
+      expect(bridge.warnings).toEqual(
+        expect.arrayContaining([expect.stringMatching(/does not identify task T001/i)])
+      );
+    }
+  );
+
+  it("FAIL_CLOSED: rejects a current prompt that points to a different feature prompt", async () => {
+    const context = authoritativeContextPackFixture();
+    const { projectPath, currentPromptPath, contract } = await createPinnedContextProject(context);
+    await writeFile(
+      currentPromptPath,
+      "# Current task\n\n- Selected task ID: T001\n\n.visp/features/999-other/context/T001.prompt.md\n",
+      "utf8"
+    );
+    const bridge = new KitCommandBridge({ projectPath });
+
+    expect(await bridge.readAuthoritativeContextPackArtifact("T001", contract)).toBeNull();
+    expect(bridge.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/does not point to .*T001\.prompt\.md/i)])
+    );
+  });
+
+  it("FAIL_CLOSED: rejects a wrong labeled prompt pointer even when the declared path appears elsewhere", async () => {
+    const context = authoritativeContextPackFixture();
+    const { projectPath, currentPromptPath, contract } = await createPinnedContextProject(context);
+    await writeFile(
+      currentPromptPath,
+      [
+        "# Current task",
+        "",
+        "- Selected task ID: T001",
+        "",
+        "Reference material:",
+        contract.artifacts.contextPrompt,
+        "",
+        "Feature-specific prompt:",
+        ".visp/features/999-other/context/T001.prompt.md",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    const bridge = new KitCommandBridge({ projectPath });
+
+    expect(await bridge.readAuthoritativeContextPackArtifact("T001", contract)).toBeNull();
+    expect(bridge.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/does not point to .*T001\.prompt\.md/i)])
+    );
+  });
+
   it("FAIL_CLOSED: rejects valid JSON with only the legacy tolerant context shape", async () => {
     const { projectPath, contract } = await createPinnedContextProject({
       taskId: "T001",
@@ -736,7 +1188,10 @@ describe("KitCommandBridge", () => {
   });
 
   it("FAIL_CLOSED: rejects an authoritative context artifact for a different task", async () => {
-    const context = authoritativeContextPackFixture({ taskId: "T999" });
+    const context = authoritativeContextPackFixture({
+      taskId: "T999",
+      selectedTask: authoritativeTaskFixture({ id: "T999" })
+    });
     const { projectPath, contract } = await createPinnedContextProject(context);
     const bridge = new KitCommandBridge({ projectPath });
 
@@ -766,7 +1221,7 @@ describe("KitCommandBridge", () => {
 
     // status responds with no active feature so the scan path is exercised.
     const shim = await createVispShim({
-      status: { stdout: { success: true, initialized: true } }
+      status: { stdout: { success: true, targetPath: ".", initialized: true } }
     });
     const bridge = new KitCommandBridge({ projectPath, binary: shim.binary });
 
@@ -790,7 +1245,7 @@ describe("KitCommandBridge", () => {
       "utf8"
     );
     const shim = await createVispShim({
-      status: { stdout: { success: true, initialized: true } },
+      status: { stdout: { success: true, targetPath: ".", initialized: true } },
       integration: {
         stdout: {
           success: true,
@@ -850,5 +1305,42 @@ describe("kit-schemas tolerance (AC006)", () => {
       validationCommands: ["pnpm test"]
     });
     expect(parsed.success).toBe(true);
+  });
+
+  it("FAIL_CLOSED: rejects authoritative packs whose selected task does not match taskId", () => {
+    const parsed = kitAuthoritativeContextPackSchema.safeParse(
+      authoritativeContextPackFixture({
+        selectedTask: authoritativeTaskFixture({ id: "T999" })
+      })
+    );
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it.each([
+    [
+      "selected task file scope",
+      authoritativeContextPackFixture({
+        selectedTask: authoritativeTaskFixture({ allowedFiles: [] })
+      })
+    ],
+    ["included requirements", authoritativeContextPackFixture({ includedRequirements: [] })],
+    ["included acceptance criteria", authoritativeContextPackFixture({ includedAcceptanceCriteria: [] })],
+    ["included files", authoritativeContextPackFixture({ includedFiles: [] })],
+    ["validation commands", authoritativeContextPackFixture({ validationCommands: [] })],
+    ["constraints", authoritativeContextPackFixture({ constraints: [] })],
+    ["instructions", authoritativeContextPackFixture({ instructions: [] })]
+  ])("FAIL_CLOSED: rejects an authoritative pack with empty %s", (_label, payload) => {
+    expect(kitAuthoritativeContextPackSchema.safeParse(payload).success).toBe(false);
+  });
+
+  it("FAIL_CLOSED: rejects authoritative packs with inconsistent task mappings", () => {
+    const parsed = kitAuthoritativeContextPackSchema.safeParse(
+      authoritativeContextPackFixture({
+        validationCommands: ["pnpm test --filter different"]
+      })
+    );
+
+    expect(parsed.success).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -26,6 +27,8 @@ async function addKitSignal(projectPath: string): Promise<void> {
 
 function integrationContract(projectPath: string, taskId: string): KitIntegrationContract {
   const featureDir = "001-x";
+  const contextPack = `.visp/features/${featureDir}/context/${taskId}.context.json`;
+  const contextPrompt = `.visp/features/${featureDir}/context/${taskId}.prompt.md`;
   return {
     success: true,
     contractVersion: "2.0",
@@ -51,7 +54,12 @@ function integrationContract(projectPath: string, taskId: string): KitIntegratio
     },
     workflow: {
       failClosedOn: ["policyValidate", "gateNext", "gateImplement"],
-      freshnessChecks: ["contextPack.artifactProvenance[]"]
+      freshnessChecks: ["contextPack.artifactProvenance[]"],
+      implementationReadSet: [
+        ".visp/features/<feature>/context/<task-id>.context.json",
+        ".visp/prompts/current-task.prompt.md",
+        ".visp/policy.json"
+      ]
     },
     artifacts: {
       kitSignals: [".visp/policy.json"],
@@ -60,11 +68,62 @@ function integrationContract(projectPath: string, taskId: string): KitIntegratio
       featureRoot: ".visp/features",
       featureDir: `.visp/features/${featureDir}`,
       taskGraph: `.visp/features/${featureDir}/task-graph.json`,
-      contextPack: `.visp/features/${featureDir}/context/${taskId}.context.json`,
-      contextPrompt: `.visp/features/${featureDir}/context/${taskId}.prompt.md`
+      contextPack,
+      contextPrompt
+    },
+    orchestrator: {
+      readContractVersion: "0.1",
+      requiredArtifacts: [
+        {
+          id: "context-pack",
+          path: contextPack,
+          role: "task context",
+          mimeType: "application/json",
+          requiredFor: ["implementation"],
+          freshness: "hash-pinned"
+        },
+        {
+          id: "context-prompt",
+          path: contextPrompt,
+          role: "feature task prompt",
+          mimeType: "text/markdown",
+          requiredFor: ["implementation"],
+          freshness: "read-latest"
+        },
+        {
+          id: "current-task-prompt",
+          path: ".visp/prompts/current-task.prompt.md",
+          role: "current task prompt",
+          mimeType: "text/markdown",
+          requiredFor: ["implementation"],
+          freshness: "read-latest"
+        }
+      ],
+      freshnessPolicy: {
+        contextPackHashPinned: true,
+        provenanceArtifactsHashPinned: true,
+        staleContextBlocks: ["implementation", "checkpoint", "pr"]
+      }
     },
     warnings: []
   };
+}
+
+function promptArtifacts(projectPath: string, taskId: string) {
+  return {
+    prompt: {
+      path: join(projectPath, ".visp", "features", "001-x", "context", `${taskId}.prompt.md`),
+      sha256: "feature-prompt-hash"
+    },
+    currentPrompt: {
+      path: join(projectPath, ".visp", "prompts", "current-task.prompt.md"),
+      sha256: "current-prompt-hash"
+    }
+  };
+}
+
+function sha256(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 describe("direct start Kit authority boundary", () => {
@@ -90,6 +149,7 @@ describe("direct start Kit authority boundary", () => {
       status: {
         stdout: {
           success: true,
+          targetPath: ".",
           initialized: true,
           activeFeature: { id: "001", slug: "pipeline" },
           activeTask: { id: "T001", title: "First task", status: "ready" }
@@ -132,28 +192,30 @@ describe("direct start Kit authority boundary", () => {
     expect(process.exitCode).toBeFalsy();
   });
 
-  it("rejects unsafe pack paths while accepting safe symlinks and inline files", async () => {
+  it("accepts safe in-project symlinks and integrity-checked inline files", async () => {
     const projectPath = await createProject();
-    const outside = await mkdtemp(join(tmpdir(), "visp-kit-secret-"));
-    const outsideFile = join(outside, "secret.txt");
-    await writeFile(outsideFile, "OUTSIDE SECRET CONTENT", "utf8");
     await symlink(join(projectPath, "src", "feature.ts"), join(projectPath, "src", "safe-link.ts"));
-    await symlink(outsideFile, join(projectPath, "src", "escape-link.ts"));
 
     const adoption = await prepareStrictKitAdoption(projectPath, {
       taskId: "T009",
       artifact: {
         path: join(projectPath, ".visp", "features", "001-x", "context", "T009.context.json"),
         sha256: "context-hash",
+        ...promptArtifacts(projectPath, "T009"),
         pack: {
           taskId: "T009",
           includedFiles: [
-            { path: "src/safe-link.ts", reason: "safe in-project symlink" },
-            { path: "generated/missing.ts", reason: "inline planned file", content: "INLINE SAFE" },
-            { path: relative(projectPath, outsideFile), reason: "traversal" },
-            { path: outsideFile, reason: "absolute" },
-            { path: "src/escape-link.ts", reason: "escaping symlink" },
-            { path: ".env", reason: "blocked inline", content: "BLOCKED INLINE SECRET" }
+            {
+              path: "src/safe-link.ts",
+              reason: "safe in-project symlink",
+              hash: sha256("export const value = 1;\n")
+            },
+            {
+              path: "generated/missing.ts",
+              reason: "inline planned file",
+              content: "INLINE SAFE",
+              hash: sha256("INLINE SAFE")
+            }
           ]
         }
       },
@@ -170,7 +232,189 @@ describe("direct start Kit authority boundary", () => {
         content: "INLINE SAFE"
       })
     ]);
-    expect(adoption?.warnings.filter((warning) => warning.includes("unsafe"))).toHaveLength(4);
+    expect(adoption?.warnings.filter((warning) => warning.includes("unsafe"))).toHaveLength(0);
+  });
+
+  it("rejects the entire authoritative pack when any declared entry is unsafe", async () => {
+    const projectPath = await createProject();
+    const outside = await mkdtemp(join(tmpdir(), "visp-kit-secret-"));
+    const outsideFile = join(outside, "secret.txt");
+    await writeFile(outsideFile, "OUTSIDE SECRET CONTENT", "utf8");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const adoption = await prepareStrictKitAdoption(projectPath, {
+      taskId: "T009",
+      artifact: {
+        path: join(projectPath, ".visp", "features", "001-x", "context", "T009.context.json"),
+        sha256: "context-hash",
+        ...promptArtifacts(projectPath, "T009"),
+        pack: {
+          taskId: "T009",
+          includedFiles: [
+            {
+              path: "src/feature.ts",
+              reason: "safe authoritative source",
+              hash: sha256("export const value = 1;\n")
+            },
+            { path: relative(projectPath, outsideFile), reason: "escaping path" }
+          ]
+        }
+      },
+      contract: integrationContract(projectPath, "T009")
+    });
+
+    expect(adoption).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith("warning: Skipped an unsafe or unreadable context entry.");
+  });
+
+  it("rejects canonically duplicate authoritative context entries", async () => {
+    const projectPath = await createProject();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const content = "export const value = 1;\n";
+
+    const adoption = await prepareStrictKitAdoption(projectPath, {
+      taskId: "T009",
+      artifact: {
+        path: join(projectPath, ".visp", "features", "001-x", "context", "T009.context.json"),
+        sha256: "context-hash",
+        ...promptArtifacts(projectPath, "T009"),
+        pack: {
+          taskId: "T009",
+          includedFiles: [
+            { path: "src/feature.ts", reason: "first alias", hash: sha256(content) },
+            { path: "./src/feature.ts", reason: "second alias", hash: sha256(content) }
+          ]
+        }
+      },
+      contract: integrationContract(projectPath, "T009")
+    });
+
+    expect(adoption).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith("warning: Rejected duplicate context file src/feature.ts.");
+  });
+
+  it("rejects whitespace-only authoritative source content", async () => {
+    const projectPath = await createProject();
+    const blankContent = " \n\t";
+    await writeFile(join(projectPath, "src", "feature.ts"), blankContent, "utf8");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const adoption = await prepareStrictKitAdoption(projectPath, {
+      taskId: "T009",
+      artifact: {
+        path: join(projectPath, ".visp", "features", "001-x", "context", "T009.context.json"),
+        sha256: "context-hash",
+        ...promptArtifacts(projectPath, "T009"),
+        pack: {
+          taskId: "T009",
+          includedFiles: [
+            {
+              path: "src/feature.ts",
+              reason: "authoritative source",
+              hash: sha256(blankContent)
+            }
+          ]
+        }
+      },
+      contract: integrationContract(projectPath, "T009")
+    });
+
+    expect(adoption).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith("warning: Rejected blank context file src/feature.ts.");
+  });
+
+  it("rejects authoritative source content whose SHA-256 does not match", async () => {
+    const projectPath = await createProject();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const adoption = await prepareStrictKitAdoption(projectPath, {
+      taskId: "T009",
+      artifact: {
+        path: join(projectPath, ".visp", "features", "001-x", "context", "T009.context.json"),
+        sha256: "context-hash",
+        ...promptArtifacts(projectPath, "T009"),
+        pack: {
+          taskId: "T009",
+          includedFiles: [
+            {
+              path: "src/feature.ts",
+              reason: "authoritative source",
+              hash: sha256("different content\n")
+            }
+          ]
+        }
+      },
+      contract: integrationContract(projectPath, "T009")
+    });
+
+    expect(adoption).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      "warning: Rejected context file src/feature.ts: content did not match the authoritative SHA-256."
+    );
+  });
+
+  it("accepts a missing planned file declared with the authoritative new-file sentinel", async () => {
+    const projectPath = await createProject();
+
+    const adoption = await prepareStrictKitAdoption(projectPath, {
+      taskId: "T009",
+      artifact: {
+        path: join(projectPath, ".visp", "features", "001-x", "context", "T009.context.json"),
+        sha256: "context-hash",
+        ...promptArtifacts(projectPath, "T009"),
+        pack: {
+          taskId: "T009",
+          includedFiles: [
+            {
+              path: "generated/new-feature.ts",
+              reason: "planned task output",
+              includeMode: "new-file",
+              hash: "new-file"
+            }
+          ]
+        }
+      },
+      contract: integrationContract(projectPath, "T009")
+    });
+
+    expect(adoption?.files).toEqual([
+      {
+        path: "generated/new-feature.ts",
+        reason: "planned task output",
+        content: "Planned new file; no existing source content."
+      }
+    ]);
+  });
+
+  it("rejects a new-file sentinel when the target already exists", async () => {
+    const projectPath = await createProject();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const adoption = await prepareStrictKitAdoption(projectPath, {
+      taskId: "T009",
+      artifact: {
+        path: join(projectPath, ".visp", "features", "001-x", "context", "T009.context.json"),
+        sha256: "context-hash",
+        ...promptArtifacts(projectPath, "T009"),
+        pack: {
+          taskId: "T009",
+          includedFiles: [
+            {
+              path: "src/feature.ts",
+              reason: "planned task output",
+              includeMode: "new-file",
+              hash: "new-file"
+            }
+          ]
+        }
+      },
+      contract: integrationContract(projectPath, "T009")
+    });
+
+    expect(adoption).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      "warning: Rejected planned new file src/feature.ts: the target already exists."
+    );
   });
 
   it("preflights generated session destinations before initialization writes", async () => {
@@ -250,6 +494,7 @@ describe("direct start Kit authority boundary", () => {
       artifact: {
         path: join(projectPath, ".visp", "features", "001-x", "context", "T009.context.json"),
         sha256: "context-hash",
+        ...promptArtifacts(projectPath, "T009"),
         pack: { taskId: "T009", includedFiles: [{ path: ".env", reason: "blocked" }] }
       },
       contract: integrationContract(projectPath, "T009")

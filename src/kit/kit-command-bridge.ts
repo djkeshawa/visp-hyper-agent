@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
 import type { ZodType, ZodTypeDef } from "zod";
 import { execFileResolved } from "../core/executable-resolver.js";
+import { resolveProjectFile } from "../core/project-path.js";
 import {
   classifyKitAvailability,
   type KitAvailability,
@@ -45,13 +46,20 @@ type OutputSchema<T> = ZodType<T, ZodTypeDef, unknown>;
 
 const DEFAULT_BINARY = "visp";
 const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_EVIDENCE_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const EVIDENCE_COMMANDS = new Set(["verify", "review", "reconcile"]);
 
 interface RunResult {
   exitCode: number;
   stdout: string;
 }
 
-type CommandFailureCode = "binary_not_found" | "command_timeout" | "command_failed";
+type CommandFailureCode =
+  | "binary_not_found"
+  | "command_timeout"
+  | "output_limit_exceeded"
+  | "command_failed";
 
 type CommandOutcome =
   | { ok: true; value: RunResult }
@@ -75,6 +83,14 @@ export type KitContextPackArtifact = {
   pack: KitContextPack;
   path: string;
   sha256: string;
+  prompt?: {
+    path: string;
+    sha256: string;
+  };
+  currentPrompt?: {
+    path: string;
+    sha256: string;
+  };
 };
 
 /**
@@ -108,7 +124,13 @@ export async function detectVisp(
     });
   }
 
-  const result = await runCommand(binary, ["status", "--json"], projectPath, timeout);
+  const result = await runCommand(
+    binary,
+    ["status", "--json"],
+    projectPath,
+    timeout,
+    DEFAULT_MAX_OUTPUT_BYTES
+  );
   let probe: KitStatusProbeOutcome;
   if (!result.ok) {
     const reasonCode =
@@ -120,8 +142,12 @@ export async function detectVisp(
     probe = { kind: "failed", reasonCode, reason: result.reason };
   } else {
     // Never accept or even parse healthy-looking JSON from a failed command.
-    const status =
+    const parsedStatus =
       result.value.exitCode === 0 ? parseJson(result.value.stdout, kitStatusSchema) : null;
+    const status =
+      parsedStatus && (await targetsProject(projectPath, parsedStatus.targetPath))
+        ? parsedStatus
+        : null;
     probe = { kind: "completed", exitCode: result.value.exitCode, status };
   }
 
@@ -134,15 +160,32 @@ export class KitCommandBridge {
   private readonly projectPath: string;
   private readonly binary: string;
   private readonly timeoutMs: number;
+  private readonly evidenceTimeoutMs: number;
+  private readonly maxOutputBytes: number;
 
-  constructor(input: { projectPath: string; binary?: string; timeoutMs?: number }) {
+  constructor(input: {
+    projectPath: string;
+    binary?: string;
+    timeoutMs?: number;
+    evidenceTimeoutMs?: number;
+    maxOutputBytes?: number;
+  }) {
     this.projectPath = input.projectPath;
     this.binary = input.binary ?? DEFAULT_BINARY;
     this.timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.evidenceTimeoutMs = input.evidenceTimeoutMs ?? DEFAULT_EVIDENCE_TIMEOUT_MS;
+    this.maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   }
 
   async status(): Promise<KitStatus | null> {
-    return this.invoke(["status"], kitStatusSchema);
+    const status = await this.invoke(["status"], kitStatusSchema);
+    if (status && !(await targetsProject(this.projectPath, status.targetPath))) {
+      this.warnings.push(
+        `visp status reported targetPath=${status.targetPath}; expected ${this.projectPath}.`
+      );
+      return null;
+    }
+    return status;
   }
 
   async policyValidate(): Promise<KitPolicyValidationResult | null> {
@@ -153,6 +196,12 @@ export class KitCommandBridge {
     const policy = parseJson(result.stdout, kitPolicyValidationResultSchema);
     if (!policy) {
       this.warnings.push("visp policy validate output did not match the expected schema.");
+      return null;
+    }
+    if (!(await targetsProject(this.projectPath, policy.targetPath))) {
+      this.warnings.push(
+        `visp policy validate reported targetPath=${policy.targetPath}; expected ${this.projectPath}.`
+      );
       return null;
     }
     if (policy.success !== policy.validation.passed) {
@@ -190,6 +239,12 @@ export class KitCommandBridge {
     if (taskId && gate.taskId !== taskId) {
       this.warnings.push(
         `visp ${args.join(" ")} reported taskId=${gate.taskId ?? "null"}; expected taskId=${taskId}.`
+      );
+      return null;
+    }
+    if (!(await targetsProject(this.projectPath, gate.targetPath))) {
+      this.warnings.push(
+        `visp ${args.join(" ")} reported targetPath=${gate.targetPath}; expected ${this.projectPath}.`
       );
       return null;
     }
@@ -232,11 +287,188 @@ export class KitCommandBridge {
     taskId: string,
     contract: KitIntegrationContract
   ): Promise<KitContextPackArtifact | null> {
-    return this.readContextPackArtifactWithSchema(
-      taskId,
-      contract,
-      kitAuthoritativeContextPackSchema
+    if (contract.initialized !== true) {
+      this.warnings.push(
+        `Kit integration contract is not initialized for task ${taskId}.`
+      );
+      return null;
+    }
+    if (contract.orchestrator?.readContractVersion !== "0.1") {
+      this.warnings.push(
+        `Kit orchestrator read contract ${contract.orchestrator?.readContractVersion ?? "missing"} is unsupported; expected 0.1.`
+      );
+      return null;
+    }
+
+    const declaredArtifacts = contract.orchestrator.requiredArtifacts ?? [];
+    if (
+      new Set(declaredArtifacts.map((artifact) => artifact.id)).size !== declaredArtifacts.length ||
+      declaredArtifacts.some(
+        (artifact) =>
+          new Set(artifact.requiredFor ?? []).size !== (artifact.requiredFor ?? []).length
+      )
+    ) {
+      this.warnings.push("Kit read contract declares duplicate artifact identifiers or required stages.");
+      return null;
+    }
+    const requiredImplementationArtifacts = declaredArtifacts.filter(
+      (artifact) => artifact.requiredFor?.includes("implementation")
     );
+    const requiredArtifact = (id: string) => {
+      const matches = requiredImplementationArtifacts.filter((artifact) => artifact.id === id);
+      return matches.length === 1 ? matches[0] : undefined;
+    };
+    const declaredContextPath = normalizeLogicalPath(contract.artifacts.contextPack);
+    const declaredPromptPath = normalizeLogicalPath(contract.artifacts.contextPrompt);
+    const contextArtifact = requiredArtifact("context-pack");
+    const promptArtifact = requiredArtifact("context-prompt");
+    const currentPromptArtifact = requiredArtifact("current-task-prompt");
+    const currentPromptPath = normalizeLogicalPath(currentPromptArtifact?.path ?? "");
+    const implementationReadSet = new Set(
+      (contract.workflow?.implementationReadSet ?? []).map(normalizeLogicalPath)
+    );
+    if (
+      normalizeLogicalPath(contextArtifact?.path ?? "") !== declaredContextPath ||
+      contextArtifact?.mimeType !== "application/json" ||
+      contextArtifact?.freshness !== "hash-pinned" ||
+      normalizeLogicalPath(promptArtifact?.path ?? "") !== declaredPromptPath ||
+      promptArtifact?.mimeType !== "text/markdown" ||
+      promptArtifact?.freshness !== "read-latest" ||
+      currentPromptPath !== ".visp/prompts/current-task.prompt.md" ||
+      currentPromptArtifact?.mimeType !== "text/markdown" ||
+      currentPromptArtifact?.freshness !== "read-latest" ||
+      (!implementationReadSet.has(declaredContextPath) &&
+        !implementationReadSet.has(".visp/features/<feature>/context/<task-id>.context.json")) ||
+      !implementationReadSet.has(currentPromptPath)
+    ) {
+      this.warnings.push(
+        "Kit read contract does not require the exact context pack and task prompts for implementation."
+      );
+      return null;
+    }
+
+    const feature = contract.activeFeature;
+    if (!feature || contract.activeTask?.id !== taskId) {
+      this.warnings.push(`Kit integration contract does not identify task ${taskId} in an active feature.`);
+      return null;
+    }
+    const expectedFeatureKey = feature.slug ? `${feature.id}-${feature.slug}` : feature.id;
+    const expectedFeaturePath = `.visp/features/${expectedFeatureKey}`;
+    if (
+      feature.key !== expectedFeatureKey ||
+      normalizeLogicalPath(feature.path) !== expectedFeaturePath
+    ) {
+      this.warnings.push(`Kit active feature identity is inconsistent for task ${taskId}.`);
+      return null;
+    }
+
+    const context = await this.readPinnedTaskArtifact(
+      contract.artifacts.contextPack,
+      `${expectedFeaturePath}/context/${taskId}.context.json`,
+      "context pack"
+    );
+    if (!context) {
+      return null;
+    }
+    const pack = parseJson(context.raw, kitAuthoritativeContextPackSchema);
+    if (!pack) {
+      this.warnings.push(`Context pack at ${context.path} could not be parsed against the authoritative schema.`);
+      return null;
+    }
+    if (pack.taskId !== taskId) {
+      this.warnings.push(
+        `Context pack at ${context.path} reported taskId=${pack.taskId}; expected ${taskId}.`
+      );
+      return null;
+    }
+    if (pack.featureId !== feature.id || pack.featureSlug !== feature.slug) {
+      this.warnings.push(
+        `Context pack at ${context.path} reported feature ${pack.featureId}-${pack.featureSlug}; expected ${feature.id}-${feature.slug}.`
+      );
+      return null;
+    }
+
+    const prompt = await this.readPinnedTaskArtifact(
+      contract.artifacts.contextPrompt,
+      `${expectedFeaturePath}/context/${taskId}.prompt.md`,
+      "feature task prompt"
+    );
+    if (!prompt) {
+      return null;
+    }
+    if (!promptSelectsTask(prompt.raw, taskId)) {
+      this.warnings.push(
+        `Feature task prompt at ${prompt.path} is empty or does not identify task ${taskId}.`
+      );
+      return null;
+    }
+
+    const currentPrompt = await this.readPinnedTaskArtifact(
+      currentPromptPath,
+      ".visp/prompts/current-task.prompt.md",
+      "current task prompt"
+    );
+    if (!currentPrompt) {
+      return null;
+    }
+    if (!promptSelectsTask(currentPrompt.raw, taskId)) {
+      this.warnings.push(
+        `Current task prompt at ${currentPrompt.path} is empty or does not identify task ${taskId}.`
+      );
+      return null;
+    }
+    if (!promptReferencesPath(currentPrompt.raw, declaredPromptPath)) {
+      this.warnings.push(
+        `Current task prompt at ${currentPrompt.path} does not point to ${declaredPromptPath}.`
+      );
+      return null;
+    }
+
+    return {
+      pack,
+      path: context.path,
+      sha256: hashText(context.raw),
+      prompt: {
+        path: prompt.path,
+        sha256: hashText(prompt.raw)
+      },
+      currentPrompt: {
+        path: currentPrompt.path,
+        sha256: hashText(currentPrompt.raw)
+      }
+    };
+  }
+
+  private async readPinnedTaskArtifact(
+    contractPath: string,
+    expectedLogicalPath: string,
+    label: string
+  ): Promise<{ path: string; raw: string } | null> {
+    if (!contractPath || contractPath.includes("<")) {
+      this.warnings.push(`Kit ${label} path is unavailable for ${expectedLogicalPath}.`);
+      return null;
+    }
+    try {
+      const resolved = await resolveProjectFile(this.projectPath, contractPath, {
+        mode: "read",
+        blockedPaths: []
+      });
+      if (resolved.logicalPath !== expectedLogicalPath) {
+        this.warnings.push(
+          `Kit ${label} path ${resolved.logicalPath} did not match ${expectedLogicalPath}.`
+        );
+        return null;
+      }
+      return {
+        path: resolved.absolutePath,
+        raw: await readFile(resolved.absolutePath, "utf8")
+      };
+    } catch (error) {
+      this.warnings.push(
+        `Kit ${label} at ${contractPath} could not be read safely: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return null;
+    }
   }
 
   private async readContextPackArtifactWithSchema<T extends KitContextPack>(
@@ -398,6 +630,16 @@ export class KitCommandBridge {
       this.warnings.push(reason);
       return diagnosticFailure("integration_contract_unavailable", reason);
     }
+    if (!(await targetsProject(this.projectPath, contract.targetPath))) {
+      const reason = `visp ${args.join(" ")} reported targetPath=${contract.targetPath}; expected ${this.projectPath}.`;
+      this.warnings.push(reason);
+      return diagnosticFailure("integration_contract_unavailable", reason);
+    }
+    if (!contract.initialized) {
+      const reason = "Kit integration contract reported initialized=false.";
+      this.warnings.push(reason);
+      return diagnosticFailure("integration_contract_unavailable", reason);
+    }
     return { ok: true, value: contract };
   }
 
@@ -457,11 +699,15 @@ export class KitCommandBridge {
   }
 
   private async run(args: string[]): Promise<RunResult | null> {
+    const timeout = EVIDENCE_COMMANDS.has(args[0] ?? "")
+      ? this.evidenceTimeoutMs
+      : this.timeoutMs;
     const result = await runCommand(
       this.binary,
       [...args, "--json"],
       this.projectPath,
-      this.timeoutMs
+      timeout,
+      this.maxOutputBytes
     );
     if (!result.ok) {
       this.warnings.push(result.reason);
@@ -581,10 +827,15 @@ async function runCommand(
   binary: string,
   args: string[],
   cwd: string,
-  timeout: number
+  timeout: number,
+  maxOutputBytes: number
 ): Promise<CommandOutcome> {
   try {
-    const { stdout } = await execFileResolved(binary, args, { cwd, timeout });
+    const { stdout } = await execFileResolved(binary, args, {
+      cwd,
+      timeout,
+      maxBuffer: maxOutputBytes
+    });
     return { ok: true, value: { exitCode: 0, stdout } };
   } catch (error) {
     const failure = error as NodeJS.ErrnoException & { code?: string | number; stdout?: string; killed?: boolean; signal?: string };
@@ -601,6 +852,13 @@ async function runCommand(
         ok: false,
         reasonCode: "command_timeout",
         reason: `visp ${args.join(" ")} timed out after ${timeout}ms.`
+      };
+    }
+    if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      return {
+        ok: false,
+        reasonCode: "output_limit_exceeded",
+        reason: `visp ${args.join(" ")} exceeded the ${maxOutputBytes}-byte output limit.`
       };
     }
 
@@ -650,4 +908,43 @@ function diagnosticFailure(
 
 function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizeLogicalPath(value: string): string {
+  return value.replaceAll("\\", "/").replace(/^\.\//u, "");
+}
+
+async function targetsProject(projectPath: string, targetPath: string): Promise<boolean> {
+  try {
+    const [expected, actual] = await Promise.all([
+      realpath(resolve(projectPath)),
+      realpath(resolve(projectPath, targetPath))
+    ]);
+    return expected === actual;
+  } catch {
+    return false;
+  }
+}
+
+function promptSelectsTask(value: string, taskId: string): boolean {
+  if (value.trim().length === 0) {
+    return false;
+  }
+  const selections = Array.from(
+    value.matchAll(/^(?:-\s*)?Selected task ID:\s*([^\r\n]*?)\s*$/gmu),
+    (match) => match[1]
+  );
+  return selections.length === 1 && selections[0] === taskId;
+}
+
+function promptReferencesPath(value: string, path: string): boolean {
+  const lines = value.split(/\r?\n/u);
+  const labels = lines
+    .map((line, index) => ({ line: line.trim(), index }))
+    .filter(({ line }) => line === "Feature-specific prompt:");
+  if (labels.length !== 1) {
+    return false;
+  }
+  const label = labels[0];
+  return label !== undefined && lines[label.index + 1]?.trim() === path;
 }

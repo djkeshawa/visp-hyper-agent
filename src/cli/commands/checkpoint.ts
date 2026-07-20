@@ -2,8 +2,13 @@ import { Command, Option } from "commander";
 import { checkContextFreshness } from "../../context/context-freshness.js";
 import { execFileResolved } from "../../core/executable-resolver.js";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
+import { resolveProjectFile } from "../../core/project-path.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
-import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import {
+  detectVisp,
+  KitCommandBridge,
+  type KitContextPackArtifact
+} from "../../kit/kit-command-bridge.js";
 import { recordFailurePattern } from "../../memory/failure-patterns.js";
 import { createCheckpointSnapshot, writeCheckpointSnapshot } from "../../quality/checkpoint-snapshot.js";
 import {
@@ -31,6 +36,15 @@ import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js
 import { printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 import { collectChangedFiles } from "../../governance/scope-guard.js";
 import type { EvidenceVerdict } from "../../core/types.js";
+import type {
+  KitAuthoritativeContextPack,
+  KitIntegrationContract,
+  KitReconcileSummary,
+  KitReviewSummary,
+  KitStatus,
+  KitVerifySummary,
+  WorkflowActionV2
+} from "../../kit/kit-schemas.js";
 
 // Default tier recorded in telemetry when the orchestrator does not report
 // which tier actually executed the task via `--tier`.
@@ -114,44 +128,88 @@ export function checkpointCommand(): Command {
 
       if (kit.state === "healthy") {
         const bridge = new KitCommandBridge({ projectPath });
-        const verify = await bridge.verify(taskId);
-        const review = await bridge.review(taskId);
-        const blockingFindings =
-          contextFreshness.blocking && contextFreshness.finding
-            ? [contextFreshness.finding]
-            : [];
-        const preReconcileEvidence = aggregateKitCheckpointEvidence({
-          verify,
-          review,
-          blockingFindings
-        });
-        let reconcile: Awaited<ReturnType<KitCommandBridge["reconcile"]>> | undefined;
-
-        // Kit's integration contract defines the checkpoint sequence as
-        // [verify, review, reconcile]. Reconcile updates traceability, so it may
-        // run only after coherent verify/review passes on a current context.
-        if (
-          !contextFreshness.blocking &&
-          preReconcileEvidence.verifyVerdict === "passed" &&
-          preReconcileEvidence.reviewVerdict === "passed"
-        ) {
-          reconcile = await bridge.reconcile(taskId);
+        const contractDiagnostic = await bridge.integrationContractDiagnostic();
+        const liveContract = contractDiagnostic.ok ? contractDiagnostic.value : undefined;
+        const liveContextArtifact = liveContract
+          ? await bridge.readAuthoritativeContextPackArtifact(taskId, liveContract)
+          : null;
+        const strictContextFindings = !contractDiagnostic.ok
+          ? [contractDiagnostic.reason]
+          : await validateStrictContextManifest(
+              projectPath,
+              session.id,
+              taskId,
+              kit.status,
+              contractDiagnostic.value,
+              liveContextArtifact
+            );
+        if (contextFreshness.status !== "current") {
+          strictContextFindings.push(
+            contextFreshness.finding ??
+              `strict Kit context freshness is ${contextFreshness.status}; regenerate the handoff before checkpointing`
+          );
+        }
+        if (strictContextFindings.length > 0) {
+          printWarnings(bridge.warnings);
+          console.log(
+            renderKitCheckpointEvidence({
+              taskId,
+              evidence: aggregateKitCheckpointEvidence({
+                verify: null,
+                review: null,
+                blockingFindings: strictContextFindings
+              }),
+              contextFreshness: contextFreshness.status,
+              warnings: contextFreshness.warnings
+            })
+          );
+          return;
         }
 
-        printWarnings(bridge.warnings);
-        console.log(
-          renderKitCheckpointEvidence({
-            taskId,
-            evidence: aggregateKitCheckpointEvidence({
-              verify,
-              review,
-              reconcile,
-              blockingFindings
-            }),
-            contextFreshness: contextFreshness.status,
-            warnings: contextFreshness.warnings
-          })
+        const verify = normalizeStructuredErrorFindings(
+          "verify",
+          taskId,
+          await bridge.verify(taskId)
         );
+        const verifyEvidence = aggregateKitCheckpointEvidence({
+          verify,
+          review: null
+        });
+        if (verifyEvidence.verifyVerdict !== "passed") {
+          printKitCheckpointResult(bridge, taskId, verifyEvidence, contextFreshness);
+          return;
+        }
+
+        const review = normalizeStructuredErrorFindings(
+          "review",
+          taskId,
+          await bridge.review(taskId)
+        );
+        const reviewEvidence = aggregateKitCheckpointEvidence({ verify, review });
+        if (reviewEvidence.reviewVerdict !== "passed") {
+          printKitCheckpointResult(bridge, taskId, reviewEvidence, contextFreshness);
+          return;
+        }
+
+        const reconcile = normalizeReconcileAuthority(
+          normalizeStructuredErrorFindings("reconcile", taskId, await bridge.reconcile(taskId)),
+          `${normalizeManifestPath(liveContract?.activeFeature?.path) ?? ""}/traceability.json`
+        );
+        const reconciledEvidence = aggregateKitCheckpointEvidence({ verify, review, reconcile });
+        if (reconciledEvidence.reconcileVerdict !== "passed") {
+          printKitCheckpointResult(bridge, taskId, reconciledEvidence, contextFreshness);
+          return;
+        }
+
+        // WorkflowAction 2.0 is the only current post-checkpoint authority. It
+        // may identify the exact next action, but it does not expose enough
+        // state for Hyper to mutate or complete its mirrored strict pipeline.
+        const nextAction = await bridge.nextActionDiagnostic();
+        printKitCheckpointResult(bridge, taskId, reconciledEvidence, contextFreshness);
+        if (nextAction.ok) {
+          console.log("");
+          console.log(renderWorkflowAction(nextAction.value));
+        }
         return;
       }
 
@@ -340,6 +398,498 @@ export function checkpointCommand(): Command {
         console.log(line);
       }
     });
+}
+
+function printKitCheckpointResult(
+  bridge: KitCommandBridge,
+  taskId: string,
+  evidence: ReturnType<typeof aggregateKitCheckpointEvidence>,
+  contextFreshness: Awaited<ReturnType<typeof checkContextFreshness>>
+): void {
+  printWarnings(bridge.warnings);
+  console.log(
+    renderKitCheckpointEvidence({
+      taskId,
+      evidence,
+      contextFreshness: contextFreshness.status,
+      warnings: contextFreshness.warnings
+    })
+  );
+}
+
+type KitEvidenceSummary = KitVerifySummary | KitReviewSummary | KitReconcileSummary;
+
+function normalizeStructuredErrorFindings<T extends KitEvidenceSummary>(
+  stage: "verify" | "review" | "reconcile",
+  taskId: string,
+  summary: T | null
+): T | null {
+  if (!summary?.success) {
+    return summary;
+  }
+  const blocking = (summary.findings ?? []).filter(isErrorFinding);
+  const authorityErrors =
+    summary.taskId === taskId
+      ? []
+      : [`${stage} evidence identifies task ${summary.taskId ?? "none"}; expected ${taskId}`];
+  if (blocking.length === 0 && authorityErrors.length === 0) {
+    return summary;
+  }
+  return {
+    ...summary,
+    success: false,
+    errors: [
+      ...(summary.errors ?? []),
+      ...blocking.map((finding) => `${stage} error finding: ${renderFinding(finding)}`),
+      ...authorityErrors
+    ]
+  };
+}
+
+function normalizeReconcileAuthority(
+  reconcile: KitReconcileSummary | null,
+  expectedTraceabilityPath: string
+): KitReconcileSummary | null {
+  if (!reconcile) {
+    return null;
+  }
+  const errors: string[] = [];
+  if (!reconcile.traceabilityUpdate?.requested) {
+    errors.push("reconcile evidence does not confirm that a traceability update was requested");
+  }
+  if (!reconcile.traceabilityUpdate?.performed) {
+    errors.push("reconcile evidence does not confirm that traceability was updated");
+  }
+  const updatedFiles = reconcile.traceabilityUpdate?.updatedFiles.map(normalizeManifestPath) ?? [];
+  if (!updatedFiles.includes(expectedTraceabilityPath)) {
+    errors.push(
+      `reconcile evidence does not identify the updated traceability artifact ${expectedTraceabilityPath}`
+    );
+  }
+  if (errors.length === 0) {
+    return reconcile;
+  }
+  return {
+    ...reconcile,
+    success: false,
+    errors: [...(reconcile.errors ?? []), ...errors]
+  };
+}
+
+function isErrorFinding(finding: unknown): boolean {
+  if (!finding || typeof finding !== "object") {
+    return false;
+  }
+  const record = finding as Record<string, unknown>;
+  return typeof record.severity === "string" && record.severity.trim().toLowerCase() === "error";
+}
+
+function renderFinding(finding: unknown): string {
+  if (typeof finding === "string") {
+    return finding;
+  }
+  if (finding && typeof finding === "object") {
+    const record = finding as Record<string, unknown>;
+    for (const key of ["title", "message", "description", "summary"]) {
+      if (typeof record[key] === "string") {
+        return record[key];
+      }
+    }
+  }
+  return JSON.stringify(finding) ?? String(finding);
+}
+
+async function validateStrictContextManifest(
+  projectPath: string,
+  sessionId: string,
+  taskId: string,
+  status: KitStatus,
+  contract: KitIntegrationContract,
+  liveContextArtifact: KitContextPackArtifact | null
+): Promise<string[]> {
+  const path = vispPath(projectPath, "hyper", "current", "context-manifest.json");
+  const raw = await readTextIfExists(path);
+  if (!raw) {
+    return ["strict Kit context manifest is missing"];
+  }
+
+  let manifest: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return ["strict Kit context manifest is malformed"];
+    }
+    manifest = parsed as Record<string, unknown>;
+  } catch {
+    return ["strict Kit context manifest is malformed"];
+  }
+
+  const findings: string[] = [];
+  if (manifest.sessionId !== sessionId) {
+    findings.push("strict Kit context manifest does not belong to the active session");
+  }
+  if (manifest.taskId !== taskId) {
+    findings.push(`strict Kit context manifest does not identify task ${taskId}`);
+  }
+  const selectedFiles = manifest.selectedFiles;
+  if (
+    !Array.isArray(selectedFiles) ||
+    selectedFiles.length === 0 ||
+    selectedFiles.some(
+      (entry) =>
+        !entry ||
+        typeof entry !== "object" ||
+        typeof (entry as Record<string, unknown>).path !== "string" ||
+        (entry as Record<string, unknown>).hasContent !== true
+    )
+  ) {
+    findings.push("strict Kit context manifest has no non-empty selected files");
+  }
+  const contextArtifact = manifest.contextArtifact as Record<string, unknown> | undefined;
+  if (!liveContextArtifact) {
+    findings.push(`live authoritative context for ${taskId} was unavailable or malformed`);
+  } else {
+    if (
+      normalizeManifestPath(contextArtifact?.path) !== normalizeManifestPath(contract.artifacts.contextPack) ||
+      contextArtifact?.hash !== liveContextArtifact.sha256 ||
+      contextArtifact?.hashAlgorithm !== "sha256"
+    ) {
+      findings.push(`strict Kit context manifest does not pin the live context artifact for ${taskId}`);
+    }
+    findings.push(
+      ...selectedFileManifestFindings(
+        selectedFiles,
+        liveContextArtifact.pack as KitAuthoritativeContextPack,
+        taskId
+      )
+    );
+  }
+  const readContract = manifest.kitReadContract as Record<string, unknown> | undefined;
+  if (readContract?.contractVersion !== "2.0") {
+    findings.push("strict Kit context manifest does not identify integration contract 2.0");
+  }
+  if (readContract?.readContractVersion !== "0.1") {
+    findings.push("strict Kit context manifest does not pin read contract 0.1");
+  }
+  const artifacts = parseRequiredArtifacts(readContract?.requiredArtifacts);
+  const contextPack = artifacts.get("context-pack");
+  const featurePrompt = artifacts.get("context-prompt");
+  const currentPrompt = artifacts.get("current-task-prompt");
+  const contextArtifactPath = normalizeManifestPath(contextArtifact?.path);
+  findings.push(
+    ...liveAuthorityFindings(status, contract, taskId, contextArtifactPath, artifacts)
+  );
+
+  if (
+    !isImplementationArtifact(contextPack, "application/json", "hash-pinned") ||
+    contextPack.path !== contextArtifactPath ||
+    !contextPack.path.endsWith(`/context/${taskId}.context.json`)
+  ) {
+    findings.push(`strict Kit context manifest does not declare the exact context pack for ${taskId}`);
+  }
+
+  const expectedFeaturePromptPath = contextPack?.path.replace(/\.context\.json$/u, ".prompt.md");
+  if (
+    !isImplementationArtifact(featurePrompt, "text/markdown", "read-latest") ||
+    featurePrompt.path !== expectedFeaturePromptPath
+  ) {
+    findings.push(`strict Kit context manifest does not declare the feature prompt for ${taskId}`);
+  }
+  if (
+    !isImplementationArtifact(currentPrompt, "text/markdown", "read-latest") ||
+    currentPrompt.path !== ".visp/prompts/current-task.prompt.md"
+  ) {
+    findings.push(`strict Kit context manifest does not declare the current task prompt for ${taskId}`);
+  }
+
+  const featurePromptText = featurePrompt
+    ? await readLivePrompt(projectPath, featurePrompt.path, taskId, "feature prompt", findings)
+    : undefined;
+  const currentPromptText = currentPrompt
+    ? await readLivePrompt(projectPath, currentPrompt.path, taskId, "current task prompt", findings)
+    : undefined;
+  if (
+    featurePromptText !== undefined &&
+    currentPromptText !== undefined &&
+    !promptReferencesPath(currentPromptText, featurePrompt!.path)
+  ) {
+    findings.push(`strict Kit current task prompt does not point to the feature prompt for ${taskId}`);
+  }
+  return findings;
+}
+
+function selectedFileManifestFindings(
+  value: unknown,
+  pack: KitAuthoritativeContextPack,
+  taskId: string
+): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const selected = new Map<string, Record<string, unknown>>();
+  let invalid = false;
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      invalid = true;
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const path = normalizeManifestPath(record.path);
+    if (!path || selected.has(path)) {
+      invalid = true;
+      continue;
+    }
+    selected.set(path, record);
+  }
+
+  const expectedPaths = new Set<string>();
+  for (const expected of pack.includedFiles) {
+    const path = normalizeManifestPath(expected.path);
+    if (!path || expectedPaths.has(path)) {
+      invalid = true;
+      continue;
+    }
+    expectedPaths.add(path);
+    const stored = selected.get(path);
+    const plannedNewFile = expected.includeMode === "new-file" && expected.hash === "new-file";
+    if (
+      !stored ||
+      stored.reason !== expected.reason ||
+      stored.hasContent !== true ||
+      (plannedNewFile
+        ? stored.sourceHash !== undefined ||
+          stored.sourceHashAlgorithm !== undefined ||
+          stored.sourceHashSource !== undefined
+        : stored.sourceHash !== expected.hash ||
+          stored.sourceHashAlgorithm !== "sha256" ||
+          stored.sourceHashSource !== "visp-kit")
+    ) {
+      invalid = true;
+    }
+  }
+  if (selected.size !== expectedPaths.size) {
+    invalid = true;
+  }
+  return invalid
+    ? [`strict Kit context manifest selected files do not exactly match the context pack for ${taskId}`]
+    : [];
+}
+
+type ManifestArtifact = {
+  path: string;
+  role: string;
+  mimeType: string;
+  requiredFor: string[];
+  freshness?: string;
+};
+
+function liveAuthorityFindings(
+  status: KitStatus,
+  contract: KitIntegrationContract,
+  taskId: string,
+  contextArtifactPath: string | undefined,
+  manifestArtifacts: Map<string, ManifestArtifact>
+): string[] {
+  const findings: string[] = [];
+  const statusTask = status.activeTask;
+  const contractTask = contract.activeTask;
+  if (
+    !contract.initialized ||
+    !statusTask ||
+    !contractTask ||
+    statusTask.id !== taskId ||
+    contractTask.id !== taskId ||
+    (statusTask.title !== undefined && statusTask.title !== contractTask.title)
+  ) {
+    findings.push(`live Kit status and contract do not identify task ${taskId}`);
+  }
+
+  const statusFeature = status.activeFeature;
+  const contractFeature = contract.activeFeature;
+  if (!statusFeature || !contractFeature) {
+    findings.push(`live Kit status and contract do not identify the feature for ${taskId}`);
+    return findings;
+  }
+
+  const expectedFeatureKey = `${contractFeature.id}-${contractFeature.slug}`;
+  const expectedFeaturePath = `.visp/features/${expectedFeatureKey}`;
+  const expectedContextPath = `${expectedFeaturePath}/context/${taskId}.context.json`;
+  const expectedPromptPath = `${expectedFeaturePath}/context/${taskId}.prompt.md`;
+  if (
+    statusFeature.id !== contractFeature.id ||
+    statusFeature.slug !== contractFeature.slug ||
+    contractFeature.key !== expectedFeatureKey ||
+    normalizeManifestPath(contractFeature.path) !== expectedFeaturePath ||
+    normalizeManifestPath(contract.artifacts.featureDir) !== expectedFeaturePath ||
+    normalizeManifestPath(contract.artifacts.contextPack) !== expectedContextPath ||
+    normalizeManifestPath(contract.artifacts.contextPrompt) !== expectedPromptPath ||
+    contextArtifactPath !== expectedContextPath
+  ) {
+    findings.push(`live Kit feature or context identity changed for ${taskId}`);
+  }
+
+  if (contract.orchestrator?.readContractVersion !== "0.1") {
+    findings.push("live Kit contract does not expose read contract 0.1");
+  }
+  const liveArtifacts = parseRequiredArtifacts(contract.orchestrator?.requiredArtifacts);
+  for (const id of ["context-pack", "context-prompt", "current-task-prompt"]) {
+    if (!sameManifestArtifact(manifestArtifacts.get(id), liveArtifacts.get(id))) {
+      findings.push(`live Kit ${id} declaration changed since the strict handoff`);
+    }
+  }
+  const implementationReadSet = new Set(
+    (contract.workflow?.implementationReadSet ?? []).map((path) =>
+      normalizeManifestPath(path)
+    )
+  );
+  if (
+    (!implementationReadSet.has(expectedContextPath) &&
+      !implementationReadSet.has(".visp/features/<feature>/context/<task-id>.context.json")) ||
+    !implementationReadSet.has(".visp/prompts/current-task.prompt.md")
+  ) {
+    findings.push("live Kit implementation read set no longer declares the strict task context");
+  }
+  return findings;
+}
+
+function sameManifestArtifact(
+  stored: ManifestArtifact | undefined,
+  live: ManifestArtifact | undefined
+): boolean {
+  return Boolean(
+    stored &&
+      live &&
+      stored.path === live.path &&
+      stored.role === live.role &&
+      stored.mimeType === live.mimeType &&
+      stored.freshness === live.freshness &&
+      sameStringSet(stored.requiredFor, live.requiredFor)
+  );
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length &&
+    new Set(left).size === left.length &&
+    new Set(right).size === right.length &&
+    left.every((entry) => right.includes(entry))
+  );
+}
+
+function parseRequiredArtifacts(value: unknown): Map<string, ManifestArtifact> {
+  const artifacts = new Map<string, ManifestArtifact>();
+  const duplicateIds = new Set<string>();
+  if (!Array.isArray(value)) {
+    return artifacts;
+  }
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const path = normalizeManifestPath(record.path);
+    if (
+      typeof record.id !== "string" ||
+      !path ||
+      typeof record.role !== "string" ||
+      typeof record.mimeType !== "string" ||
+      !Array.isArray(record.requiredFor) ||
+      !record.requiredFor.every((stage): stage is string => typeof stage === "string")
+    ) {
+      continue;
+    }
+    if (artifacts.has(record.id) || duplicateIds.has(record.id)) {
+      artifacts.delete(record.id);
+      duplicateIds.add(record.id);
+      continue;
+    }
+    artifacts.set(record.id, {
+      path,
+      role: record.role,
+      mimeType: record.mimeType,
+      requiredFor: record.requiredFor,
+      ...(typeof record.freshness === "string" ? { freshness: record.freshness } : {})
+    });
+  }
+  return artifacts;
+}
+
+function isImplementationArtifact(
+  artifact: ManifestArtifact | undefined,
+  expectedMimeType: string,
+  expectedFreshness?: string
+): artifact is ManifestArtifact {
+  return Boolean(
+    artifact?.requiredFor.includes("implementation") &&
+      artifact.mimeType === expectedMimeType &&
+      (!expectedFreshness || artifact.freshness === expectedFreshness)
+  );
+}
+
+function normalizeManifestPath(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return undefined;
+  }
+  return value.replaceAll("\\", "/").replace(/^\.\//u, "");
+}
+
+async function readLivePrompt(
+  projectPath: string,
+  path: string,
+  taskId: string,
+  label: string,
+  findings: string[]
+): Promise<string | undefined> {
+  try {
+    const resolved = await resolveProjectFile(projectPath, path, {
+      mode: "read",
+      blockedPaths: []
+    });
+    if (resolved.logicalPath !== path) {
+      findings.push(`strict Kit ${label} path is not canonical for ${taskId}`);
+      return undefined;
+    }
+    const text = await readTextIfExists(resolved.absolutePath);
+    if (!text?.trim() || !promptSelectsTask(text, taskId)) {
+      findings.push(`strict Kit ${label} is missing, blank, or does not identify ${taskId}`);
+      return undefined;
+    }
+    return text;
+  } catch {
+    findings.push(`strict Kit ${label} could not be read safely for ${taskId}`);
+    return undefined;
+  }
+}
+
+function promptSelectsTask(value: string, taskId: string): boolean {
+  if (value.trim().length === 0) {
+    return false;
+  }
+  const selections = Array.from(
+    value.matchAll(/^(?:-\s*)?Selected task ID:\s*([^\r\n]*?)\s*$/gmu),
+    (match) => match[1]
+  );
+  return selections.length === 1 && selections[0] === taskId;
+}
+
+function promptReferencesPath(value: string, path: string): boolean {
+  const lines = value.split(/\r?\n/u);
+  const labels = lines
+    .map((line, index) => ({ line: line.trim(), index }))
+    .filter(({ line }) => line === "Feature-specific prompt:");
+  if (labels.length !== 1) {
+    return false;
+  }
+  const label = labels[0];
+  return label !== undefined && lines[label.index + 1]?.trim() === path;
+}
+
+function renderWorkflowAction(action: WorkflowActionV2): string {
+  return [
+    "BEGIN_VISP_WORKFLOW_ACTION_V2",
+    JSON.stringify(action),
+    "END_VISP_WORKFLOW_ACTION_V2"
+  ].join("\n");
 }
 
 async function writeCheckpointMarkdown(

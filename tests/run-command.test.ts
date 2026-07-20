@@ -12,7 +12,7 @@ import {
   authoritativeTaskGraphFixture,
   createVispShim,
   gateResultFixture,
-  policyValidateFixture,
+  policyValidateFixture as basePolicyValidateFixture,
   type ShimSpec
 } from "./helpers/visp-shim.js";
 
@@ -21,13 +21,20 @@ const execFileAsync = promisify(execFile);
 const originalPath = process.env.PATH;
 
 const FEATURE_DIR = "001-pipeline";
+const FEATURE_FILE_CONTENT = "export const value = 1;\n";
+
+function policyValidateFixture(
+  overrides: Parameters<typeof basePolicyValidateFixture>[0] = {}
+) {
+  return basePolicyValidateFixture({ targetPath: ".", ...overrides });
+}
 
 async function createProject(): Promise<string> {
   const projectPath = await mkdtemp(join(tmpdir(), "visp-run-"));
   await mkdir(join(projectPath, "src"), { recursive: true });
   await writeFile(join(projectPath, "README.md"), "# Demo\n", "utf8");
   await writeFile(join(projectPath, "package.json"), "{\"name\":\"demo\"}\n", "utf8");
-  await writeFile(join(projectPath, "src", "feature.ts"), "export const value = 1;\n", "utf8");
+  await writeFile(join(projectPath, "src", "feature.ts"), FEATURE_FILE_CONTENT, "utf8");
   await execFileAsync("git", ["init"], { cwd: projectPath });
   await execFileAsync("git", ["add", "."], { cwd: projectPath });
   await execFileAsync("git", ["-c", "user.name=Visp Test", "-c", "user.email=visp@example.test", "commit", "-m", "init"], {
@@ -41,6 +48,21 @@ type TaskGraphOptions = {
   singleTask?: boolean;
   validationCommands?: string[];
 };
+
+function includedFeatureFileFixture(): Record<string, unknown> {
+  return {
+    path: "src/feature.ts",
+    reason: "Authoritative task target.",
+    includeMode: "full",
+    hash: sha256(FEATURE_FILE_CONTENT),
+    language: "TypeScript",
+    sizeBytes: FEATURE_FILE_CONTENT.length,
+    tokenEstimate: 8,
+    summaryAvailable: true,
+    snippetIncluded: false,
+    summary: "Exports the feature fixture value."
+  };
+}
 
 async function writeTaskGraph(projectPath: string, options: TaskGraphOptions = {}): Promise<void> {
   const featureDir = join(projectPath, ".visp", "features", FEATURE_DIR);
@@ -80,6 +102,8 @@ async function writeTaskGraph(projectPath: string, options: TaskGraphOptions = {
     JSON.stringify(
       authoritativeContextPackFixture({
         selectedTask: firstTask,
+        validationCommands: firstTask.validationCommands,
+        includedFiles: [includedFeatureFileFixture()],
         artifactProvenance: includeProvenance
           ? [
               {
@@ -94,6 +118,30 @@ async function writeTaskGraph(projectPath: string, options: TaskGraphOptions = {
     ),
     "utf8"
   );
+  await writeTaskPrompts(projectPath);
+}
+
+async function writeTaskPrompts(projectPath: string, taskId = "T001"): Promise<void> {
+  const featurePrompt = `.visp/features/${FEATURE_DIR}/context/${taskId}.prompt.md`;
+  await mkdir(join(projectPath, ".visp", "prompts"), { recursive: true });
+  await writeFile(
+    join(projectPath, featurePrompt),
+    `# Strict Visp Task Prompt\n\n- Selected task ID: ${taskId}\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(projectPath, ".visp", "prompts", "current-task.prompt.md"),
+    [
+      "# Visp Task Implementation Prompt",
+      "",
+      `- Selected task ID: ${taskId}`,
+      "",
+      "Feature-specific prompt:",
+      featurePrompt,
+      ""
+    ].join("\n"),
+    "utf8"
+  );
 }
 
 function integrationContractFixture(contractVersion = "2.0") {
@@ -101,7 +149,7 @@ function integrationContractFixture(contractVersion = "2.0") {
     success: true,
     contractVersion,
     kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.1" },
-    targetPath: "/repo",
+    targetPath: ".",
     initialized: true,
     activeFeature: { id: "001", slug: "pipeline", key: FEATURE_DIR, path: `.visp/features/${FEATURE_DIR}` },
     activeTask: { id: "T001", title: "First task", status: "ready" },
@@ -111,13 +159,19 @@ function integrationContractFixture(contractVersion = "2.0") {
       contextGrounding: {
         taskScopedContextPacks: true,
         artifactProvenance: true,
+        currentTaskPrompt: true,
         orchestratorReadContract: true
       },
       evidence: { verification: true, review: true, reconciliation: true }
     },
     workflow: {
       failClosedOn: ["policyValidate", "gateNext", "gateImplement"],
-      freshnessChecks: ["contextPack.artifactProvenance[]"]
+      freshnessChecks: ["contextPack.artifactProvenance[]"],
+      implementationReadSet: [
+        ".visp/features/<feature>/context/<task-id>.context.json",
+        ".visp/prompts/current-task.prompt.md",
+        ".visp/policy.json"
+      ]
     },
     artifacts: {
       kitSignals: [".visp/policy.json", ".visp/project.json"],
@@ -131,6 +185,32 @@ function integrationContractFixture(contractVersion = "2.0") {
     },
     orchestrator: {
       readContractVersion: "0.1",
+      requiredArtifacts: [
+        {
+          id: "context-pack",
+          path: `.visp/features/${FEATURE_DIR}/context/T001.context.json`,
+          role: "task context",
+          mimeType: "application/json",
+          requiredFor: ["implementation"],
+          freshness: "hash-pinned"
+        },
+        {
+          id: "context-prompt",
+          path: `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`,
+          role: "feature task prompt",
+          mimeType: "text/markdown",
+          requiredFor: ["implementation"],
+          freshness: "read-latest"
+        },
+        {
+          id: "current-task-prompt",
+          path: ".visp/prompts/current-task.prompt.md",
+          role: "current task prompt",
+          mimeType: "text/markdown",
+          requiredFor: ["implementation"],
+          freshness: "read-latest"
+        }
+      ],
       freshnessPolicy: {
         contextPackHashPinned: true,
         provenanceArtifactsHashPinned: true,
@@ -159,11 +239,33 @@ function workflowActionFixture(protocolVersion = "2.0") {
   };
 }
 
-function kitStatusSpec(extra: ShimSpec = {}): ShimSpec {
+function reconcileSummaryFixture(overrides: Record<string, unknown> = {}) {
   return {
+    success: true,
+    taskId: "T001",
+    traceabilityUpdate: {
+      requested: true,
+      performed: true,
+      updatedFiles: [`.visp/features/${FEATURE_DIR}/traceability.json`]
+    },
+    ...overrides
+  };
+}
+
+function evidenceSummaryFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    success: true,
+    taskId: "T001",
+    ...overrides
+  };
+}
+
+function kitStatusSpec(extra: ShimSpec = {}): ShimSpec {
+  const spec: ShimSpec = {
     status: {
       stdout: {
         success: true,
+        targetPath: ".",
         initialized: true,
         activeFeature: { id: "001", slug: "pipeline" },
         activeTask: { id: "T001", title: "First task", status: "ready" }
@@ -172,12 +274,27 @@ function kitStatusSpec(extra: ShimSpec = {}): ShimSpec {
     integration: { stdout: integrationContractFixture() },
     ...extra
   };
+  const statusResponse = spec.status;
+  if (
+    statusResponse &&
+    typeof statusResponse.stdout === "object" &&
+    !Array.isArray(statusResponse.stdout)
+  ) {
+    statusResponse.stdout = { targetPath: ".", ...statusResponse.stdout };
+  }
+  for (const stage of ["verify", "review"] as const) {
+    const response = spec[stage];
+    if (response && typeof response.stdout === "object" && !Array.isArray(response.stdout)) {
+      response.stdout = { taskId: "T001", ...response.stdout };
+    }
+  }
+  return spec;
 }
 
 function allowedRunGateSpec(): ShimSpec {
   return {
-    "gate next": { stdout: gateResultFixture({ stage: "next" }) },
-    "gate implement": { stdout: gateResultFixture({ stage: "implement" }) }
+    "gate next": { stdout: gateResultFixture({ stage: "next", targetPath: "." }) },
+    "gate implement": { stdout: gateResultFixture({ stage: "implement", targetPath: "." }) }
   };
 }
 
@@ -381,6 +498,32 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(argv.some((args) => args[0] === "gate")).toBe(false);
   });
 
+  it("FAIL_CLOSED: an uninitialized integration contract blocks before policy or gates", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    const shim = await createVispShim(
+      kitStatusSpec({
+        integration: {
+          stdout: { ...integrationContractFixture(), initialized: false }
+        },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("initialized=false");
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.map((args) => args[0])).toEqual(["status", "integration"]);
+  });
+
   it("FAIL_CLOSED: integration contract 2.0 with success false blocks before policy, gates, or session", async () => {
     const projectPath = await createProject();
     await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
@@ -471,6 +614,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       gate: {
         stdout: gateResultFixture({
           stage: "next",
+          targetPath: ".",
           allowed: false,
           failedRules: [{ ruleId: "VSP014", message: "Implementation is not allowed" }],
           nextAllowedCommand: "Run visp tasks.",
@@ -614,6 +758,70 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
   });
 
+  it("FAIL_CLOSED: feature disagreement stops before context adoption or implement gate", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    const contract = integrationContractFixture();
+    contract.activeFeature = {
+      id: "001",
+      slug: "other",
+      key: "001-other",
+      path: ".visp/features/001-other"
+    };
+    const shim = await createVispShim(
+      kitStatusSpec({
+        integration: { stdout: contract },
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("reason_code: task_context_mismatch");
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
+  });
+
+  it("FAIL_CLOSED: graph and context task scheduling metadata must agree exactly", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    const contextPath = join(
+      projectPath,
+      ".visp",
+      "features",
+      FEATURE_DIR,
+      "context",
+      "T001.context.json"
+    );
+    const pack = JSON.parse(await readFile(contextPath, "utf8")) as {
+      selectedTask: { riskLevel: string };
+    };
+    pack.selectedTask.riskLevel = "low";
+    await writeFile(contextPath, JSON.stringify(pack), "utf8");
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    expect.soft(logs.join("\n")).toContain("reason_code: task_context_mismatch");
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
+  });
+
   it("FAIL_CLOSED: missing context pack stops before implement gate or session", async () => {
     const projectPath = await createProject();
     await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
@@ -639,6 +847,75 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     const argv = await readArgvLog(shim.argvLogPath);
     expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
     expect.soft(argv.some((args) => args[0] === "next")).toBe(false);
+  });
+
+  it.each([
+    { label: "missing", content: null },
+    { label: "blank", content: "   \n" },
+    {
+      label: "wrong-task",
+      content: [
+        "# Visp Task Implementation Prompt",
+        "",
+        "- Selected task ID: T999",
+        "",
+        "Feature-specific prompt:",
+        `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`,
+        ""
+      ].join("\n")
+    },
+    {
+      label: "conflicting-task",
+      content: [
+        "# Visp Task Implementation Prompt",
+        "",
+        "- Selected task ID: T001",
+        "- Selected task ID: T999",
+        "",
+        "Feature-specific prompt:",
+        `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`,
+        ""
+      ].join("\n")
+    },
+    {
+      label: "misleading-feature-pointer",
+      content: [
+        "# Visp Task Implementation Prompt",
+        "",
+        "- Selected task ID: T001",
+        "",
+        `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`,
+        "",
+        "Feature-specific prompt:",
+        ".visp/features/999-other/context/T001.prompt.md",
+        ""
+      ].join("\n")
+    }
+  ])("FAIL_CLOSED: $label current task prompt stops run before implement gate", async ({ content }) => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    await writeTaskGraph(projectPath);
+    const promptPath = join(projectPath, ".visp", "prompts", "current-task.prompt.md");
+    if (content === null) {
+      await rm(promptPath);
+    } else {
+      await writeFile(promptPath, content, "utf8");
+    }
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec()
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    expect.soft(logs.join("\n")).toContain("reason_code: context_pack_unavailable");
+    await expectNoSession(projectPath);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.some((args) => args[0] === "gate" && args[1] === "implement")).toBe(false);
   });
 
   it("FAIL_CLOSED: valid JSON with the wrong context-pack shape stops before implement gate", async () => {
@@ -849,9 +1126,15 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     );
     await writeFile(
       join(featureDir, "context", "T001.context.json"),
-      JSON.stringify(authoritativeContextPackFixture({ selectedTask: firstTask })),
+      JSON.stringify(
+        authoritativeContextPackFixture({
+          selectedTask: firstTask,
+          includedFiles: [includedFeatureFileFixture()]
+        })
+      ),
       "utf8"
     );
+    await writeTaskPrompts(projectPath);
 
     const shim = await createVispShim(
       kitStatusSpec({
@@ -876,41 +1159,15 @@ describe("run command and pipeline-aware next/checkpoint", () => {
   it("warns when strict Kit mode uses a contract without provenance freshness", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
+    const contract = integrationContractFixture();
+    contract.capabilities.contextGrounding.artifactProvenance = false;
+    contract.workflow.freshnessChecks = [
+      `.visp/features/<feature>/context/<task-id>.context.json`
+    ];
 
     const shim = await createVispShim(
       kitStatusSpec({
-        integration: {
-          stdout: {
-            success: true,
-            contractVersion: "2.0",
-            kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.1" },
-            targetPath: projectPath,
-            initialized: true,
-            activeFeature: { id: "001", slug: "pipeline", key: FEATURE_DIR, path: `.visp/features/${FEATURE_DIR}` },
-            activeTask: { id: "T001", title: "First task", status: "ready" },
-            commands: {},
-            capabilities: {
-              governance: { failClosedGates: true },
-              contextGrounding: { taskScopedContextPacks: true },
-              evidence: { verification: true, review: true, reconciliation: true },
-              enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
-            },
-            workflow: {
-              freshnessChecks: [`.visp/features/<feature>/context/<task-id>.context.json`]
-            },
-            artifacts: {
-              kitSignals: [".visp/policy.json", ".visp/project.json"],
-              projectStatus: ".visp/status.json",
-              projectProfile: ".visp/project.json",
-              featureRoot: ".visp/features",
-              featureDir: `.visp/features/${FEATURE_DIR}`,
-              taskGraph: `.visp/features/${FEATURE_DIR}/task-graph.json`,
-              contextPack: `.visp/features/${FEATURE_DIR}/context/T001.context.json`,
-              contextPrompt: `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`
-            },
-            warnings: []
-          }
-        },
+        integration: { stdout: contract },
         policy: { stdout: policyValidateFixture() },
         ...allowedRunGateSpec(),
         next: { stdout: { success: true, nextCommand: "visp implement" } }
@@ -936,7 +1193,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
         ...allowedRunGateSpec(),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
-        reconcile: { stdout: { success: true } },
+        reconcile: { stdout: reconcileSummaryFixture() },
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -996,7 +1253,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
         ...allowedRunGateSpec(),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
-        reconcile: { stdout: { success: true } },
+        reconcile: { stdout: reconcileSummaryFixture() },
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -1024,10 +1281,11 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     const shim = await createVispShim(
       kitStatusSpec({
         policy: { stdout: policyValidateFixture() },
-        "gate next": { stdout: gateResultFixture({ stage: "next" }) },
+        "gate next": { stdout: gateResultFixture({ stage: "next", targetPath: "." }) },
         "gate implement": {
           stdout: gateResultFixture({
             stage: "implement",
+            targetPath: ".",
             allowed: false,
             failedRules: [{ ruleId: "R-IMPL-001", message: "Spec not approved" }],
             nextAllowedCommand: "Run visp specify.",
@@ -1066,10 +1324,11 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     const shim = await createVispShim(
       kitStatusSpec({
         policy: { stdout: policyValidateFixture() },
-        "gate next": { stdout: gateResultFixture({ stage: "next" }) },
+        "gate next": { stdout: gateResultFixture({ stage: "next", targetPath: "." }) },
         "gate implement": {
           stdout: gateResultFixture({
             stage: "implement",
+            targetPath: ".",
             allowed: false,
             failedRules: [{ ruleId: "R-IMPL-002", message: "Feature not started" }],
             // Sentence form (would make a weak model execute the word "Run") plus
@@ -1110,10 +1369,11 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     const shim = await createVispShim(
       kitStatusSpec({
         policy: { stdout: policyValidateFixture() },
-        "gate next": { stdout: gateResultFixture({ stage: "next" }) },
+        "gate next": { stdout: gateResultFixture({ stage: "next", targetPath: "." }) },
         "gate implement": {
           stdout: gateResultFixture({
             stage: "implement",
+            targetPath: ".",
             allowed: false,
             failedRules: [{ ruleId: "R-IMPL-003", message: "Kit has no machine recovery command" }],
             nextAllowedCommand: "Run a human-oriented recovery sequence.",
@@ -1272,7 +1532,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     await writeTaskGraph(projectPath);
     const spec = kitStatusSpec({
       policy: { stdout: policyValidateFixture() },
-      "gate next": { stdout: gateResultFixture({ stage: "next" }) }
+      "gate next": { stdout: gateResultFixture({ stage: "next", targetPath: "." }) }
     });
     if (implementGate) {
       spec["gate implement"] = implementGate;
@@ -1307,7 +1567,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
         ...allowedRunGateSpec(),
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
-        reconcile: { stdout: { success: true } },
+        reconcile: { stdout: reconcileSummaryFixture() },
         next: { stdout: { success: true, nextCommand: "visp implement" } }
       })
     );
@@ -1349,6 +1609,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       status: {
         stdout: {
           success: false,
+          targetPath: ".",
           initialized: true,
           activeFeature: { id: "001", slug: "pipeline" },
           activeTask: { id: "T001", title: "First task", status: "ready" }
@@ -1390,6 +1651,217 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     ).toBe(false);
   });
 
+  it("FAIL_CLOSED: checkpoint revalidates the live feature identity before evidence", async () => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+    const pipelineBefore = activePipeline(await readState(projectPath));
+    const switchedFeature = "002-other";
+    const contract = integrationContractFixture();
+    contract.activeFeature = {
+      id: "002",
+      slug: "other",
+      key: switchedFeature,
+      path: `.visp/features/${switchedFeature}`
+    };
+    contract.artifacts.featureDir = `.visp/features/${switchedFeature}`;
+    contract.artifacts.taskGraph = `.visp/features/${switchedFeature}/task-graph.json`;
+    contract.artifacts.contextPack = `.visp/features/${switchedFeature}/context/T001.context.json`;
+    contract.artifacts.contextPrompt = `.visp/features/${switchedFeature}/context/T001.prompt.md`;
+    contract.orchestrator.requiredArtifacts = contract.orchestrator.requiredArtifacts.map((artifact) => ({
+      ...artifact,
+      path:
+        artifact.id === "context-pack"
+          ? contract.artifacts.contextPack
+          : artifact.id === "context-prompt"
+            ? contract.artifacts.contextPrompt
+            : artifact.path
+    }));
+    const shim = await createVispShim(
+      kitStatusSpec({
+        status: {
+          stdout: {
+            success: true,
+            initialized: true,
+            activeFeature: { id: "002", slug: "other" },
+            activeTask: { id: "T001", title: "First task", status: "ready" }
+          }
+        },
+        integration: { stdout: contract },
+        verify: { stdout: evidenceSummaryFixture() }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: FAILED");
+    expect.soft(output).toContain("live Kit feature or context identity changed for T001");
+    expect.soft((await readArgvLog(shim.argvLogPath)).map((args) => args[0])).toEqual([
+      "status",
+      "integration"
+    ]);
+    const pipelineAfter = activePipeline(await readState(projectPath));
+    expect.soft(pipelineAfter.currentTaskId).toBe(pipelineBefore.currentTaskId);
+    expect.soft(pipelineAfter.completed).toEqual(pipelineBefore.completed);
+  });
+
+  it("FAIL_CLOSED: checkpoint detects a role-only live read-contract change", async () => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+    const contract = integrationContractFixture();
+    contract.orchestrator.requiredArtifacts[0]!.role = "untrusted replacement role";
+    const shim = await createVispShim(
+      kitStatusSpec({
+        integration: { stdout: contract },
+        verify: { stdout: evidenceSummaryFixture() }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: FAILED");
+    expect.soft(output).toContain("live Kit context-pack declaration changed since the strict handoff");
+    expect.soft((await readArgvLog(shim.argvLogPath)).map((args) => args[0])).toEqual([
+      "status",
+      "integration"
+    ]);
+  });
+
+  it("FAIL_CLOSED: checkpoint compares selected files with the pinned context pack", async () => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+    const manifestPath = join(
+      projectPath,
+      ".visp",
+      "hyper",
+      "current",
+      "context-manifest.json"
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      selectedFiles: Array<Record<string, unknown>>;
+    };
+    manifest.selectedFiles = [
+      {
+        path: "src/unrelated.ts",
+        reason: "tampered manifest entry",
+        hasContent: true
+      }
+    ];
+    await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+    const shim = await createVispShim(
+      kitStatusSpec({
+        verify: { stdout: evidenceSummaryFixture() },
+        review: { stdout: evidenceSummaryFixture() },
+        reconcile: { stdout: reconcileSummaryFixture() }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: FAILED");
+    expect.soft(output).toContain(
+      "strict Kit context manifest selected files do not exactly match the context pack for T001"
+    );
+    expect.soft((await readArgvLog(shim.argvLogPath)).map((args) => args[0])).toEqual([
+      "status",
+      "integration"
+    ]);
+  });
+
+  it("supports an exact non-empty run-to-checkpoint handoff for a planned new file", async () => {
+    const projectPath = await createProject();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    const featureDir = join(projectPath, ".visp", "features", FEATURE_DIR);
+    const plannedTask = authoritativeTaskFixture({
+      allowedFiles: ["generated/new-feature.ts"],
+      expectedFiles: ["tests/new-feature.test.ts"]
+    });
+    const graphText = JSON.stringify(
+      authoritativeTaskGraphFixture({ tasks: [plannedTask] })
+    );
+    await mkdir(join(featureDir, "context"), { recursive: true });
+    await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+    await writeFile(join(featureDir, "task-graph.json"), graphText, "utf8");
+    await writeFile(
+      join(featureDir, "context", "T001.context.json"),
+      JSON.stringify(
+        authoritativeContextPackFixture({
+          selectedTask: plannedTask,
+          includedFiles: [
+            {
+              path: "generated/new-feature.ts",
+              reason: "planned task output",
+              includeMode: "new-file",
+              hash: "new-file",
+              language: "TypeScript",
+              sizeBytes: 0,
+              tokenEstimate: 0,
+              summaryAvailable: false,
+              snippetIncluded: false
+            }
+          ],
+          artifactProvenance: [
+            {
+              label: "task graph",
+              path: `.visp/features/${FEATURE_DIR}/task-graph.json`,
+              hash: sha256(graphText),
+              hashAlgorithm: "sha256"
+            }
+          ]
+        })
+      ),
+      "utf8"
+    );
+    await writeTaskPrompts(projectPath);
+    const shim = await createVispShim(
+      kitStatusSpec({
+        policy: { stdout: policyValidateFixture() },
+        ...allowedRunGateSpec(),
+        verify: { stdout: evidenceSummaryFixture() },
+        review: { stdout: evidenceSummaryFixture() },
+        reconcile: { stdout: reconcileSummaryFixture() },
+        next: { stdout: workflowActionFixture() }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+
+    const manifest = JSON.parse(
+      await readFile(join(projectPath, ".visp", "hyper", "current", "context-manifest.json"), "utf8")
+    ) as { selectedFiles: Array<Record<string, unknown>> };
+    expect.soft(manifest.selectedFiles).toEqual([
+      {
+        path: "generated/new-feature.ts",
+        reason: "planned task output",
+        hasContent: true
+      }
+    ]);
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    expect.soft(logs.join("\n")).toContain("reason_code: kit_post_checkpoint_transition_unavailable");
+    const commands = (await readArgvLog(shim.argvLogPath)).map((args) => args[0]);
+    expect.soft(commands.slice(-6)).toEqual([
+      "status",
+      "integration",
+      "verify",
+      "review",
+      "reconcile",
+      "next"
+    ]);
+  });
+
   it.each([
     { label: "one-task completion", singleTask: true },
     { label: "two-task advancement", singleTask: false }
@@ -1401,15 +1873,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       kitStatusSpec({
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
-        reconcile: { stdout: { success: true } },
-        next: {
-          stdout: {
-            success: true,
-            nextCommand: "visp pr",
-            state: "ready",
-            allowed: true
-          }
-        }
+        reconcile: { stdout: reconcileSummaryFixture() },
+        next: { stdout: workflowActionFixture() }
       })
     );
     prependToPath(dirname(checkpointShim.binary));
@@ -1427,6 +1892,17 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
     expect.soft(output).not.toContain("next_task:");
     expect.soft(output).not.toContain("pipeline_complete: true");
+    expect.soft(output).toContain("BEGIN_VISP_WORKFLOW_ACTION_V2");
+
+    const argv = await readArgvLog(checkpointShim.argvLogPath);
+    expect.soft(argv.map((args) => args[0])).toEqual([
+      "status",
+      "integration",
+      "verify",
+      "review",
+      "reconcile",
+      "next"
+    ]);
 
     const pipeline = activePipeline(await readState(projectPath));
     expect.soft(pipeline.currentTaskId).toBe("T001");
@@ -1478,7 +1954,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
           stdout: { success: true, errors: ["verification process was interrupted"] }
         },
         review: { stdout: { success: true } },
-        reconcile: { stdout: { success: true } }
+        reconcile: { stdout: reconcileSummaryFixture() }
       })
     );
     prependToPath(dirname(shim.binary));
@@ -1497,6 +1973,184 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const argv = await readArgvLog(shim.argvLogPath);
     expect.soft(argv.some((args) => args[0] === "reconcile")).toBe(false);
+  });
+
+  it.each(["verify", "review", "reconcile"] as const)(
+    "FAIL_CLOSED: a structured error finding from %s stops all later checkpoint stages",
+    async (stage) => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+    const errorFindings = [{ severity: " error ", message: `${stage} found an unsafe change` }];
+    const errorSummary = evidenceSummaryFixture({
+      findings: errorFindings
+    });
+    const shim = await createVispShim(
+      kitStatusSpec({
+        verify: { stdout: stage === "verify" ? errorSummary : evidenceSummaryFixture() },
+        review: { stdout: stage === "review" ? errorSummary : evidenceSummaryFixture() },
+        reconcile: {
+          stdout:
+            stage === "reconcile"
+              ? reconcileSummaryFixture({ findings: errorFindings })
+              : reconcileSummaryFixture()
+        }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: FAILED");
+    expect.soft(output).toContain(`${stage} found an unsafe change`);
+    const argv = await readArgvLog(shim.argvLogPath);
+    const expectedStages =
+      stage === "verify"
+        ? ["status", "integration", "verify"]
+        : stage === "review"
+          ? ["status", "integration", "verify", "review"]
+          : ["status", "integration", "verify", "review", "reconcile"];
+    expect.soft(argv.map((args) => args[0])).toEqual(expectedStages);
+    }
+  );
+
+  it.each(["verify", "review", "reconcile"] as const)(
+    "FAIL_CLOSED: %s evidence for another task cannot authorize a later checkpoint stage",
+    async (stage) => {
+      const projectPath = await createProject();
+      await createStrictSession(projectPath);
+      const wrongTaskSummary = evidenceSummaryFixture({ taskId: "T999" });
+      const shim = await createVispShim(
+        kitStatusSpec({
+          verify: { stdout: stage === "verify" ? wrongTaskSummary : evidenceSummaryFixture() },
+          review: { stdout: stage === "review" ? wrongTaskSummary : evidenceSummaryFixture() },
+          reconcile: {
+            stdout:
+              stage === "reconcile"
+                ? reconcileSummaryFixture({ taskId: "T999" })
+                : reconcileSummaryFixture()
+          },
+          next: { stdout: workflowActionFixture() }
+        })
+      );
+      prependToPath(dirname(shim.binary));
+
+      logs = [];
+      await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+      const output = logs.join("\n");
+      expect.soft(output).toContain("status: FAILED");
+      expect.soft(output).toContain(`${stage} evidence identifies task T999; expected T001`);
+      const argv = await readArgvLog(shim.argvLogPath);
+      const expectedStages =
+        stage === "verify"
+          ? ["status", "integration", "verify"]
+          : stage === "review"
+            ? ["status", "integration", "verify", "review"]
+            : ["status", "integration", "verify", "review", "reconcile"];
+      expect.soft(argv.map((args) => args[0])).toEqual(expectedStages);
+    }
+  );
+
+  it.each([
+    {
+      label: "not requested",
+      traceabilityUpdate: { requested: false, performed: false, updatedFiles: [] },
+      finding: "does not confirm that a traceability update was requested"
+    },
+    {
+      label: "not performed",
+      traceabilityUpdate: { requested: true, performed: false, updatedFiles: [] },
+      finding: "does not confirm that traceability was updated"
+    },
+    {
+      label: "reported without an updated artifact",
+      traceabilityUpdate: { requested: true, performed: true, updatedFiles: [] },
+      finding: `does not identify the updated traceability artifact .visp/features/${FEATURE_DIR}/traceability.json`
+    },
+    {
+      label: "reported for an unrelated artifact",
+      traceabilityUpdate: {
+        requested: true,
+        performed: true,
+        updatedFiles: [`.visp/features/${FEATURE_DIR}/unrelated.json`]
+      },
+      finding: `does not identify the updated traceability artifact .visp/features/${FEATURE_DIR}/traceability.json`
+    }
+  ])("FAIL_CLOSED: reconcile traceability $label stops before next", async ({ traceabilityUpdate, finding }) => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+    const shim = await createVispShim(
+      kitStatusSpec({
+        verify: { stdout: evidenceSummaryFixture() },
+        review: { stdout: evidenceSummaryFixture() },
+        reconcile: { stdout: reconcileSummaryFixture({ traceabilityUpdate }) },
+        next: { stdout: workflowActionFixture() }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: FAILED");
+    expect.soft(output).toContain(finding);
+    expect.soft((await readArgvLog(shim.argvLogPath)).map((args) => args[0])).toEqual([
+      "status",
+      "integration",
+      "verify",
+      "review",
+      "reconcile"
+    ]);
+  });
+
+  it.each([
+    { label: "missing", content: null },
+    { label: "blank", content: "\n" },
+    {
+      label: "wrong-task",
+      content: [
+        "# Visp Task Implementation Prompt",
+        "",
+        "- Selected task ID: T999",
+        "",
+        "Feature-specific prompt:",
+        `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`,
+        ""
+      ].join("\n")
+    }
+  ])("FAIL_CLOSED: $label read-latest prompt stops checkpoint before verify", async ({ content }) => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+    const pipelineBefore = activePipeline(await readState(projectPath));
+    const promptPath = join(projectPath, ".visp", "prompts", "current-task.prompt.md");
+    if (content === null) {
+      await rm(promptPath);
+    } else {
+      await writeFile(promptPath, content, "utf8");
+    }
+    const shim = await createVispShim(
+      kitStatusSpec({
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        reconcile: { stdout: reconcileSummaryFixture() }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: FAILED");
+    expect.soft(output).toMatch(/current task prompt/i);
+    const argv = await readArgvLog(shim.argvLogPath);
+    expect.soft(argv.map((args) => args[0])).toEqual(["status", "integration"]);
+    const pipelineAfter = activePipeline(await readState(projectPath));
+    expect.soft(pipelineAfter.currentTaskId).toBe(pipelineBefore.currentTaskId);
+    expect.soft(pipelineAfter.completed).toEqual(pipelineBefore.completed);
   });
 
   it.each([
@@ -1519,7 +2173,9 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       checkpoint: {
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
-        reconcile: { stdout: { success: false, errors: ["provenance drift"] } }
+        reconcile: {
+          stdout: reconcileSummaryFixture({ success: false, errors: ["provenance drift"] })
+        }
       }
     }
   ])("FAIL_CLOSED: failed $stage evidence never grants strict assurance or Hyper remediation", async ({ stage, checkpoint }) => {
@@ -1547,7 +2203,16 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(pipeline.injectedTasks ?? []).toEqual([]);
 
     const argv = await readArgvLog(shim.argvLogPath);
-    expect.soft(argv.some((args) => args[0] === "reconcile")).toBe(stage === "reconcile");
+    const evidenceCommands = argv
+      .map((args) => args[0])
+      .filter((command) => ["verify", "review", "reconcile", "next"].includes(command));
+    expect.soft(evidenceCommands).toEqual(
+      stage === "verify"
+        ? ["verify"]
+        : stage === "review"
+          ? ["verify", "review"]
+          : ["verify", "review", "reconcile"]
+    );
   });
 
   it.each([
@@ -1596,6 +2261,18 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(pipeline.currentTaskId).toBe("T001");
     expect.soft(pipeline.completed).not.toContain("T001");
     expect.soft(pipeline.injectedTasks ?? []).toEqual([]);
+
+    const argv = await readArgvLog(shim.argvLogPath);
+    const evidenceCommands = argv
+      .map((args) => args[0])
+      .filter((command) => ["verify", "review", "reconcile", "next"].includes(command));
+    expect.soft(evidenceCommands).toEqual(
+      stage === "verify"
+        ? ["verify"]
+        : stage === "review"
+          ? ["verify", "review"]
+          : ["verify", "review", "reconcile"]
+    );
   });
 });
 

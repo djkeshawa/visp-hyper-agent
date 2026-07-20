@@ -1,10 +1,11 @@
 import { Command, Option } from "commander";
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { resolveProjectFile } from "../../core/project-path.js";
 import { readState, updateActiveSession } from "../../core/session-manager.js";
 import type { ToolProfile } from "../../core/types.js";
 import {
   kitAuthoritativeTaskGraphSchema,
+  type KitAuthoritativeContextPack,
   type KitAuthoritativeTaskGraph,
   type KitGateResult,
   type KitIntegrationContract,
@@ -24,7 +25,7 @@ import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { executeStart, prepareStrictKitAdoption } from "./start.js";
-import { contextPackPathIfExists, printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
+import { printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 
 export function runCommand(): Command {
   return new Command("run")
@@ -143,11 +144,30 @@ export function runCommand(): Command {
         return;
       }
 
+      if (!featuresAgree(kit.status, contractDiagnostic.value, graph)) {
+        console.log(
+          renderKitAuthorityStop({
+            status: "INCONCLUSIVE",
+            reasonCode: "task_context_mismatch",
+            reason: "Kit status, integration contract, and task graph did not identify the same active feature."
+          })
+        );
+        return;
+      }
+
       const pipeline = initialPipelineState(graph);
       const task = currentTask(graph, pipeline);
-      const contractTaskId = contractDiagnostic.value.activeTask?.id;
-      const statusTaskId = kit.status.activeTask?.id;
-      if (!task || !contractTaskId || !statusTaskId || task.id !== contractTaskId || task.id !== statusTaskId) {
+      const contractTask = contractDiagnostic.value.activeTask;
+      const statusTask = kit.status.activeTask;
+      if (
+        !task ||
+        !contractTask ||
+        !statusTask ||
+        task.id !== contractTask.id ||
+        task.id !== statusTask.id ||
+        task.title !== contractTask.title ||
+        (statusTask.title !== undefined && task.title !== statusTask.title)
+      ) {
         console.log(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
@@ -169,6 +189,17 @@ export function runCommand(): Command {
             status: "INCONCLUSIVE",
             reasonCode: "context_pack_unavailable",
             reason: `Kit context pack for ${task.id} was unavailable or malformed.`
+          })
+        );
+        return;
+      }
+
+      if (!taskContextAgrees(task, contextArtifact.pack as KitAuthoritativeContextPack)) {
+        console.log(
+          renderKitAuthorityStop({
+            status: "INCONCLUSIVE",
+            reasonCode: "task_context_mismatch",
+            reason: `Kit task graph and context pack disagreed on the scope for ${task.id}.`
           })
         );
         return;
@@ -223,7 +254,7 @@ export function runCommand(): Command {
       });
       await updateActiveSession(projectPath, (current) => ({ ...current, pipeline }));
 
-      const contextPackPath = await contextPackPathIfExists(projectPath, task.id);
+      const contextPackPath = strictKitAdoption.contextArtifact.path;
       const concurrentWith = readySet(graph, task.id, pipeline.completed);
 
       console.log(handoff);
@@ -305,18 +336,61 @@ async function loadConfiguredTaskGraph(
     return null;
   }
   const expectedSuffix = featureDirName ? `.visp/features/${featureDirName}/task-graph.json` : undefined;
-  const normalized = contractPath.replaceAll("\\", "/");
-  if (expectedSuffix && !normalized.endsWith(expectedSuffix)) {
-    return null;
-  }
-  const path = isAbsolute(contractPath) ? contractPath : join(projectPath, contractPath);
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+    const resolved = await resolveProjectFile(projectPath, contractPath, {
+      mode: "read",
+      blockedPaths: []
+    });
+    if (expectedSuffix && resolved.logicalPath !== expectedSuffix) {
+      return null;
+    }
+    const parsed = JSON.parse(await readFile(resolved.absolutePath, "utf8")) as unknown;
     const result = kitAuthoritativeTaskGraphSchema.safeParse(parsed);
     return result.success ? result.data : null;
   } catch {
     return null;
   }
+}
+
+function featuresAgree(
+  status: KitStatus,
+  contract: KitIntegrationContract,
+  graph: KitAuthoritativeTaskGraph
+): boolean {
+  const statusFeature = status.activeFeature;
+  const contractFeature = contract.activeFeature;
+  if (!statusFeature || !contractFeature) {
+    return false;
+  }
+  return (
+    statusFeature.id === contractFeature.id &&
+    statusFeature.slug === contractFeature.slug &&
+    graph.featureId === contractFeature.id &&
+    graph.featureSlug === contractFeature.slug
+  );
+}
+
+function taskContextAgrees(task: KitTask, pack: KitAuthoritativeContextPack): boolean {
+  const selected = pack.selectedTask;
+  return (
+    selected.id === task.id &&
+    selected.title === task.title &&
+    selected.description === task.description &&
+    sameStrings(selected.requirementIds, task.requirementIds) &&
+    sameStrings(selected.acceptanceCriterionIds, task.acceptanceCriterionIds) &&
+    sameStrings(selected.dependsOn, task.dependsOn) &&
+    sameStrings(selected.allowedFiles, task.allowedFiles) &&
+    sameStrings(selected.expectedFiles, task.expectedFiles) &&
+    sameStrings(selected.forbiddenFiles, task.forbiddenFiles) &&
+    sameStrings(selected.validationCommands, task.validationCommands) &&
+    selected.status === task.status &&
+    selected.parallelizable === task.parallelizable &&
+    selected.riskLevel === task.riskLevel
+  );
+}
+
+function sameStrings(left: string[] | undefined, right: string[] | undefined): boolean {
+  return JSON.stringify(left ?? []) === JSON.stringify(right ?? []);
 }
 
 /**
