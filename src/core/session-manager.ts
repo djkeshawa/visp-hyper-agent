@@ -33,11 +33,26 @@ const pipelineStepRecordSchema = z.object({
   detail: z.string().optional()
 });
 
+const pipelineGraphIdentitySchema = z.object({
+  kind: z.enum(["visp-kit", "plan", "synthetic"]),
+  source: z.string().min(1),
+  featureId: z.string().min(1).optional(),
+  featureSlug: z.string().min(1).optional()
+});
+
 const pipelineStateSchema = z.object({
   taskIds: z.array(z.string()),
   currentTaskId: z.string().nullable(),
   completed: z.array(z.string()),
   stepHistory: z.array(pipelineStepRecordSchema),
+  // Optional so legacy pipelines parse, but graph-resolving commands must
+  // reject them rather than guessing which feature reused a bare task id.
+  graphIdentity: pipelineGraphIdentitySchema.optional(),
+  taskKeys: z.record(z.string().min(1)).optional(),
+  graphFingerprint: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  injectedTaskFingerprints: z
+    .record(z.string().regex(/^[a-f0-9]{64}$/u))
+    .optional(),
   // Optional so legacy state without synthetic graphs still parses.
   syntheticTasks: z.array(kitTaskSchema).optional(),
   injectedTasks: z.array(kitTaskSchema).optional(),
@@ -179,13 +194,16 @@ export async function getActiveSession(projectPath: string): Promise<SessionReco
 
 export async function updateActiveSession(
   projectPath: string,
-  updater: (session: SessionRecord) => SessionRecord
+  updater: (session: SessionRecord) => SessionRecord,
+  expectedSessionId?: string
 ): Promise<SessionRecord | null> {
   const branchKey = await currentBranchKey(projectPath);
   return withStoreLock(projectPath, async () => {
     const state = await readState(projectPath);
     const sessionId = resolveActiveSessionId(state, branchKey);
-    if (!sessionId) return null;
+    if (!sessionId || (expectedSessionId !== undefined && sessionId !== expectedSessionId)) {
+      return null;
+    }
     const next = updater({ ...state.sessions[sessionId]!, updatedAt: new Date().toISOString() });
     state.sessions[next.id] = next;
     await writeState(projectPath, state);
@@ -196,4 +214,3 @@ export async function updateActiveSession(
 export function currentDir(projectPath: string): string {
   return join(projectPath, ".visp", "hyper", "current");
 }
-

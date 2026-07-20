@@ -25,7 +25,15 @@ import {
   renderAdaptationBlock,
   type AdaptiveDecision
 } from "../../pipeline/adaptive-rules.js";
-import { advance, buildActionBlock, currentTask, loadTaskGraph } from "../../pipeline/pipeline-engine.js";
+import {
+  advance,
+  buildActionBlock,
+  currentTask,
+  isPipelineComplete,
+  loadTaskGraphByIdentity,
+  pinInjectedTaskIntegrity,
+  validatePipelineState
+} from "../../pipeline/pipeline-engine.js";
 import {
   computeSuggestedTier,
   escalate,
@@ -33,7 +41,13 @@ import {
 } from "../../routing/routing-engine.js";
 import { readRoutingState, updateRoutingState } from "../../routing/routing-state.js";
 import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
-import { printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
+import {
+  printWarnings,
+  printWorkflowDirectiveIfAny,
+  renderPipelineComplete,
+  renderPipelineIdentityStop,
+  resolveProjectPath
+} from "./shared.js";
 import { collectChangedFiles } from "../../governance/scope-guard.js";
 import type { EvidenceVerdict } from "../../core/types.js";
 import type {
@@ -89,9 +103,94 @@ export function checkpointCommand(): Command {
         return;
       }
 
-      await writeCheckpointMarkdown(projectPath, session.id, session.goal, taskId);
+      const pipeline = session.pipeline;
+      if (!pipeline?.graphIdentity || !pipeline.taskKeys) {
+        console.log(
+          renderPipelineIdentityStop({
+            sessionId: session.id,
+            reasonCode: "legacy_pipeline_identity",
+            reason: "The saved pipeline predates exact graph and task identity."
+          })
+        );
+        return;
+      }
 
-      const currentTaskId = session.pipeline?.currentTaskId;
+      const loaded = await loadTaskGraphByIdentity(
+        projectPath,
+        pipeline.graphIdentity,
+        pipeline.syntheticTasks
+      );
+      if (!loaded.ok) {
+        console.log(
+          renderPipelineIdentityStop({
+            sessionId: session.id,
+            reasonCode: loaded.reasonCode,
+            reason: loaded.reason
+          })
+        );
+        return;
+      }
+
+      const graph = effectiveGraph(loaded.graph, pipeline);
+      const stateValidation = validatePipelineState(graph, pipeline, { sessionId: session.id });
+      if (!stateValidation.ok) {
+        if (kit.state === "healthy" && contextFreshness.blocking) {
+          console.log(
+            renderKitCheckpointEvidence({
+              taskId,
+              evidence: aggregateKitCheckpointEvidence({
+                verify: null,
+                review: null,
+                blockingFindings: [
+                  stateValidation.reason,
+                  contextFreshness.finding ?? "strict Kit context freshness check failed"
+                ]
+              }),
+              contextFreshness: contextFreshness.status,
+              warnings: contextFreshness.warnings
+            })
+          );
+          return;
+        }
+        console.log(
+          renderPipelineIdentityStop({
+            sessionId: session.id,
+            reasonCode: stateValidation.reasonCode,
+            reason: stateValidation.reason
+          })
+        );
+        return;
+      }
+
+      if (isPipelineComplete(pipeline)) {
+        if (kit.state === "healthy") {
+          console.log(
+            renderKitCheckpointEvidence({
+              taskId,
+              evidence: unavailableKitCheckpointEvidence({
+                reasonCode: "kit_pipeline_completion_unconfirmed",
+                reason:
+                  "Hyper's persisted pipeline mirror is complete, but live Kit authority has not confirmed a checkpoint completion action."
+              }),
+              contextFreshness: contextFreshness.status,
+              warnings: contextFreshness.warnings
+            })
+          );
+          return;
+        }
+        console.log(
+          renderPipelineComplete({
+            sessionId: session.id,
+            feature: pipeline.graphIdentity.featureId && pipeline.graphIdentity.featureSlug
+              ? `${pipeline.graphIdentity.featureId}-${pipeline.graphIdentity.featureSlug}`
+              : pipeline.graphIdentity.featureId ?? pipeline.graphIdentity.featureSlug,
+            completedTasks: pipeline.completed
+          })
+        );
+        return;
+      }
+
+      const currentTaskId = pipeline.currentTaskId;
       if (currentTaskId !== taskId) {
         console.log(
           [
@@ -104,26 +203,20 @@ export function checkpointCommand(): Command {
         return;
       }
 
-      // Disk graph first; fall back to a session's synthetic graph (e.g. a `quick`
-      // session) which exists nowhere on disk.
-      const syntheticTasks = session.pipeline?.syntheticTasks;
-      const baseGraph =
-        (await loadTaskGraph(projectPath)) ??
-        (syntheticTasks && syntheticTasks.length > 0 ? { tasks: syntheticTasks } : null);
-      const graph = baseGraph ? effectiveGraph(baseGraph, session.pipeline) : null;
-      if (!graph) {
+      const task = currentTask(graph, pipeline);
+      if (!task) {
         console.log(
-          [
-            "BEGIN_VISP_CHECKPOINT_RESULT",
-            `task: ${taskId}`,
-            "error: the task graph could not be loaded.",
-            "END_VISP_CHECKPOINT_RESULT"
-          ].join("\n")
+          renderPipelineIdentityStop({
+            sessionId: session.id,
+            reasonCode: "pipeline_current_task_missing",
+            reason: "The active task is not present in the pinned task graph."
+          })
         );
         return;
       }
 
-      const task = currentTask(graph, session.pipeline!);
+      await writeCheckpointMarkdown(projectPath, session.id, session.goal, taskId);
+
       const taskClass = task?.riskLevel ?? "unknown";
 
       if (kit.state === "healthy") {
@@ -264,20 +357,50 @@ export function checkpointCommand(): Command {
       }
 
       const nextState = advance(
-        session.pipeline!,
+        pipeline,
         graph,
         { verifyPassed, reviewPassed, detail: `${evidenceSource}-evidence` },
         new Date().toISOString()
       );
-      await updateActiveSession(projectPath, (current) => ({ ...current, pipeline: nextState }));
+      const updated = await updateActiveSession(
+        projectPath,
+        (current) => ({ ...current, pipeline: nextState }),
+        session.id
+      );
+      if (!updated) {
+        console.log(
+          renderPipelineIdentityStop({
+            sessionId: session.id,
+            reasonCode: "checkpoint_session_changed",
+            reason: "The active session changed before checkpoint results could be persisted."
+          })
+        );
+        return;
+      }
 
       let adaptiveDecision: AdaptiveDecision = { action: "none" };
       if (verdict === "failed" && task) {
         try {
           adaptiveDecision = decideAdaptiveAction({ state: nextState, task, findings: failureFindings });
           if (adaptiveDecision.action !== "none") {
-            const adapted = applyAdaptiveDecision(nextState, adaptiveDecision, taskId, new Date().toISOString());
-            await updateActiveSession(projectPath, (current) => ({ ...current, pipeline: adapted }));
+            const adapted = pinInjectedTaskIntegrity(
+              applyAdaptiveDecision(nextState, adaptiveDecision, taskId, new Date().toISOString())
+            );
+            const adaptedSession = await updateActiveSession(
+              projectPath,
+              (current) => ({ ...current, pipeline: adapted }),
+              session.id
+            );
+            if (!adaptedSession) {
+              console.log(
+                renderPipelineIdentityStop({
+                  sessionId: session.id,
+                  reasonCode: "checkpoint_session_changed",
+                  reason: "The active session changed before pipeline adaptation could be persisted."
+                })
+              );
+              return;
+            }
           }
         } catch (error) {
           adaptiveDecision = { action: "none" };

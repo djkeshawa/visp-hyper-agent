@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
+import { contextPackPathIfExists } from "../src/cli/commands/shared.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -91,5 +92,25 @@ describe("session control commands", () => {
     expect(stdout).toContain("warnings:");
     expect(stdout).toContain("END_VISP_REVIEW_RESULT");
     expect(report).toContain("No test changes detected for this diff.");
+  });
+
+  it("resolves repeated task context from the pinned feature only", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-context-identity-"));
+    const oldContext = join(projectPath, ".visp", "features", "001-old", "context");
+    const newContext = join(projectPath, ".visp", "features", "999-new", "context");
+    await mkdir(oldContext, { recursive: true });
+    await mkdir(newContext, { recursive: true });
+    await writeFile(join(oldContext, "T001.context.json"), "{}\n", "utf8");
+    await writeFile(join(newContext, "T001.context.json"), "{}\n", "utf8");
+
+    await expect(
+      contextPackPathIfExists(projectPath, "T001", {
+        kind: "visp-kit",
+        source: ".visp/features/001-old/task-graph.json",
+        featureId: "001",
+        featureSlug: "old"
+      })
+    ).resolves.toBe(".visp/features/001-old/context/T001.context.json");
+    await expect(contextPackPathIfExists(projectPath, "T001")).resolves.toBeUndefined();
   });
 });

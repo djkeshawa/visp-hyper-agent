@@ -2,7 +2,7 @@ import { Command, Option } from "commander";
 import { readFile } from "node:fs/promises";
 import { resolveProjectFile } from "../../core/project-path.js";
 import { readState, updateActiveSession } from "../../core/session-manager.js";
-import type { ToolProfile } from "../../core/types.js";
+import type { PipelineGraphIdentity, ToolProfile } from "../../core/types.js";
 import {
   kitAuthoritativeTaskGraphSchema,
   type KitAuthoritativeContextPack,
@@ -19,13 +19,21 @@ import {
   buildActionBlock,
   currentTask,
   initialPipelineState,
-  readySet
+  isPipelineComplete,
+  readySet,
+  validateTaskGraph
 } from "../../pipeline/pipeline-engine.js";
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { executeStart, prepareStrictKitAdoption } from "./start.js";
-import { printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
+import {
+  printWarnings,
+  printWorkflowDirectiveIfAny,
+  renderPipelineComplete,
+  renderPipelineIdentityStop,
+  resolveProjectPath
+} from "./shared.js";
 
 export function runCommand(): Command {
   return new Command("run")
@@ -127,13 +135,13 @@ export function runCommand(): Command {
       }
 
       const featureDirName = deriveFeatureDirName(kit.status);
-      const graph = await loadConfiguredTaskGraph(
+      const configuredGraph = await loadConfiguredTaskGraph(
         projectPath,
         contractDiagnostic.value,
         featureDirName
       );
 
-      if (!graph) {
+      if (!configuredGraph) {
         console.log(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
@@ -143,6 +151,8 @@ export function runCommand(): Command {
         );
         return;
       }
+
+      const { graph, identity: graphIdentity } = configuredGraph;
 
       if (!featuresAgree(kit.status, contractDiagnostic.value, graph)) {
         console.log(
@@ -155,10 +165,42 @@ export function runCommand(): Command {
         return;
       }
 
-      const pipeline = initialPipelineState(graph);
+      if (graph.tasks.length === 0) {
+        console.log(
+          renderKitAuthorityStop({
+            status: "INCONCLUSIVE",
+            reasonCode: "task_unavailable",
+            reason: "The configured Kit task graph contains no executable task."
+          })
+        );
+        return;
+      }
+
+      const pipeline = initialPipelineState(graph, graphIdentity);
       const task = currentTask(graph, pipeline);
       const contractTask = contractDiagnostic.value.activeTask;
       const statusTask = kit.status.activeTask;
+      if (isPipelineComplete(pipeline)) {
+        if (contractTask || statusTask) {
+          console.log(
+            renderKitAuthorityStop({
+              status: "INCONCLUSIVE",
+              reasonCode: "task_context_mismatch",
+              reason: "The task graph was complete while Kit still identified an active task."
+            })
+          );
+          return;
+        }
+        console.log(
+          renderPipelineComplete({
+            feature: graphIdentity.featureId && graphIdentity.featureSlug
+              ? `${graphIdentity.featureId}-${graphIdentity.featureSlug}`
+              : graphIdentity.featureId ?? graphIdentity.featureSlug,
+            completedTasks: pipeline.completed
+          })
+        );
+        return;
+      }
       if (
         !task ||
         !contractTask ||
@@ -252,7 +294,21 @@ export function runCommand(): Command {
         ...options,
         authority: { mode: "kit", adoption: strictKitAdoption }
       });
-      await updateActiveSession(projectPath, (current) => ({ ...current, pipeline }));
+      const updated = await updateActiveSession(
+        projectPath,
+        (current) => ({ ...current, pipeline }),
+        session.id
+      );
+      if (!updated) {
+        console.log(
+          renderPipelineIdentityStop({
+            sessionId: session.id,
+            reasonCode: "run_session_changed",
+            reason: "The active session changed before the strict pipeline could be persisted."
+          })
+        );
+        return;
+      }
 
       const contextPackPath = strictKitAdoption.contextArtifact.path;
       const concurrentWith = readySet(graph, task.id, pipeline.completed);
@@ -330,7 +386,7 @@ async function loadConfiguredTaskGraph(
   projectPath: string,
   contract: KitIntegrationContract,
   featureDirName?: string
-): Promise<KitAuthoritativeTaskGraph | null> {
+): Promise<{ graph: KitAuthoritativeTaskGraph; identity: PipelineGraphIdentity } | null> {
   const contractPath = contract.artifacts.taskGraph;
   if (!contractPath || contractPath.includes("<")) {
     return null;
@@ -346,7 +402,22 @@ async function loadConfiguredTaskGraph(
     }
     const parsed = JSON.parse(await readFile(resolved.absolutePath, "utf8")) as unknown;
     const result = kitAuthoritativeTaskGraphSchema.safeParse(parsed);
-    return result.success ? result.data : null;
+    if (!result.success) {
+      return null;
+    }
+    const validation = validateTaskGraph(result.data);
+    if (!validation.ok && result.data.tasks.length > 0) {
+      return null;
+    }
+    return {
+      graph: result.data,
+      identity: {
+        kind: "visp-kit",
+        source: resolved.logicalPath,
+        featureId: result.data.featureId,
+        featureSlug: result.data.featureSlug
+      }
+    };
   } catch {
     return null;
   }

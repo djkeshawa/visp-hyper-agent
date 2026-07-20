@@ -49,11 +49,30 @@ export type AdaptiveDecisionRecord = {
   detail?: string;
 };
 
+/**
+ * Durable identity of the task graph a pipeline was created from. The exact
+ * source is retained because task ids are only unique within one graph.
+ */
+export type PipelineGraphIdentity = {
+  kind: "visp-kit" | "plan" | "synthetic";
+  source: string;
+  featureId?: string;
+  featureSlug?: string;
+};
+
 export type PipelineState = {
   taskIds: string[];
   currentTaskId: string | null;
   completed: string[];
   stepHistory: PipelineStepRecord[];
+  /** Optional only so legacy state remains readable; missing identity cannot authorize work. */
+  graphIdentity?: PipelineGraphIdentity;
+  /** Stable graph-scoped key for each base task id. Synthetic remediations are stored separately. */
+  taskKeys?: Record<string, string>;
+  /** SHA-256 of the base graph used to create the pipeline. */
+  graphFingerprint?: string;
+  /** SHA-256 of each persisted remediation definition, keyed by its task id. */
+  injectedTaskFingerprints?: Record<string, string>;
   /**
    * Synthetic task definitions for pipelines that exist nowhere on disk (e.g. the
    * one-task graph fabricated by `visp-hyper quick`). When present, `checkpoint`

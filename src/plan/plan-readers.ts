@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { fileExists } from "../core/fs-utils.js";
+import { resolveProjectFile } from "../core/project-path.js";
 import { join } from "node:path";
 import type { KitTask, KitTaskGraph } from "../kit/kit-schemas.js";
 
@@ -14,6 +15,7 @@ export type PlanGraphResult = {
   graph: KitTaskGraph | null;
   source: string | null;
   warnings: string[];
+  failureReason?: "missing" | "invalid-source" | "invalid-content";
 };
 
 const CHECKLIST_LINE = /^(\s*)[-*] \[( |x|X)\] (.+)$/;
@@ -138,7 +140,36 @@ async function tryReadFile(path: string): Promise<string | null> {
   }
 }
 
+async function tryReadProjectFile(projectPath: string, relativePath: string): Promise<string | null> {
+  try {
+    const resolved = await resolveProjectFile(projectPath, relativePath, {
+      mode: "read",
+      blockedPaths: []
+    });
+    return await readFile(resolved.absolutePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 const GENERIC_CANDIDATES = ["PLAN.md", "TODO.md", "tasks.md"];
+
+function genericGraphResult(fileName: string, content: string): PlanGraphResult {
+  const tasks = parseChecklist(content, { idPrefix: "P" });
+  if (tasks.length === 0) {
+    return {
+      graph: null,
+      source: fileName,
+      warnings: [`no checklist items found in ${fileName}`],
+      failureReason: "invalid-content"
+    };
+  }
+  return {
+    graph: { featureSlug: fileName, tasks },
+    source: fileName,
+    warnings: []
+  };
+}
 
 /**
  * Probe `PLAN.md`, `TODO.md`, `tasks.md` (in that order) at the project root.
@@ -153,13 +184,12 @@ export async function readGenericChecklist(projectPath: string): Promise<PlanGra
     if (content === null) {
       continue;
     }
-    const tasks = parseChecklist(content, { idPrefix: "P" });
-    if (tasks.length === 0) {
-      warnings.push(`no checklist items found in ${fileName}`);
+    const result = genericGraphResult(fileName, content);
+    if (!result.graph) {
+      warnings.push(...result.warnings);
       continue;
     }
-    const graph: KitTaskGraph = { featureSlug: fileName, tasks };
-    return { graph, source: fileName, warnings };
+    return { ...result, warnings };
   }
 
   return { graph: null, source: null, warnings };
@@ -224,6 +254,61 @@ function idedGraphResult(
   }
   const graph: KitTaskGraph = { featureSlug: dir, tasks };
   return { graph, source: `${sourcePrefix}:${dir}/tasks.md`, warnings };
+}
+
+/**
+ * Re-read one previously discovered plan source exactly. Unlike discovery,
+ * this function never probes another generic file or chooses a newer feature
+ * directory when the requested source is missing or invalid.
+ */
+export async function readPlanTaskGraphSource(
+  projectPath: string,
+  source: string
+): Promise<PlanGraphResult> {
+  if (GENERIC_CANDIDATES.includes(source)) {
+    const content = await tryReadProjectFile(projectPath, source);
+    if (content === null) {
+      return {
+        graph: null,
+        source,
+        warnings: [`plan source is missing or unreadable: ${source}`],
+        failureReason: "missing"
+      };
+    }
+    return genericGraphResult(source, content);
+  }
+
+  const tagged = /^(spec-kit|openspec):([^/\\]+)\/tasks\.md$/u.exec(source);
+  const kind = tagged?.[1];
+  const dir = tagged?.[2];
+  if (!kind || !dir || dir === "." || dir === "..") {
+    return {
+      graph: null,
+      source,
+      warnings: [`unsupported exact plan source: ${source}`],
+      failureReason: "invalid-source"
+    };
+  }
+
+  const relativePath =
+    kind === "spec-kit"
+      ? join("specs", dir, "tasks.md")
+      : join("openspec", "changes", dir, "tasks.md");
+  const content = await tryReadProjectFile(projectPath, relativePath);
+  if (content === null) {
+    return {
+      graph: null,
+      source,
+      warnings: [`plan source is missing or unreadable: ${source}`],
+      failureReason: "missing"
+    };
+  }
+
+  const result = idedGraphResult(dir, content, [], kind);
+  if (!result.graph) {
+    return { ...result, source, failureReason: "invalid-content" };
+  }
+  return result;
 }
 
 /**

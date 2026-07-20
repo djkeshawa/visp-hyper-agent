@@ -2,16 +2,16 @@ import { isAbsolute, relative } from "node:path";
 import { Command, Option } from "commander";
 import { toPosixPath } from "../../core/path-utils.js";
 import { readState, updateActiveSession } from "../../core/session-manager.js";
-import type { ToolProfile } from "../../core/types.js";
+import type { PipelineGraphIdentity, ToolProfile } from "../../core/types.js";
 import { detectVisp } from "../../kit/kit-command-bridge.js";
 import type { KitTask } from "../../kit/kit-schemas.js";
-import { buildActionBlock } from "../../pipeline/pipeline-engine.js";
+import { buildActionBlock, initialPipelineState } from "../../pipeline/pipeline-engine.js";
 import { ProjectValidationRunner } from "../../quality/validation-runner.js";
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { executeStart, renderDirectCommandKitStop } from "./start.js";
-import { resolveProjectPath } from "./shared.js";
+import { renderPipelineIdentityStop, resolveProjectPath } from "./shared.js";
 
 const QUICK_TASK_ID = "Q001";
 
@@ -52,16 +52,33 @@ export function quickCommand(): Command {
         authority: { mode: "local" }
       });
 
-      await updateActiveSession(projectPath, (current) => ({
-        ...current,
-        pipeline: {
-          taskIds: [QUICK_TASK_ID],
-          currentTaskId: QUICK_TASK_ID,
-          completed: [],
-          stepHistory: [],
-          syntheticTasks: [task]
-        }
-      }));
+      const graphIdentity: PipelineGraphIdentity = {
+        kind: "synthetic",
+        source: `quick:${session.id}`
+      };
+      const pipeline = initialPipelineState({ tasks: [task] }, graphIdentity);
+
+      const updated = await updateActiveSession(
+        projectPath,
+        (current) => ({
+          ...current,
+          pipeline: {
+            ...pipeline,
+            syntheticTasks: [task]
+          }
+        }),
+        session.id
+      );
+      if (!updated) {
+        console.log(
+          renderPipelineIdentityStop({
+            sessionId: session.id,
+            reasonCode: "quick_session_changed",
+            reason: "The active session changed before the quick pipeline could be persisted."
+          })
+        );
+        return;
+      }
 
       console.log(handoff);
       console.log("");

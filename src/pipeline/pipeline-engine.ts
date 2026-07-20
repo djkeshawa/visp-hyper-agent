@@ -1,10 +1,356 @@
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { kitTaskGraphSchema, type KitTask, type KitTaskGraph } from "../kit/kit-schemas.js";
-import { discoverPlanTaskGraph } from "../plan/plan-readers.js";
-import type { PipelineState } from "../core/types.js";
+import { resolveProjectFile } from "../core/project-path.js";
+import { discoverPlanTaskGraph, readPlanTaskGraphSource } from "../plan/plan-readers.js";
+import type { PipelineGraphIdentity, PipelineState } from "../core/types.js";
 
 const COMPLETED_STATUSES = new Set(["verified", "done"]);
+
+export type TaskGraphValidationResult =
+  | { ok: true; ordered: KitTask[] }
+  | { ok: false; reasonCode: "task_graph_invalid"; reason: string; errors: string[]; cycle: string[] | null };
+
+export type TaskGraphLoadResult =
+  | { ok: true; graph: KitTaskGraph }
+  | {
+      ok: false;
+      reasonCode:
+        | "graph_identity_invalid"
+        | "task_graph_missing"
+        | "task_graph_invalid"
+        | "task_graph_identity_mismatch";
+      reason: string;
+    };
+
+export type PipelineStateValidationResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reasonCode:
+        | "pipeline_identity_missing"
+        | "pipeline_graph_mismatch"
+        | "pipeline_state_invalid";
+      reason: string;
+    };
+
+type VispKitGraphAttempt =
+  | { status: "loaded"; graph: KitTaskGraph; source: string }
+  | { status: "absent" }
+  | { status: "missing" | "invalid"; source: string; reason: string };
+
+function topologicalOrder(tasks: readonly KitTask[]): { ordered: KitTask[]; cycle: string[] | null } {
+  const placed = new Set<string>();
+  const ordered: KitTask[] = [];
+
+  let progress = true;
+  while (ordered.length < tasks.length && progress) {
+    progress = false;
+    for (const task of tasks) {
+      if (placed.has(task.id)) {
+        continue;
+      }
+      if (task.dependsOn.every((dependency) => placed.has(dependency))) {
+        ordered.push(task);
+        placed.add(task.id);
+        progress = true;
+      }
+    }
+  }
+
+  if (ordered.length < tasks.length) {
+    return {
+      ordered: [],
+      cycle: tasks.filter((task) => !placed.has(task.id)).map((task) => task.id)
+    };
+  }
+  return { ordered, cycle: null };
+}
+
+/** Validate the semantic invariants needed for deterministic graph execution. */
+export function validateTaskGraph(graph: KitTaskGraph): TaskGraphValidationResult {
+  const errors: string[] = [];
+  if (graph.tasks.length === 0) {
+    errors.push("task graph must contain at least one task");
+  }
+
+  const known = new Set<string>();
+  for (const [index, task] of graph.tasks.entries()) {
+    if (task.id.trim().length === 0) {
+      errors.push(`task at index ${index} has an empty id`);
+      continue;
+    }
+    if (task.id !== task.id.trim()) {
+      errors.push(`task id ${JSON.stringify(task.id)} must be trimmed`);
+    }
+    if (known.has(task.id)) {
+      errors.push(`duplicate task id: ${task.id}`);
+    }
+    known.add(task.id);
+  }
+
+  for (const task of graph.tasks) {
+    const dependencies = new Set<string>();
+    for (const dependency of task.dependsOn) {
+      if (dependency.trim().length === 0) {
+        errors.push(`task ${task.id || "<empty>"} has an empty dependency id`);
+        continue;
+      }
+      if (dependency !== dependency.trim()) {
+        errors.push(`dependency ${JSON.stringify(dependency)} on task ${task.id} must be trimmed`);
+      }
+      if (dependencies.has(dependency)) {
+        errors.push(`task ${task.id} repeats dependency ${dependency}`);
+      }
+      dependencies.add(dependency);
+      if (dependency === task.id) {
+        errors.push(`task ${task.id} cannot depend on itself`);
+      } else if (!known.has(dependency)) {
+        errors.push(`task ${task.id} depends on unknown task ${dependency}`);
+      }
+    }
+  }
+
+  const completedTaskIds = new Set(
+    graph.tasks
+      .filter((task) => COMPLETED_STATUSES.has(task.status ?? ""))
+      .map((task) => task.id)
+  );
+  for (const task of graph.tasks) {
+    if (!completedTaskIds.has(task.id)) {
+      continue;
+    }
+    const unfinishedDependency = task.dependsOn.find(
+      (dependency) => known.has(dependency) && !completedTaskIds.has(dependency)
+    );
+    if (unfinishedDependency) {
+      errors.push(`completed task ${task.id} has an unfinished dependency ${unfinishedDependency}`);
+    }
+  }
+
+  let cycle: string[] | null = null;
+  let ordered: KitTask[] = [];
+  if (errors.length === 0) {
+    const result = topologicalOrder(graph.tasks);
+    cycle = result.cycle;
+    ordered = result.ordered;
+    if (cycle) {
+      errors.push(`dependency cycle detected among tasks: ${cycle.join(", ")}`);
+    }
+  }
+
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      reasonCode: "task_graph_invalid",
+      reason: errors.join("; "),
+      errors,
+      cycle
+    };
+  }
+  return { ok: true, ordered };
+}
+
+function graphIdentityError(graph: KitTaskGraph, identity: PipelineGraphIdentity): string | null {
+  if (identity.source.trim().length === 0 || identity.source !== identity.source.trim()) {
+    return "graph identity source must be a non-empty trimmed string";
+  }
+  if (identity.kind === "visp-kit") {
+    if (!identity.featureId?.trim() || !identity.featureSlug?.trim()) {
+      return "visp-kit graph identity requires featureId and featureSlug";
+    }
+    const expectedSource = `.visp/features/${identity.featureId}-${identity.featureSlug}/task-graph.json`;
+    if (identity.source !== expectedSource) {
+      return `visp-kit graph source ${identity.source} does not match feature ${identity.featureId}-${identity.featureSlug}`;
+    }
+  }
+  if (graph.featureId !== identity.featureId || graph.featureSlug !== identity.featureSlug) {
+    return "loaded task graph does not match the persisted feature identity";
+  }
+  return null;
+}
+
+/** Opaque graph-scoped task key. Consumers compare it but never parse it. */
+export function taskKeyFor(identity: PipelineGraphIdentity, taskId: string): string {
+  return JSON.stringify([
+    identity.kind,
+    identity.source,
+    identity.featureId ?? null,
+    identity.featureSlug ?? null,
+    taskId
+  ]);
+}
+
+export function taskKeysForGraph(
+  graph: KitTaskGraph,
+  identity: PipelineGraphIdentity
+): Record<string, string> {
+  return Object.fromEntries(graph.tasks.map((task) => [task.id, taskKeyFor(identity, task.id)]));
+}
+
+function taskFingerprintPayload(task: KitTask): unknown {
+  return {
+    id: task.id,
+    title: task.title ?? null,
+    description: task.description ?? null,
+    requirementIds: task.requirementIds ?? null,
+    acceptanceCriterionIds: task.acceptanceCriterionIds ?? null,
+    dependsOn: task.dependsOn,
+    allowedFiles: task.allowedFiles ?? null,
+    expectedFiles: task.expectedFiles ?? null,
+    forbiddenFiles: task.forbiddenFiles ?? null,
+    validationCommands: task.validationCommands ?? null,
+    status: task.status ?? null,
+    parallelizable: task.parallelizable ?? null,
+    riskLevel: task.riskLevel ?? null
+  };
+}
+
+function fingerprintPayload(graph: KitTaskGraph): unknown {
+  return {
+    featureId: graph.featureId ?? null,
+    featureSlug: graph.featureSlug ?? null,
+    tasks: graph.tasks.map(taskFingerprintPayload)
+  };
+}
+
+export function graphFingerprintFor(graph: KitTaskGraph): string {
+  return createHash("sha256").update(JSON.stringify(fingerprintPayload(graph))).digest("hex");
+}
+
+function taskFingerprintFor(task: KitTask): string {
+  return createHash("sha256").update(JSON.stringify(taskFingerprintPayload(task))).digest("hex");
+}
+
+function injectedTaskFingerprintsFor(tasks: readonly KitTask[]): Record<string, string> {
+  return Object.fromEntries(tasks.map((task) => [task.id, taskFingerprintFor(task)]));
+}
+
+/** Pin the exact remediation definitions before writing an adapted pipeline. */
+export function pinInjectedTaskIntegrity(state: PipelineState): PipelineState {
+  return {
+    ...state,
+    injectedTaskFingerprints: injectedTaskFingerprintsFor(state.injectedTasks ?? [])
+  };
+}
+
+async function readJsonTaskGraph(projectPath: string, source: string): Promise<TaskGraphLoadResult> {
+  let raw: string;
+  try {
+    const resolved = await resolveProjectFile(projectPath, source, { mode: "read", blockedPaths: [] });
+    raw = await readFile(resolved.absolutePath, "utf8");
+  } catch {
+    return {
+      ok: false,
+      reasonCode: "task_graph_missing",
+      reason: `The pinned task graph is missing or unreadable: ${source}`
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      ok: false,
+      reasonCode: "task_graph_invalid",
+      reason: `The pinned task graph contains invalid JSON: ${source}`
+    };
+  }
+  const schemaResult = kitTaskGraphSchema.safeParse(parsed);
+  if (!schemaResult.success) {
+    return {
+      ok: false,
+      reasonCode: "task_graph_invalid",
+      reason: `The pinned task graph has an invalid shape: ${source}`
+    };
+  }
+  const validation = validateTaskGraph(schemaResult.data);
+  if (!validation.ok) {
+    return { ok: false, reasonCode: validation.reasonCode, reason: validation.reason };
+  }
+  return { ok: true, graph: schemaResult.data };
+}
+
+/**
+ * Load only the graph named by persisted pipeline identity. This is a resume
+ * operation, not discovery: missing or invalid sources never fall through to a
+ * newer feature or a different plan convention.
+ */
+export async function loadTaskGraphByIdentity(
+  projectPath: string,
+  identity: PipelineGraphIdentity,
+  syntheticTasks?: readonly KitTask[]
+): Promise<TaskGraphLoadResult> {
+  if (identity.source.trim().length === 0 || identity.source !== identity.source.trim()) {
+    return {
+      ok: false,
+      reasonCode: "graph_identity_invalid",
+      reason: "The persisted graph source is empty or not trimmed."
+    };
+  }
+
+  let result: TaskGraphLoadResult;
+  if (identity.kind === "synthetic") {
+    if (!syntheticTasks || syntheticTasks.length === 0) {
+      return {
+        ok: false,
+        reasonCode: "task_graph_missing",
+        reason: "The persisted synthetic task graph is missing."
+      };
+    }
+    const graph: KitTaskGraph = {
+      ...(identity.featureId ? { featureId: identity.featureId } : {}),
+      ...(identity.featureSlug ? { featureSlug: identity.featureSlug } : {}),
+      tasks: [...syntheticTasks]
+    };
+    const validation = validateTaskGraph(graph);
+    result = validation.ok
+      ? { ok: true, graph }
+      : { ok: false, reasonCode: validation.reasonCode, reason: validation.reason };
+  } else if (identity.kind === "plan") {
+    const plan = await readPlanTaskGraphSource(projectPath, identity.source);
+    if (!plan.graph) {
+      result = {
+        ok: false,
+        reasonCode: plan.failureReason === "missing" ? "task_graph_missing" : "task_graph_invalid",
+        reason: plan.warnings[0] ?? `The pinned plan graph could not be loaded: ${identity.source}`
+      };
+    } else {
+      const validation = validateTaskGraph(plan.graph);
+      result = validation.ok
+        ? { ok: true, graph: plan.graph }
+        : { ok: false, reasonCode: validation.reasonCode, reason: validation.reason };
+    }
+  } else {
+    if (!identity.featureId?.trim() || !identity.featureSlug?.trim()) {
+      return {
+        ok: false,
+        reasonCode: "graph_identity_invalid",
+        reason: "A visp-kit graph identity requires featureId and featureSlug."
+      };
+    }
+    const expectedSource = `.visp/features/${identity.featureId}-${identity.featureSlug}/task-graph.json`;
+    if (identity.source !== expectedSource) {
+      return {
+        ok: false,
+        reasonCode: "graph_identity_invalid",
+        reason: `The pinned graph source does not match the persisted feature: ${identity.source}`
+      };
+    }
+    result = await readJsonTaskGraph(projectPath, identity.source);
+  }
+
+  if (!result.ok) {
+    return result;
+  }
+  const mismatch = graphIdentityError(result.graph, identity);
+  if (mismatch) {
+    return { ok: false, reasonCode: "task_graph_identity_mismatch", reason: mismatch };
+  }
+  return result;
+}
 
 /**
  * Locate and parse a feature's `.visp` `task-graph.json`. Never throws: a
@@ -17,7 +363,7 @@ const COMPLETED_STATUSES = new Set(["verified", "done"]);
 async function loadVispKitTaskGraph(
   projectPath: string,
   featureDirName?: string
-): Promise<KitTaskGraph | null> {
+): Promise<VispKitGraphAttempt> {
   const featureRoot = join(projectPath, ".visp", "features");
 
   let dirNames: string[];
@@ -28,56 +374,80 @@ async function loadVispKitTaskGraph(
       .map((entry) => entry.name)
       .sort();
   } catch {
-    return null;
+    return featureDirName
+      ? {
+          status: "missing",
+          source: `.visp/features/${featureDirName}/task-graph.json`,
+          reason: `named feature directory is missing: ${featureDirName}`
+        }
+      : { status: "absent" };
   }
 
   if (dirNames.length === 0) {
-    return null;
+    return featureDirName
+      ? {
+          status: "missing",
+          source: `.visp/features/${featureDirName}/task-graph.json`,
+          reason: `named feature directory is missing: ${featureDirName}`
+        }
+      : { status: "absent" };
   }
 
-  let chosen: string | undefined;
-  if (featureDirName && dirNames.includes(featureDirName)) {
-    chosen = featureDirName;
-  } else {
-    chosen = dirNames[dirNames.length - 1];
+  if (featureDirName && !dirNames.includes(featureDirName)) {
+    return {
+      status: "missing",
+      source: `.visp/features/${featureDirName}/task-graph.json`,
+      reason: `named feature directory is missing: ${featureDirName}`
+    };
   }
+  const chosen = featureDirName ?? dirNames[dirNames.length - 1];
 
   if (!chosen) {
-    return null;
+    return { status: "absent" };
   }
+  const source = `.visp/features/${chosen}/task-graph.json`;
 
   let raw: string;
   try {
-    raw = await readFile(join(featureRoot, chosen, "task-graph.json"), "utf8");
+    const resolved = await resolveProjectFile(projectPath, source, { mode: "read", blockedPaths: [] });
+    raw = await readFile(resolved.absolutePath, "utf8");
   } catch {
-    return null;
+    return { status: "missing", source, reason: `task graph is missing or unreadable: ${source}` };
   }
 
   let data: unknown;
   try {
     data = JSON.parse(raw);
   } catch {
-    return null;
+    return { status: "invalid", source, reason: `task graph contains invalid JSON: ${source}` };
   }
 
   const result = kitTaskGraphSchema.safeParse(data);
-  return result.success ? result.data : null;
+  if (!result.success) {
+    return { status: "invalid", source, reason: `task graph has an invalid shape: ${source}` };
+  }
+  const validation = validateTaskGraph(result.data);
+  if (!validation.ok) {
+    return { status: "invalid", source, reason: validation.reason };
+  }
+  return { status: "loaded", graph: result.data, source };
 }
 
 /**
- * Detailed task-graph resolution. The visp-kit scan runs first and unchanged;
- * only when it yields `null` does the loose plan-file fallback
- * ({@link discoverPlanTaskGraph}) run. `source` is `"visp-kit"` for the kit
- * path, the plan reader's source string for a fallback, or `null` when nothing
- * matched. Never throws.
+ * Initial graph discovery. An explicit feature name is exact: missing or
+ * invalid named graphs never fall through to another feature or plan source.
+ * Unnamed discovery retains the existing latest-feature behavior.
  */
 export async function loadTaskGraphDetailed(
   projectPath: string,
   featureDirName?: string
 ): Promise<{ graph: KitTaskGraph | null; source: string | null; warnings: string[] }> {
   const kitGraph = await loadVispKitTaskGraph(projectPath, featureDirName);
-  if (kitGraph) {
-    return { graph: kitGraph, source: "visp-kit", warnings: [] };
+  if (kitGraph.status === "loaded") {
+    return { graph: kitGraph.graph, source: kitGraph.source, warnings: [] };
+  }
+  if (kitGraph.status !== "absent") {
+    return { graph: null, source: kitGraph.source, warnings: [kitGraph.reason] };
   }
 
   try {
@@ -104,61 +474,41 @@ export async function loadTaskGraph(
 
 /**
  * Deterministic topological sort honoring `dependsOn`. Among ready tasks the
- * original graph order is preserved (stable). Dependency ids that do not match
- * any task in the graph are treated as already satisfied. On a cycle, returns
- * `ordered: []` and `cycle` listing the task ids that remain unresolved.
+ * original graph order is preserved (stable). Invalid graphs return no
+ * ordering; on a cycle, `cycle` lists the task ids that remain unresolved.
  */
-export function orderTasks(graph: KitTaskGraph): { ordered: KitTask[]; cycle: string[] | null } {
-  const tasks = graph.tasks;
-  const known = new Set(tasks.map((task) => task.id));
-  const placed = new Set<string>();
-  const ordered: KitTask[] = [];
-
-  let progress = true;
-  while (ordered.length < tasks.length && progress) {
-    progress = false;
-    for (const task of tasks) {
-      if (placed.has(task.id)) {
-        continue;
-      }
-      const ready = task.dependsOn.every((dep) => !known.has(dep) || placed.has(dep));
-      if (ready) {
-        ordered.push(task);
-        placed.add(task.id);
-        progress = true;
-      }
-    }
+export function orderTasks(
+  graph: KitTaskGraph
+): { ordered: KitTask[]; cycle: string[] | null; errors: string[] } {
+  const validation = validateTaskGraph(graph);
+  if (!validation.ok) {
+    return { ordered: [], cycle: validation.cycle, errors: validation.errors };
   }
-
-  if (ordered.length < tasks.length) {
-    const cycle = tasks.filter((task) => !placed.has(task.id)).map((task) => task.id);
-    return { ordered: [], cycle };
-  }
-
-  return { ordered, cycle: null };
+  return { ordered: validation.ordered, cycle: null, errors: [] };
 }
 
 /**
  * Build the starting pipeline state from a task graph. Tasks already marked
  * `verified`/`done` are recorded as completed; `currentTaskId` is the first
- * ordered task not yet completed (or `null` when all are complete). On a cycle,
- * `taskIds` falls back to the graph order and `currentTaskId` is `null`.
+ * ordered task not yet completed (or `null` when all are complete). Invalid
+ * graphs are rejected rather than represented as an apparently complete state.
  */
-export function initialPipelineState(graph: KitTaskGraph): PipelineState {
-  const { ordered, cycle } = orderTasks(graph);
-
-  if (cycle) {
-    return {
-      taskIds: graph.tasks.map((task) => task.id),
-      currentTaskId: null,
-      completed: [],
-      stepHistory: []
-    };
+export function initialPipelineState(
+  graph: KitTaskGraph,
+  graphIdentity: PipelineGraphIdentity
+): PipelineState {
+  const validation = validateTaskGraph(graph);
+  if (!validation.ok) {
+    throw new Error(`Cannot initialize pipeline: ${validation.reason}`);
+  }
+  const identityError = graphIdentityError(graph, graphIdentity);
+  if (identityError) {
+    throw new Error(`Cannot initialize pipeline: ${identityError}`);
   }
 
   const completed: string[] = [];
   let currentTaskId: string | null = null;
-  for (const task of ordered) {
+  for (const task of validation.ordered) {
     if (task.status && COMPLETED_STATUSES.has(task.status)) {
       completed.push(task.id);
     } else if (currentTaskId === null) {
@@ -166,12 +516,263 @@ export function initialPipelineState(graph: KitTaskGraph): PipelineState {
     }
   }
 
+  const completedSet = new Set(completed);
+  const invalidCompletedTask = validation.ordered.find(
+    (task) => completedSet.has(task.id) && task.dependsOn.some((dependency) => !completedSet.has(dependency))
+  );
+  if (invalidCompletedTask) {
+    throw new Error(
+      `Cannot initialize pipeline: completed task ${invalidCompletedTask.id} has an unfinished dependency`
+    );
+  }
+
   return {
-    taskIds: ordered.map((task) => task.id),
+    taskIds: validation.ordered.map((task) => task.id),
     currentTaskId,
     completed,
-    stepHistory: []
+    stepHistory: [],
+    graphIdentity: { ...graphIdentity },
+    taskKeys: taskKeysForGraph(graph, graphIdentity),
+    graphFingerprint: graphFingerprintFor(graph),
+    injectedTaskFingerprints: {}
   };
+}
+
+function baseGraphForState(graph: KitTaskGraph, state: PipelineState): KitTaskGraph {
+  const injectedIds = new Set((state.injectedTasks ?? []).map((task) => task.id));
+  if (injectedIds.size === 0) {
+    return graph;
+  }
+  return {
+    ...graph,
+    tasks: graph.tasks
+      .filter((task) => !injectedIds.has(task.id))
+      .map((task) => ({
+        ...task,
+        dependsOn: task.dependsOn.filter((dependency) => !injectedIds.has(dependency))
+      }))
+  };
+}
+
+function sameStringRecord(left: Record<string, string>, right: Record<string, string>): boolean {
+  const entries = (value: Record<string, string>) =>
+    Object.entries(value).sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+  return JSON.stringify(entries(left)) === JSON.stringify(entries(right));
+}
+
+function isExactDependencyOrder(graph: KitTaskGraph, orderedIds: readonly string[]): boolean {
+  if (orderedIds.length !== graph.tasks.length) {
+    return false;
+  }
+  const positions = new Map<string, number>();
+  for (const [index, taskId] of orderedIds.entries()) {
+    if (positions.has(taskId)) {
+      return false;
+    }
+    positions.set(taskId, index);
+  }
+  if (graph.tasks.some((task) => !positions.has(task.id))) {
+    return false;
+  }
+  return graph.tasks.every((task) => {
+    const taskPosition = positions.get(task.id)!;
+    return task.dependsOn.every((dependency) => {
+      const dependencyPosition = positions.get(dependency);
+      return dependencyPosition !== undefined && dependencyPosition < taskPosition;
+    });
+  });
+}
+
+/** True only for a non-empty pipeline whose effective task set is exhausted. */
+export function isPipelineComplete(state: PipelineState): boolean {
+  if (state.currentTaskId !== null || state.taskIds.length === 0) {
+    return false;
+  }
+  const taskIds = new Set(state.taskIds);
+  const completed = new Set(state.completed);
+  if (taskIds.size !== state.taskIds.length || completed.size !== state.completed.length) {
+    return false;
+  }
+  return completed.size === taskIds.size && [...completed].every((taskId) => taskIds.has(taskId));
+}
+
+/**
+ * Bind persisted pipeline state to an already resolved effective graph. Legacy
+ * identity is readable but non-authorizing, and stale task sets fail closed.
+ */
+export function validatePipelineState(
+  graph: KitTaskGraph,
+  state: PipelineState,
+  options: { sessionId?: string } = {}
+): PipelineStateValidationResult {
+  if (!state.graphIdentity || !state.taskKeys || !state.graphFingerprint) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_identity_missing",
+      reason: "The pipeline predates exact graph identity; start a fresh session instead of guessing."
+    };
+  }
+  if (
+    state.graphIdentity.kind === "synthetic" &&
+    (!options.sessionId || state.graphIdentity.source !== `quick:${options.sessionId}`)
+  ) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_state_invalid",
+      reason: "The synthetic graph identity does not belong to the active session."
+    };
+  }
+
+  const graphValidation = validateTaskGraph(graph);
+  if (!graphValidation.ok) {
+    return { ok: false, reasonCode: "pipeline_graph_mismatch", reason: graphValidation.reason };
+  }
+  const baseGraph = baseGraphForState(graph, state);
+  const baseValidation = validateTaskGraph(baseGraph);
+  if (!baseValidation.ok) {
+    return { ok: false, reasonCode: "pipeline_graph_mismatch", reason: baseValidation.reason };
+  }
+  const identityError = graphIdentityError(baseGraph, state.graphIdentity);
+  if (identityError) {
+    return { ok: false, reasonCode: "pipeline_graph_mismatch", reason: identityError };
+  }
+
+  const expectedKeys = taskKeysForGraph(baseGraph, state.graphIdentity);
+  if (!sameStringRecord(expectedKeys, state.taskKeys)) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_graph_mismatch",
+      reason: "The loaded graph task keys do not match the pinned pipeline task keys."
+    };
+  }
+  if (graphFingerprintFor(baseGraph) !== state.graphFingerprint) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_graph_mismatch",
+      reason: "The loaded task graph changed after this pipeline was created."
+    };
+  }
+
+  const expectedInjectedFingerprints = injectedTaskFingerprintsFor(state.injectedTasks ?? []);
+  if (!sameStringRecord(expectedInjectedFingerprints, state.injectedTaskFingerprints ?? {})) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_graph_mismatch",
+      reason: "A persisted remediation task changed after it was injected."
+    };
+  }
+
+  const taskIds = new Set<string>();
+  for (const taskId of state.taskIds) {
+    if (!taskId.trim() || taskId !== taskId.trim() || taskIds.has(taskId)) {
+      return {
+        ok: false,
+        reasonCode: "pipeline_state_invalid",
+        reason: "Pipeline taskIds must be non-empty, trimmed, and unique."
+      };
+    }
+    taskIds.add(taskId);
+  }
+  const graphIds = new Set(graph.tasks.map((task) => task.id));
+  if (taskIds.size !== graphIds.size || [...taskIds].some((taskId) => !graphIds.has(taskId))) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_graph_mismatch",
+      reason: "The pipeline task set does not match the resolved graph."
+    };
+  }
+  const injectedIds = new Set((state.injectedTasks ?? []).map((task) => task.id));
+  const persistedBaseOrder = state.taskIds.filter((taskId) => !injectedIds.has(taskId));
+  const expectedBaseOrder = baseValidation.ordered.map((task) => task.id);
+  if (JSON.stringify(persistedBaseOrder) !== JSON.stringify(expectedBaseOrder)) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_state_invalid",
+      reason: "Pipeline base tasks are not in the pinned graph's stable dependency order."
+    };
+  }
+  if (!isExactDependencyOrder(graph, state.taskIds)) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_state_invalid",
+      reason: "Pipeline taskIds are not a valid dependency order for the resolved graph."
+    };
+  }
+
+  const completed = new Set<string>();
+  for (const taskId of state.completed) {
+    if (!taskIds.has(taskId) || completed.has(taskId)) {
+      return {
+        ok: false,
+        reasonCode: "pipeline_state_invalid",
+        reason: "Pipeline completed tasks must be unique members of the pinned task set."
+      };
+    }
+    completed.add(taskId);
+  }
+
+  const checkpointPassed = new Set(
+    state.stepHistory
+      .filter((step) => step.action === "checkpoint-passed")
+      .map((step) => step.taskId)
+  );
+  if ([...checkpointPassed].some((taskId) => !completed.has(taskId))) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_state_invalid",
+      reason: "A checkpoint-passed task is missing from the completed task set."
+    };
+  }
+  for (const taskId of completed) {
+    const task = graph.tasks.find((entry) => entry.id === taskId);
+    if (!task) {
+      return {
+        ok: false,
+        reasonCode: "pipeline_state_invalid",
+        reason: `Completed task ${taskId} is missing from the resolved graph.`
+      };
+    }
+    if (task.dependsOn.some((dependency) => !completed.has(dependency))) {
+      return {
+        ok: false,
+        reasonCode: "pipeline_state_invalid",
+        reason: `Completed task ${taskId} has an unfinished dependency.`
+      };
+    }
+    if (!COMPLETED_STATUSES.has(task.status ?? "") && !checkpointPassed.has(taskId)) {
+      return {
+        ok: false,
+        reasonCode: "pipeline_state_invalid",
+        reason: `Completed task ${taskId} has no completed graph status or passing checkpoint evidence.`
+      };
+    }
+  }
+
+  if (state.currentTaskId === null) {
+    return isPipelineComplete(state)
+      ? { ok: true }
+      : {
+          ok: false,
+          reasonCode: "pipeline_state_invalid",
+          reason: "The pipeline has unfinished tasks but no current task."
+        };
+  }
+  if (!taskIds.has(state.currentTaskId) || completed.has(state.currentTaskId)) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_state_invalid",
+      reason: "The current task is missing from the graph or is already completed."
+    };
+  }
+  const firstIncomplete = state.taskIds.find((taskId) => !completed.has(taskId));
+  if (firstIncomplete !== state.currentTaskId) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_state_invalid",
+      reason: `The current task does not match the first unfinished task (${firstIncomplete ?? "none"}).`
+    };
+  }
+  return { ok: true };
 }
 
 export function currentTask(graph: KitTaskGraph, state: PipelineState): KitTask | null {
@@ -205,8 +806,57 @@ export function advance(
     return state;
   }
 
+  const graphValidation = validateTaskGraph(graph);
+  if (!graphValidation.ok) {
+    return {
+      ...state,
+      completed: [...state.completed],
+      stepHistory: [
+        ...state.stepHistory,
+        {
+          taskId: state.currentTaskId,
+          action: "checkpoint-failed",
+          at: now,
+          detail: graphValidation.reason
+        }
+      ]
+    };
+  }
+
   const passed = evidence.verifyPassed && evidence.reviewPassed;
   const current = state.currentTaskId;
+
+  if (!isExactDependencyOrder(graph, state.taskIds)) {
+    return {
+      ...state,
+      completed: [...state.completed],
+      stepHistory: [
+        ...state.stepHistory,
+        {
+          taskId: current,
+          action: "checkpoint-failed",
+          at: now,
+          detail: "pipeline task order is stale or violates graph dependencies"
+        }
+      ]
+    };
+  }
+
+  if (!graphValidation.ordered.some((task) => task.id === current) || state.completed.includes(current)) {
+    return {
+      ...state,
+      completed: [...state.completed],
+      stepHistory: [
+        ...state.stepHistory,
+        {
+          taskId: current,
+          action: "checkpoint-failed",
+          at: now,
+          detail: "current task is stale or already completed"
+        }
+      ]
+    };
+  }
 
   if (!passed) {
     return {
@@ -219,33 +869,8 @@ export function advance(
     };
   }
 
-  const { ordered, cycle } = orderTasks(graph);
-
-  // Fail closed on a re-computed cycle. The graph may have changed since the
-  // pipeline state was built (a task's dependencies were edited), so ordering is
-  // recomputed here. If it now reports a cycle, refusing to trust the stale
-  // `state.taskIds` order is the safe choice: record the checkpoint as failed,
-  // name the offending task ids, and keep `currentTaskId` so the run does not
-  // silently continue against an unorderable graph.
-  if (cycle) {
-    return {
-      ...state,
-      completed: [...state.completed],
-      stepHistory: [
-        ...state.stepHistory,
-        {
-          taskId: current,
-          action: "checkpoint-failed",
-          at: now,
-          detail: `dependency cycle detected among tasks: ${cycle.join(", ")}`
-        }
-      ]
-    };
-  }
-
   const completed = [...state.completed, current];
-  const orderedIds = ordered.map((task) => task.id);
-  const nextTaskId = orderedIds.find((id) => !completed.includes(id)) ?? null;
+  const nextTaskId = state.taskIds.find((id) => !completed.includes(id)) ?? null;
 
   return {
     ...state,
@@ -261,8 +886,7 @@ export function advance(
 /**
  * Compute the ready-set of parallelizable sibling task ids for a given current
  * task. A sibling is "ready" when every one of its `dependsOn` ids is already in
- * `completed` (dependency ids not present in the graph are treated as satisfied,
- * mirroring {@link orderTasks}), it is itself `parallelizable === true`, it is not
+ * `completed`, it is itself `parallelizable === true`, it is not
  * the current task, and it is not already completed. Ids are returned in stable
  * graph order. Pure: reads only the passed graph/state, changes nothing.
  */
@@ -271,7 +895,9 @@ export function readySet(
   currentTaskId: string,
   completed: readonly string[]
 ): string[] {
-  const known = new Set(graph.tasks.map((task) => task.id));
+  if (!validateTaskGraph(graph).ok) {
+    return [];
+  }
   const done = new Set(completed);
 
   return graph.tasks
@@ -282,7 +908,7 @@ export function readySet(
       if (task.parallelizable !== true) {
         return false;
       }
-      return task.dependsOn.every((dep) => !known.has(dep) || done.has(dep));
+      return task.dependsOn.every((dep) => done.has(dep));
     })
     .map((task) => task.id);
 }
