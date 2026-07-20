@@ -1,8 +1,9 @@
-import { z } from "zod";
-import { fileExists, readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
-import { parseJsonStore } from "../core/json-store.js";
-import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { z } from "zod";
+import { defaultConfig } from "../core/defaults.js";
+import { readTextIfExists, writeText } from "../core/fs-utils.js";
+import { parseJsonStore } from "../core/json-store.js";
+import { resolveProjectFile } from "../core/project-path.js";
 import type { SkillProposal } from "./skill-proposals.js";
 
 export const skillEntrySchema = z.object({
@@ -29,9 +30,7 @@ export const skillRegistrySchema = z.object({
 export type SkillEntry = z.infer<typeof skillEntrySchema>;
 export type SkillRegistry = z.infer<typeof skillRegistrySchema>;
 
-function registryPath(projectPath: string): string {
-  return vispPath(projectPath, "hyper", "skills.json");
-}
+const registryRelativePath = ".visp/hyper/skills.json";
 
 function emptyRegistry(): SkillRegistry {
   return { skills: [] };
@@ -43,9 +42,20 @@ function emptyRegistry(): SkillRegistry {
  * a single warning so callers can surface it without failing.
  */
 export async function readSkillRegistry(
-  projectPath: string
+  projectPath: string,
+  options: { blockedPaths?: string[] } = {}
 ): Promise<{ registry: SkillRegistry; warnings: string[] }> {
-  const raw = await readTextIfExists(registryPath(projectPath));
+  const path = await resolveRegistryPath(
+    projectPath,
+    options.blockedPaths ?? defaultConfig.blockedPaths
+  );
+  return readRegistryAtPath(path);
+}
+
+async function readRegistryAtPath(
+  path: string
+): Promise<{ registry: SkillRegistry; warnings: string[] }> {
+  const raw = await readTextIfExists(path);
   const { value, warnings } = parseJsonStore(
     raw,
     skillRegistrySchema,
@@ -58,9 +68,26 @@ export async function readSkillRegistry(
 
 export async function writeSkillRegistry(
   projectPath: string,
-  registry: SkillRegistry
+  registry: SkillRegistry,
+  options: { blockedPaths?: string[] } = {}
 ): Promise<void> {
-  await writeText(registryPath(projectPath), `${JSON.stringify(registry, null, 2)}\n`);
+  const path = await resolveRegistryPath(
+    projectPath,
+    options.blockedPaths ?? defaultConfig.blockedPaths
+  );
+  await writeRegistryAtPath(path, registry);
+}
+
+async function resolveRegistryPath(projectPath: string, blockedPaths: string[]): Promise<string> {
+  const path = await resolveProjectFile(projectPath, registryRelativePath, {
+    mode: "write",
+    blockedPaths
+  });
+  return path.absolutePath;
+}
+
+async function writeRegistryAtPath(path: string, registry: SkillRegistry): Promise<void> {
+  await writeText(path, `${JSON.stringify(registry, null, 2)}\n`);
 }
 
 function normalizeDescription(description: string): string {
@@ -134,12 +161,16 @@ function proposalHash(proposal: SkillProposal): string {
 export async function installSkill(
   projectPath: string,
   proposal: SkillProposal,
-  input: { tool: string; sessionId: string; sessionCount: number }
+  input: { tool: string; sessionId: string; sessionCount: number; blockedPaths?: string[] }
 ): Promise<{ installed: boolean; destination: string; warning?: string }> {
   const destination = destinationFor(input.tool, proposal.name);
-  const destinationPath = join(projectPath, destination);
+  const blockedPaths = input.blockedPaths ?? defaultConfig.blockedPaths;
+  const destinationPath = await resolveProjectFile(projectPath, destination, {
+    mode: "write",
+    blockedPaths
+  });
 
-  if (await fileExists(destinationPath)) {
+  if (destinationPath.exists) {
     return {
       installed: false,
       destination,
@@ -147,9 +178,15 @@ export async function installSkill(
     };
   }
 
-  await writeText(destinationPath, renderSkill(proposal));
-
-  const { registry } = await readSkillRegistry(projectPath);
+  // Resolve and load the registry before writing the skill so every managed
+  // destination is fixed before the first write begins.
+  const registryPath = await resolveRegistryPath(projectPath, blockedPaths);
+  const destinationKey = canonicalKey(destinationPath.absolutePath);
+  if (destinationKey === canonicalKey(registryPath)) {
+    throw new Error(`Refused alias collision between ${destination} and ${registryRelativePath}.`);
+  }
+  const { registry } = await readRegistryAtPath(registryPath);
+  await writeText(destinationPath.absolutePath, renderSkill(proposal));
   registry.skills.push({
     name: proposal.name,
     description: proposal.description,
@@ -166,9 +203,13 @@ export async function installSkill(
     approvedBy: null,
     approvalExpiresAt: null
   });
-  await writeSkillRegistry(projectPath, registry);
+  await writeRegistryAtPath(registryPath, registry);
 
   return { installed: true, destination };
+}
+
+function canonicalKey(path: string): string {
+  return process.platform === "win32" ? path.toLowerCase() : path;
 }
 
 /**

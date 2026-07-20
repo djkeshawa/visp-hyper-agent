@@ -1,7 +1,10 @@
 import { statSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { defaultConfig } from "../core/defaults.js";
+import { writeText } from "../core/fs-utils.js";
+import { resolveProjectFile } from "../core/project-path.js";
 
 export type ToolName = "generic" | "codex" | "claude-code" | "copilot" | "opencode";
 
@@ -141,12 +144,14 @@ export function templatesRoot(): string {
 export async function planInstall(
   tool: ToolName,
   projectPath: string,
-  options: { templatesDir?: string } = {}
+  options: { templatesDir?: string; blockedPaths?: string[] } = {}
 ): Promise<PlannedAsset[]> {
   // Validates the templates root and tool subdir exist (throws otherwise).
-  await resolveToolDir(tool, options.templatesDir);
+  const toolDir = await resolveToolDir(tool, options.templatesDir);
+  const blockedPaths = options.blockedPaths ?? defaultConfig.blockedPaths;
   const specs = MANIFEST[tool];
   const planned: PlannedAsset[] = [];
+  const destinations = new Map<string, string>();
   for (const spec of specs) {
     // Consult the same denylist installAssets enforces so plan and install
     // agree: a kit-owned destination is never written, so it must never appear
@@ -154,11 +159,23 @@ export async function planInstall(
     if (isKitOwnedDestination(spec.destination)) {
       continue;
     }
-    const destAbsolute = join(projectPath, spec.destination);
+    const destination = await resolveProjectFile(projectPath, spec.destination, {
+      mode: "write",
+      blockedPaths
+    });
+    if (isKitOwnedDestination(destination.resolvedRelativePath)) {
+      throw new Error(
+        `Refused to resolve ${spec.destination} onto kit-owned destination ${destination.resolvedRelativePath}.`
+      );
+    }
+    recordCanonicalDestination(destinations, destination.absolutePath, spec.destination);
+    // A plan is also a preflight: surface incomplete template bundles before an
+    // install can begin writing destinations.
+    await readFile(join(toolDir, spec.templatePath), "utf8");
     planned.push({
       templatePath: spec.templatePath,
       destination: spec.destination,
-      exists: await pathExists(destAbsolute)
+      exists: destination.exists
     });
   }
   return planned;
@@ -167,36 +184,64 @@ export async function planInstall(
 export async function installAssets(
   tool: ToolName,
   projectPath: string,
-  options: { force?: boolean; templatesDir?: string } = {}
+  options: { force?: boolean; templatesDir?: string; blockedPaths?: string[] } = {}
 ): Promise<InstallReport> {
   const toolDir = await resolveToolDir(tool, options.templatesDir);
   const force = options.force ?? false;
+  const blockedPaths = options.blockedPaths ?? defaultConfig.blockedPaths;
   const report: InstallReport = { tool, created: [], skipped: [], overwritten: [], warnings: [] };
   const models = await readModelMap(toolDir);
+  const destinations = new Map<string, string>();
+  const prepared: Array<{
+    spec: AssetSpec;
+    destinationPath: string;
+    exists: boolean;
+    rendered: string;
+  }> = [];
 
+  // Resolve every destination and render every source before the first write.
+  // This prevents a later unsafe path or missing template from leaving a
+  // partially installed tool profile.
   for (const spec of MANIFEST[tool]) {
     if (isKitOwnedDestination(spec.destination)) {
       report.warnings.push(`Refused to write kit-owned destination ${spec.destination}.`);
       continue;
     }
 
-    const destAbsolute = join(projectPath, spec.destination);
-    const exists = await pathExists(destAbsolute);
-    if (exists && !force) {
-      report.skipped.push(spec.destination);
-      report.warnings.push(`Skipped existing file ${spec.destination}; pass force to overwrite.`);
+    const destination = await resolveProjectFile(projectPath, spec.destination, {
+      mode: "write",
+      blockedPaths
+    });
+    if (isKitOwnedDestination(destination.resolvedRelativePath)) {
+      throw new Error(
+        `Refused to resolve ${spec.destination} onto kit-owned destination ${destination.resolvedRelativePath}.`
+      );
+    }
+    recordCanonicalDestination(destinations, destination.absolutePath, spec.destination);
+    const raw = await readFile(join(toolDir, spec.templatePath), "utf8");
+    prepared.push({
+      spec,
+      destinationPath: destination.absolutePath,
+      exists: destination.exists,
+      rendered: render(raw, models)
+    });
+  }
+
+  for (const asset of prepared) {
+    if (asset.exists && !force) {
+      report.skipped.push(asset.spec.destination);
+      report.warnings.push(
+        `Skipped existing file ${asset.spec.destination}; pass force to overwrite.`
+      );
       continue;
     }
 
-    const raw = await readFile(join(toolDir, spec.templatePath), "utf8");
-    const rendered = render(raw, models);
-    await mkdir(dirname(destAbsolute), { recursive: true });
-    await writeFile(destAbsolute, rendered, "utf8");
+    await writeText(asset.destinationPath, asset.rendered);
 
-    if (exists) {
-      report.overwritten.push(spec.destination);
+    if (asset.exists) {
+      report.overwritten.push(asset.spec.destination);
     } else {
-      report.created.push(spec.destination);
+      report.created.push(asset.spec.destination);
     }
   }
 
@@ -250,13 +295,17 @@ function render(content: string, models: Record<string, string>): string {
   return out;
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
+function recordCanonicalDestination(
+  destinations: Map<string, string>,
+  absolutePath: string,
+  logicalPath: string
+): void {
+  const key = process.platform === "win32" ? absolutePath.toLowerCase() : absolutePath;
+  const existing = destinations.get(key);
+  if (existing) {
+    throw new Error(`Refused alias collision: ${logicalPath} resolves to the same file as ${existing}.`);
   }
+  destinations.set(key, logicalPath);
 }
 
 async function pathIsDir(path: string): Promise<boolean> {

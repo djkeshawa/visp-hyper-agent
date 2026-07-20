@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -260,6 +260,74 @@ describe("skill-registry", () => {
       const after = await readSkillRegistry(project);
       expect(after.registry).toEqual(before.registry);
       expect(after.registry.skills).toHaveLength(1);
+    });
+
+    it("rejects traversal in a direct proposal before writing a skill or registry", async () => {
+      const project = await makeProject();
+
+      await expect(
+        installSkill(project, proposal({ name: "x/../../../../escape" }), {
+          tool: "codex",
+          sessionId: "vh_session",
+          sessionCount: 1
+        })
+      ).rejects.toThrow(/parent traversal/);
+
+      expect(await exists(join(project, ".agents"))).toBe(false);
+      expect(await exists(join(project, ".visp", "hyper", "skills.json"))).toBe(false);
+    });
+
+    it("rejects an escaping skill destination without writing outside", async () => {
+      const project = await makeProject();
+      const outside = await mkdtemp(join(tmpdir(), "visp-skill-outside-"));
+      await symlink(outside, join(project, ".agents"), "dir");
+
+      await expect(
+        installSkill(project, proposal(), {
+          tool: "codex",
+          sessionId: "vh_session",
+          sessionCount: 1
+        })
+      ).rejects.toThrow(/resolved path escapes/);
+
+      expect(await readdir(outside)).toEqual([]);
+      expect(await exists(join(project, ".visp", "hyper", "skills.json"))).toBe(false);
+    });
+
+    it("preflights an escaping registry before writing the skill", async () => {
+      const project = await makeProject();
+      const outside = await mkdtemp(join(tmpdir(), "visp-registry-outside-"));
+      await symlink(outside, join(project, ".visp"), "dir");
+
+      await expect(
+        installSkill(project, proposal(), {
+          tool: "codex",
+          sessionId: "vh_session",
+          sessionCount: 1
+        })
+      ).rejects.toThrow(/resolved path escapes/);
+
+      expect(
+        await exists(join(project, ".agents", "skills", "hyper-deploy-dance", "SKILL.md"))
+      ).toBe(false);
+      expect(await readdir(outside)).toEqual([]);
+    });
+
+    it("allows a skill destination through an in-project parent symlink", async () => {
+      const project = await makeProject();
+      const target = join(project, "internal", "agents");
+      await mkdir(target, { recursive: true });
+      await symlink(target, join(project, ".agents"), "dir");
+
+      const result = await installSkill(project, proposal(), {
+        tool: "codex",
+        sessionId: "vh_session",
+        sessionCount: 1
+      });
+
+      expect(result.installed).toBe(true);
+      expect(await exists(join(target, "skills", "hyper-deploy-dance", "SKILL.md"))).toBe(true);
+      expect((await readSkillRegistry(project)).registry.skills).toHaveLength(1);
     });
   });
 

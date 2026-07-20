@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -246,5 +246,112 @@ describe("missing templates (errors)", () => {
     await expect(
       installAssets("claude-code", project, { templatesDir: onlyRoot })
     ).rejects.toThrow(/Templates for tool "claude-code" not found/);
+  });
+});
+
+describe("project path containment", () => {
+  it("preflights every destination before writing any earlier asset", async () => {
+    const project = await makeProject();
+    const outside = await mkdtemp(join(tmpdir(), "vh-install-outside-"));
+    await mkdir(join(project, ".claude"), { recursive: true });
+    await symlink(outside, join(project, ".claude", "commands"), "dir");
+
+    await expect(
+      installAssets("claude-code", project, { templatesDir: REAL_TEMPLATES })
+    ).rejects.toThrow(/resolved path escapes/);
+
+    expect(await pathExists(join(project, ".claude", "agents", "coordinator.md"))).toBe(false);
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  it.each([false, true])(
+    "rejects an existing escaping leaf symlink when force=%s",
+    async (force) => {
+      const project = await makeProject();
+      const outside = await mkdtemp(join(tmpdir(), "vh-install-outside-"));
+      const sentinel = join(outside, "instructions.md");
+      await writeFile(sentinel, "outside sentinel", "utf8");
+      await symlink(sentinel, join(project, "visp-hyper-instructions.md"), "file");
+
+      await expect(
+        installAssets("generic", project, { force, templatesDir: REAL_TEMPLATES })
+      ).rejects.toThrow(/resolved path escapes/);
+      expect(await readFile(sentinel, "utf8")).toBe("outside sentinel");
+    }
+  );
+
+  it("allows an in-project parent symlink and writes to its canonical target", async () => {
+    const project = await makeProject();
+    const target = join(project, "internal", "claude");
+    await mkdir(target, { recursive: true });
+    await symlink(target, join(project, ".claude"), "dir");
+
+    const report = await installAssets("claude-code", project, { templatesDir: REAL_TEMPLATES });
+
+    expect(report.created).toHaveLength(9);
+    expect(await pathExists(join(target, "agents", "coordinator.md"))).toBe(true);
+    expect(await pathExists(join(target, "commands", "hyper-run.md"))).toBe(true);
+  });
+
+  it("preserves an in-project leaf symlink when forcing an update", async () => {
+    const project = await makeProject();
+    const target = join(project, "internal-instructions.md");
+    const link = join(project, "visp-hyper-instructions.md");
+    await writeFile(target, "old", "utf8");
+    await symlink(target, link, "file");
+
+    await installAssets("generic", project, { force: true, templatesDir: REAL_TEMPLATES });
+
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+    expect(await readFile(target, "utf8")).not.toBe("old");
+  });
+
+  it("rejects non-regular destinations and canonical targets under blocked paths", async () => {
+    const directoryProject = await makeProject();
+    await mkdir(join(directoryProject, "visp-hyper-instructions.md"));
+    await expect(
+      installAssets("generic", directoryProject, { templatesDir: REAL_TEMPLATES })
+    ).rejects.toThrow(/not a regular file/);
+
+    const blockedProject = await makeProject();
+    const blockedTarget = join(blockedProject, ".git", "tool-assets");
+    await mkdir(blockedTarget, { recursive: true });
+    await symlink(blockedTarget, join(blockedProject, ".claude"), "dir");
+    await expect(
+      installAssets("claude-code", blockedProject, { templatesDir: REAL_TEMPLATES })
+    ).rejects.toThrow(/resolved path is blocked/);
+  });
+
+  it("refuses a safe-looking destination that resolves onto a kit-owned file", async () => {
+    const project = await makeProject();
+    const owned = join(project, "AGENTS.md");
+    await writeFile(owned, "owner content", "utf8");
+    await symlink(owned, join(project, "AGENTS.visp-hyper.md"), "file");
+
+    await expect(
+      installAssets("codex", project, { force: true, templatesDir: REAL_TEMPLATES })
+    ).rejects.toThrow(/kit-owned destination AGENTS\.md/);
+
+    expect(await readFile(owned, "utf8")).toBe("owner content");
+    expect(await pathExists(join(project, ".agents", "skills", "visp-hyper", "SKILL.md"))).toBe(
+      false
+    );
+  });
+
+  it("rejects distinct logical assets that alias the same canonical file", async () => {
+    const project = await makeProject();
+    const target = join(project, "shared-agent.md");
+    const agents = join(project, ".claude", "agents");
+    await mkdir(agents, { recursive: true });
+    await writeFile(target, "shared content", "utf8");
+    await symlink(target, join(agents, "coordinator.md"), "file");
+    await symlink(target, join(agents, "scout.md"), "file");
+
+    await expect(
+      installAssets("claude-code", project, { force: true, templatesDir: REAL_TEMPLATES })
+    ).rejects.toThrow(/alias collision/);
+
+    expect(await readFile(target, "utf8")).toBe("shared content");
+    expect(await pathExists(join(agents, "implementer.md"))).toBe(false);
   });
 });

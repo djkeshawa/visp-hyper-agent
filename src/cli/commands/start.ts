@@ -3,11 +3,12 @@ import { join, relative } from "node:path";
 import { Command, Option } from "commander";
 import { buildContextManifest, renderContextManifest } from "../../context/context-manifest.js";
 import { scanRelevantFiles } from "../../context/relevance-scanner.js";
+import { defaultConfig } from "../../core/defaults.js";
 import { vispPath, writeText } from "../../core/fs-utils.js";
+import { ProjectPathError, resolveProjectFile } from "../../core/project-path.js";
 import { createSession, initializeProject, readConfig } from "../../core/session-manager.js";
 import type { ContextFile, ContextManifest, ContextPackOptions, HyperConfig, SessionRecord, ToolProfile } from "../../core/types.js";
 import { buildHandoffProtocol, renderHandoff } from "../../handoff/handoff-protocol.js";
-import { isBlockedPath } from "../../governance/blocked-files.js";
 import {
   detectVisp,
   type KitContextPackArtifact
@@ -99,8 +100,10 @@ export async function executeStart(
   goal: string,
   options: StartOptions
 ): Promise<StartResult> {
+  await preflightStartWrites(projectPath, defaultConfig.blockedPaths);
   await initializeProject(projectPath);
   const config = await readConfig(projectPath);
+  await preflightStartWrites(projectPath, config.blockedPaths);
   const tool = options.tool ?? config.defaultTool;
   const adoption = options.authority.mode === "kit" ? options.authority.adoption : undefined;
   const kit = await readKitArtifacts(projectPath);
@@ -130,7 +133,7 @@ export async function executeStart(
     tool,
     relevantFiles: contextFiles.map((file) => file.path)
   });
-  const { registry } = await readSkillRegistry(projectPath);
+  const { registry } = await readSkillRegistry(projectPath, { blockedPaths: config.blockedPaths });
   const handoff = renderHandoff(session, {
     skills: registry.skills.map((skill) => ({ name: skill.name, whenToUse: skill.whenToUse }))
   });
@@ -181,6 +184,36 @@ export async function executeStart(
 const maxContentLength = 12_000;
 
 const recallLimit = 10;
+
+const managedStartWritePaths = [
+  ".visp/hyper/config.json",
+  ".visp/hyper/state.json",
+  ".visp/hyper/current/session.md",
+  ".visp/hyper/current/context-pack.md",
+  ".visp/hyper/current/context-manifest.json",
+  ".visp/hyper/current/memory-pack.md",
+  ".visp/hyper/current/quality-gates.md",
+  ".visp/hyper/current/agent-instructions.md",
+  ".visp/hyper/current/handoff.json",
+  ".visp/memory/session-history/.visp-hyper-path-check",
+  ".visp/prompts/visp-hyper-handoff.prompt.md"
+];
+
+async function preflightStartWrites(projectPath: string, blockedPaths: string[]): Promise<void> {
+  const destinations = new Map<string, string>();
+  for (const path of managedStartWritePaths) {
+    const resolved = await resolveProjectFile(projectPath, path, {
+      mode: "write",
+      blockedPaths
+    });
+    const key = process.platform === "win32" ? resolved.absolutePath.toLowerCase() : resolved.absolutePath;
+    const existing = destinations.get(key);
+    if (existing) {
+      throw new ProjectPathError(path, `managed output aliases ${existing}`);
+    }
+    destinations.set(key, path);
+  }
+}
 
 type MemoryFusion = {
   recalled?: RecalledMemory[];
@@ -283,8 +316,11 @@ async function buildKitAdoption(input: {
 }): Promise<KitAdoption | undefined> {
   const { projectPath, config, taskId, artifact, contract } = input;
 
-  const files = await contextFilesFromPack(artifact.pack, projectPath, config.blockedPaths);
-  if (files.length === 0) {
+  const context = await contextFilesFromPack(artifact.pack, projectPath, config.blockedPaths);
+  if (context.files.length === 0) {
+    for (const warning of context.warnings) {
+      console.warn(`warning: ${warning}`);
+    }
     return undefined;
   }
 
@@ -298,7 +334,7 @@ async function buildKitAdoption(input: {
       : [];
 
   return {
-    files,
+    files: context.files,
     source: `visp-kit context pack (${taskId})`,
     taskId,
     contextArtifact: {
@@ -310,7 +346,7 @@ async function buildKitAdoption(input: {
     kitReadContract: readContractFromKit(contract, taskId),
     freshnessWarnings,
     validationCommands: artifact.pack.validationCommands ?? [],
-    warnings: [...input.authorityWarnings, ...freshnessWarnings]
+    warnings: [...input.authorityWarnings, ...freshnessWarnings, ...context.warnings]
   };
 }
 
@@ -360,23 +396,36 @@ async function contextFilesFromPack(
   pack: KitContextPack,
   projectPath: string,
   blockedPaths: string[]
-): Promise<ContextFile[]> {
+): Promise<{ files: ContextFile[]; warnings: string[] }> {
   const entries = pack.includedFiles ?? pack.files ?? [];
   const files: ContextFile[] = [];
+  const warnings: string[] = [];
   for (const entry of entries) {
-    if (isBlockedPath(entry.path, blockedPaths)) {
+    const provided = entry.content ?? entry.snippet;
+    let resolved;
+    try {
+      resolved = await resolveProjectFile(projectPath, entry.path, {
+        mode: provided === undefined ? "read" : "write",
+        blockedPaths
+      });
+    } catch {
+      warnings.push("Skipped an unsafe or unreadable context entry.");
       continue;
     }
-    const provided = entry.content ?? entry.snippet;
-    const content = provided ?? (await readPackFile(join(projectPath, entry.path)));
+
+    const content = provided ?? (await readPackFile(resolved.absolutePath));
+    if (content === undefined) {
+      warnings.push(`Skipped unreadable context file ${resolved.logicalPath}.`);
+      continue;
+    }
     files.push({
-      path: entry.path,
+      path: resolved.logicalPath,
       reason: entry.reason ?? "visp-kit context pack",
       content,
       ...(entry.hash ? { sourceHash: entry.hash, sourceHashAlgorithm: "sha256" as const, sourceHashSource: "visp-kit" as const } : {})
     });
   }
-  return files;
+  return { files, warnings };
 }
 
 function normalizeRelative(projectPath: string, path: string): string {
