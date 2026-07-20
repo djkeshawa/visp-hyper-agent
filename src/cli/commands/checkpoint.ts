@@ -1,22 +1,36 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { Command, Option } from "commander";
 import { checkContextFreshness } from "../../context/context-freshness.js";
-import { execFileResolved } from "../../core/executable-resolver.js";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { resolveProjectFile } from "../../core/project-path.js";
-import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
+import {
+  captureGitBaseline,
+  getActiveSession,
+  readConfig,
+  readState,
+  updateActiveSession
+} from "../../core/session-manager.js";
 import {
   detectVisp,
   KitCommandBridge,
   type KitContextPackArtifact
 } from "../../kit/kit-command-bridge.js";
 import { recordFailurePattern } from "../../memory/failure-patterns.js";
-import { createCheckpointSnapshot, writeCheckpointSnapshot } from "../../quality/checkpoint-snapshot.js";
+import {
+  writeCheckpointSnapshot,
+  type CheckpointSnapshot,
+  type CheckpointSnapshotFile
+} from "../../quality/checkpoint-snapshot.js";
 import {
   aggregateKitCheckpointEvidence,
   renderKitCheckpointEvidence,
   unavailableKitCheckpointEvidence
 } from "../../quality/kit-checkpoint-evidence.js";
-import { collectLocalEvidence } from "../../quality/local-evidence.js";
+import {
+  attributableChangedFiles,
+  collectLocalEvidence
+} from "../../quality/local-evidence.js";
 import { harvestSkillProposals } from "./remember.js";
 import {
   applyAdaptiveDecision,
@@ -48,8 +62,12 @@ import {
   renderPipelineIdentityStop,
   resolveProjectPath
 } from "./shared.js";
-import { collectChangedFiles } from "../../governance/scope-guard.js";
-import type { EvidenceVerdict } from "../../core/types.js";
+import {
+  captureGitPathStates,
+  collectChangedFiles,
+  type GitEvidenceInventory
+} from "../../governance/scope-guard.js";
+import type { EvidenceVerdict, GitBaseline, SessionRecord } from "../../core/types.js";
 import type {
   KitAuthoritativeContextPack,
   KitIntegrationContract,
@@ -69,7 +87,8 @@ export function checkpointCommand(): Command {
     .description("Capture current progress and git diff summary.")
     .addOption(new Option("--task <task-id>", "Run pipeline verify/review for the active task and advance the pipeline."))
     .addOption(new Option("--tier <tier>", "Model tier that actually executed the task (recorded in telemetry)."))
-    .action(async function (this: Command, options: { task?: string; tier?: string }) {
+    .addOption(new Option("--allow-empty", "Allow an intentionally empty Git evidence set (Git errors still block)."))
+    .action(async function (this: Command, options: { task?: string; tier?: string; allowEmpty?: boolean }) {
       const projectPath = resolveProjectPath(this);
       const session = await getActiveSession(projectPath);
       if (!session) {
@@ -77,7 +96,22 @@ export function checkpointCommand(): Command {
       }
 
       if (!options.task) {
-        await writeCheckpointMarkdown(projectPath, session.id, session.goal);
+        const baseline = resolveCheckpointBaseline(session, false);
+        if (!baseline.ok) {
+          printGitEvidenceStop(undefined, baseline.reasonCode, baseline.reason, "INCONCLUSIVE");
+          return;
+        }
+        const checkpointGit = await prepareCheckpointGitEvidence({
+          projectPath,
+          baseline: baseline.value,
+          allowEmpty: options.allowEmpty === true
+        });
+        if (!checkpointGit) {
+          return;
+        }
+        if (!(await writeCheckpointMarkdown(projectPath, session.id, session.goal, checkpointGit))) {
+          return;
+        }
         console.log("Checkpoint written to .visp/hyper/current/checkpoints.md");
         return;
       }
@@ -215,11 +249,34 @@ export function checkpointCommand(): Command {
         return;
       }
 
-      await writeCheckpointMarkdown(projectPath, session.id, session.goal, taskId);
+      const baseline = resolveCheckpointBaseline(session, true);
+      if (!baseline.ok) {
+        printGitEvidenceStop(taskId, baseline.reasonCode, baseline.reason, "INCONCLUSIVE");
+        return;
+      }
 
       const taskClass = task?.riskLevel ?? "unknown";
 
       if (kit.state === "healthy") {
+        const preflightGit = await prepareCheckpointGitEvidence({
+          projectPath,
+          baseline: baseline.value,
+          allowEmpty: options.allowEmpty === true,
+          taskId
+        });
+        if (!preflightGit) {
+          return;
+        }
+        const writeCurrentKitCheckpoint = async (): Promise<boolean> => {
+          const currentGit = await prepareCheckpointGitEvidence({
+            projectPath,
+            baseline: baseline.value,
+            allowEmpty: options.allowEmpty === true,
+            taskId
+          });
+          return currentGit !== null &&
+            writeCheckpointMarkdown(projectPath, session.id, session.goal, currentGit, taskId);
+        };
         const bridge = new KitCommandBridge({ projectPath });
         const contractDiagnostic = await bridge.integrationContractDiagnostic();
         const liveContract = contractDiagnostic.ok ? contractDiagnostic.value : undefined;
@@ -243,6 +300,9 @@ export function checkpointCommand(): Command {
           );
         }
         if (strictContextFindings.length > 0) {
+          if (!(await writeCurrentKitCheckpoint())) {
+            return;
+          }
           printWarnings(bridge.warnings);
           console.log(
             renderKitCheckpointEvidence({
@@ -269,6 +329,9 @@ export function checkpointCommand(): Command {
           review: null
         });
         if (verifyEvidence.verifyVerdict !== "passed") {
+          if (!(await writeCurrentKitCheckpoint())) {
+            return;
+          }
           printKitCheckpointResult(bridge, taskId, verifyEvidence, contextFreshness);
           return;
         }
@@ -280,6 +343,9 @@ export function checkpointCommand(): Command {
         );
         const reviewEvidence = aggregateKitCheckpointEvidence({ verify, review });
         if (reviewEvidence.reviewVerdict !== "passed") {
+          if (!(await writeCurrentKitCheckpoint())) {
+            return;
+          }
           printKitCheckpointResult(bridge, taskId, reviewEvidence, contextFreshness);
           return;
         }
@@ -290,7 +356,14 @@ export function checkpointCommand(): Command {
         );
         const reconciledEvidence = aggregateKitCheckpointEvidence({ verify, review, reconcile });
         if (reconciledEvidence.reconcileVerdict !== "passed") {
+          if (!(await writeCurrentKitCheckpoint())) {
+            return;
+          }
           printKitCheckpointResult(bridge, taskId, reconciledEvidence, contextFreshness);
+          return;
+        }
+
+        if (!(await writeCurrentKitCheckpoint())) {
           return;
         }
 
@@ -316,8 +389,34 @@ export function checkpointCommand(): Command {
           validationCommands: task?.validationCommands
         },
         blockedPaths: localConfig.blockedPaths,
-        configValidationCommands: localConfig.validationCommands
+        configValidationCommands: localConfig.validationCommands,
+        baseline: baseline.value,
+        allowEmpty: options.allowEmpty
       });
+      if (!evidence.gitEvidence.ok) {
+        printGitEvidenceStop(
+          taskId,
+          "git_evidence_unavailable_after_validation",
+          evidence.gitEvidence.warnings.join("; ") ||
+            "Complete Git evidence became unavailable after validation.",
+          "INCONCLUSIVE"
+        );
+        return;
+      }
+      const reviewedGit: PreparedCheckpointGit = {
+        baseline: baseline.value,
+        inventory: evidence.gitEvidence,
+        files: evidence.changedFiles
+      };
+      if (reviewedGit.files.length === 0 && options.allowEmpty !== true) {
+        printGitEvidenceStop(
+          taskId,
+          "empty_git_evidence",
+          "No attributable committed, staged, unstaged, or nonignored untracked changes were found.",
+          "FAILED"
+        );
+        return;
+      }
       const verifyPassed = evidence.verifyPassed;
       let reviewPassed = evidence.reviewPassed;
       const verifyVerdict = evidence.verifyVerdict;
@@ -343,6 +442,21 @@ export function checkpointCommand(): Command {
           ? "inconclusive"
           : "passed";
       const passed = verdict === "passed";
+      const nextTaskBaseline = passed
+        ? await captureTaskGitBaseline(projectPath, reviewedGit)
+        : null;
+      if (nextTaskBaseline && !nextTaskBaseline.ok) {
+        printGitEvidenceStop(
+          taskId,
+          "pipeline_git_baseline_refresh_failed",
+          `The next task's Git baseline could not be captured: ${nextTaskBaseline.reason}`,
+          "INCONCLUSIVE"
+        );
+        return;
+      }
+      if (!(await writeCheckpointMarkdown(projectPath, session.id, session.goal, reviewedGit, taskId))) {
+        return;
+      }
       try {
         await appendAttempt(projectPath, {
           taskId,
@@ -356,12 +470,15 @@ export function checkpointCommand(): Command {
         console.log(`warning: telemetry attempt was not recorded: ${error instanceof Error ? error.message : String(error)}`);
       }
 
-      const nextState = advance(
+      let nextState = advance(
         pipeline,
         graph,
         { verifyPassed, reviewPassed, detail: `${evidenceSource}-evidence` },
         new Date().toISOString()
       );
+      if (nextTaskBaseline?.ok) {
+        nextState = { ...nextState, gitBaseline: nextTaskBaseline.value };
+      }
       const updated = await updateActiveSession(
         projectPath,
         (current) => ({ ...current, pipeline: nextState }),
@@ -423,9 +540,8 @@ export function checkpointCommand(): Command {
         }
 
         try {
-          const diff = await collectChangedFiles(projectPath, { mode: "all" });
           const relatedFiles = [
-            ...diff.files,
+            ...reviewedGit.files,
             ...(task?.allowedFiles ?? []),
             ...(task?.expectedFiles ?? [])
           ];
@@ -1015,17 +1131,210 @@ function renderWorkflowAction(action: WorkflowActionV2): string {
   ].join("\n");
 }
 
+type PreparedCheckpointGit = {
+  baseline: GitBaseline;
+  inventory: GitEvidenceInventory;
+  files: string[];
+};
+
+type BaselineResolution =
+  | { ok: true; value: GitBaseline }
+  | { ok: false; reasonCode: string; reason: string };
+
+function resolveCheckpointBaseline(
+  session: SessionRecord,
+  requirePipelineBaseline: boolean
+): BaselineResolution {
+  if (requirePipelineBaseline) {
+    const pipelineBaseline = session.pipeline?.gitBaseline;
+    if (!pipelineBaseline) {
+      return {
+        ok: false,
+        reasonCode: "pipeline_git_baseline_missing",
+        reason: "The active pipeline has no pinned Git baseline. Start a fresh pipeline session."
+      };
+    }
+    return { ok: true, value: pipelineBaseline };
+  }
+
+  if (!session.gitBaseline) {
+    return {
+      ok: false,
+      reasonCode: "git_baseline_missing",
+      reason: "The active session predates recorded Git baselines. Start a fresh session."
+    };
+  }
+  return { ok: true, value: session.gitBaseline };
+}
+
+async function prepareCheckpointGitEvidence(input: {
+  projectPath: string;
+  baseline: GitBaseline;
+  allowEmpty: boolean;
+  taskId?: string;
+}): Promise<PreparedCheckpointGit | null> {
+  const inventory = await collectChangedFiles(input.projectPath, {
+    mode: "baseline",
+    baseline: input.baseline
+  });
+  if (!inventory.ok) {
+    printGitEvidenceStop(
+      input.taskId,
+      "git_evidence_unavailable",
+      inventory.warnings.join("; ") || "Complete Git evidence is unavailable.",
+      "INCONCLUSIVE"
+    );
+    return null;
+  }
+
+  const files = attributableChangedFiles(inventory.files);
+  if (files.length === 0 && !input.allowEmpty) {
+    printGitEvidenceStop(
+      input.taskId,
+      "empty_git_evidence",
+      "No attributable committed, staged, unstaged, or nonignored untracked changes were found.",
+      "FAILED"
+    );
+    return null;
+  }
+  return { baseline: input.baseline, inventory, files };
+}
+
+function printGitEvidenceStop(
+  taskId: string | undefined,
+  reasonCode: string,
+  reason: string,
+  status: "FAILED" | "INCONCLUSIVE"
+): void {
+  process.exitCode = 1;
+  console.log(
+    [
+      "BEGIN_VISP_CHECKPOINT_RESULT",
+      `task: ${taskId ?? "none"}`,
+      `review: ${status}`,
+      `verdict: ${status}`,
+      `reason_code: ${reasonCode}`,
+      "findings:",
+      ` - ${reason}`,
+      `status: ${status}`,
+      status === "FAILED"
+        ? "instruction: Make the scoped change or re-run checkpoint with --allow-empty when an empty checkpoint is intentional."
+        : "instruction: Restore complete Git evidence and re-run checkpoint.",
+      "END_VISP_CHECKPOINT_RESULT"
+    ].join("\n")
+  );
+}
+
+type TaskBaselineResult =
+  | { ok: true; value: GitBaseline }
+  | { ok: false; reason: string };
+
+async function captureTaskGitBaseline(
+  projectPath: string,
+  git: PreparedCheckpointGit
+): Promise<TaskBaselineResult> {
+  const before = await captureGitBaseline(projectPath);
+  if (before.kind === "unavailable") {
+    return { ok: false, reason: before.reason };
+  }
+
+  const dirtyFiles = attributableChangedFiles([
+    ...git.inventory.staged,
+    ...git.inventory.unstaged,
+    ...git.inventory.untracked
+  ]);
+  const pathsToSettle = [
+    ...Object.keys(git.baseline.kind === "unavailable" ? {} : git.baseline.settledPaths ?? {}),
+    ...dirtyFiles
+  ];
+  const settled = await captureGitPathStates(projectPath, pathsToSettle);
+  if (!settled.ok) {
+    return { ok: false, reason: settled.warning };
+  }
+
+  const after = await captureGitBaseline(projectPath);
+  if (after.kind === "unavailable") {
+    return { ok: false, reason: after.reason };
+  }
+  if (!sameGitAnchor(before, after)) {
+    return { ok: false, reason: "Git HEAD changed while the next task baseline was captured" };
+  }
+  const confirmed = await collectChangedFiles(projectPath, {
+    mode: "baseline",
+    baseline: git.baseline
+  });
+  if (!sameGitInventory(git.inventory, confirmed)) {
+    return {
+      ok: false,
+      reason: confirmed.ok
+        ? "Git evidence changed while the next task baseline was captured"
+        : confirmed.warnings.join("; ") || "Complete Git evidence became unavailable"
+    };
+  }
+
+  const settledPaths = Object.keys(settled.states).length > 0 ? settled.states : undefined;
+  return {
+    ok: true,
+    value: before.kind === "commit"
+      ? { kind: "commit", revision: before.revision, ...(settledPaths ? { settledPaths } : {}) }
+      : { kind: "unborn", ...(settledPaths ? { settledPaths } : {}) }
+  };
+}
+
+function sameGitAnchor(left: GitBaseline, right: GitBaseline): boolean {
+  if (left.kind !== right.kind) {
+    return false;
+  }
+  if (left.kind === "commit" && right.kind === "commit") {
+    return left.revision === right.revision;
+  }
+  return left.kind === "unborn" && right.kind === "unborn";
+}
+
+function sameGitInventory(
+  left: GitEvidenceInventory,
+  right: GitEvidenceInventory
+): boolean {
+  return (
+    left.ok === right.ok &&
+    sameStringArray(left.files, right.files) &&
+    sameStringArray(left.warnings, right.warnings) &&
+    sameStringArray(left.committed, right.committed) &&
+    sameStringArray(left.staged, right.staged) &&
+    sameStringArray(left.unstaged, right.unstaged) &&
+    sameStringArray(left.untracked, right.untracked)
+  );
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((entry, index) => entry === right[index]);
+}
+
 async function writeCheckpointMarkdown(
   projectPath: string,
   sessionId: string,
   goal: string,
+  git: PreparedCheckpointGit,
   taskId?: string
-): Promise<void> {
-  const [{ stdout: stat }, snapshot] = await Promise.all([
-    execFileResolved("git", ["diff", "--stat", "HEAD"], { cwd: projectPath }),
-    createCheckpointSnapshot(projectPath, { sessionId, goal, taskId })
-  ]);
-  const files = snapshot.files.map((file) => file.path);
+): Promise<boolean> {
+  let snapshot: CheckpointSnapshot;
+  try {
+    snapshot = await createEvidenceCheckpointSnapshot(projectPath, {
+      sessionId,
+      goal,
+      taskId,
+      files: git.files,
+      inventory: git.inventory
+    });
+  } catch (error) {
+    printGitEvidenceStop(
+      taskId,
+      "checkpoint_snapshot_unavailable",
+      error instanceof Error ? error.message : String(error),
+      "INCONCLUSIVE"
+    );
+    return false;
+  }
   const content = [
     `## Checkpoint ${snapshot.checkpointAt}`,
     "",
@@ -1033,13 +1342,17 @@ async function writeCheckpointMarkdown(
     `Goal: ${goal}`,
     ...(taskId ? [`Task: ${taskId}`] : []),
     "",
-    "## Git Diff Stat",
+    "## Git Evidence",
     "",
-    stat.trim() || "_No diff._",
+    `Baseline: ${renderGitBaseline(git.baseline)}`,
+    `Committed: ${attributableChangedFiles(git.inventory.committed).length}`,
+    `Staged: ${attributableChangedFiles(git.inventory.staged).length}`,
+    `Unstaged: ${attributableChangedFiles(git.inventory.unstaged).length}`,
+    `Untracked: ${attributableChangedFiles(git.inventory.untracked).length}`,
     "",
     "## Changed Files",
     "",
-    ...(files.length > 0 ? files.map((file) => `- ${file}`) : ["_No changed files._"]),
+    ...(git.files.length > 0 ? git.files.map((file) => `- ${file}`) : ["_No attributable changed files._"]),
     ...(snapshot.warnings.length > 0
       ? [
           "",
@@ -1054,4 +1367,71 @@ async function writeCheckpointMarkdown(
   const previous = await readTextIfExists(path);
   await writeText(path, previous ? `${previous.trimEnd()}\n\n${content}` : `# Checkpoints\n\n${content}`);
   await writeCheckpointSnapshot(projectPath, snapshot);
+  return true;
+}
+
+async function createEvidenceCheckpointSnapshot(
+  projectPath: string,
+  input: {
+    sessionId: string;
+    goal: string;
+    taskId?: string;
+    files: string[];
+    inventory: GitEvidenceInventory;
+  }
+): Promise<CheckpointSnapshot> {
+  const files = await Promise.all(
+    [...new Set(input.files)].sort().map((file) => snapshotFile(projectPath, file))
+  );
+  const workingOrIndex = new Set(
+    attributableChangedFiles([
+      ...input.inventory.staged,
+      ...input.inventory.unstaged,
+      ...input.inventory.untracked
+    ])
+  );
+  const committedOnly = attributableChangedFiles(input.inventory.committed).filter(
+    (file) => !workingOrIndex.has(file)
+  );
+  return {
+    version: "0.1",
+    checkpointAt: new Date().toISOString(),
+    sessionId: input.sessionId,
+    goal: input.goal,
+    ...(input.taskId ? { taskId: input.taskId } : {}),
+    files,
+    warnings: committedOnly.length > 0
+      ? [
+          "Resume delta comparison observes working/index changes only; committed-only checkpoint paths may appear as cleared."
+        ]
+      : []
+  };
+}
+
+async function snapshotFile(
+  projectPath: string,
+  file: string
+): Promise<CheckpointSnapshotFile> {
+  const resolved = await resolveProjectFile(projectPath, file, { mode: "write" });
+  if (resolved.logicalPath !== file) {
+    throw new Error(`Git path ${JSON.stringify(file)} is not canonical for checkpoint hashing`);
+  }
+  if (!resolved.exists) {
+    return { path: file, exists: false, hash: null };
+  }
+  const content = await readFile(resolved.absolutePath);
+  return {
+    path: file,
+    exists: true,
+    hash: createHash("sha256").update(content).digest("hex")
+  };
+}
+
+function renderGitBaseline(baseline: GitBaseline): string {
+  if (baseline.kind === "commit") {
+    return `${baseline.revision}${baseline.settledPaths ? ` + ${Object.keys(baseline.settledPaths).length} settled path(s)` : ""}`;
+  }
+  return baseline.kind === "unborn" && baseline.settledPaths
+    ? `unborn + ${Object.keys(baseline.settledPaths).length} settled path(s)`
+    : baseline.kind;
 }

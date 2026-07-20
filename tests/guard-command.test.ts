@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { execFileResolved } from "../src/core/executable-resolver.js";
-import { initializeProject } from "../src/core/session-manager.js";
+import { initializeProject, readState, writeState } from "../src/core/session-manager.js";
 import { checkScope, collectChangedFiles } from "../src/governance/scope-guard.js";
+import * as kitBridge from "../src/kit/kit-command-bridge.js";
+import { initialPipelineState } from "../src/pipeline/pipeline-engine.js";
 import { toolOnlyPath } from "./helpers/tool-path.js";
 import { createVispShim, type ShimSpec } from "./helpers/visp-shim.js";
 
@@ -74,6 +76,7 @@ function healthyKitSpec(extra: ShimSpec = {}): ShimSpec {
     status: {
       stdout: {
         success: true,
+        targetPath: ".",
         initialized: true,
         activeFeature: { id: "001", slug: "strict-guard" },
         activeTask: { id: "T900", title: "Guard scope", status: "ready" }
@@ -97,11 +100,21 @@ async function configureKit(projectPath: string, spec: ShimSpec = healthyKitSpec
  */
 async function writeQuickSession(
   projectPath: string,
-  task: { id: string; allowedFiles?: string[] }
+  task: { id: string; allowedFiles?: string[]; forbiddenFiles?: string[] }
 ): Promise<void> {
   await initializeProject(projectPath);
   const now = new Date().toISOString();
   const sessionId = "vh_20260612_test0001";
+  const syntheticTask = {
+    id: task.id,
+    dependsOn: [],
+    allowedFiles: task.allowedFiles,
+    forbiddenFiles: task.forbiddenFiles
+  };
+  const pipeline = initialPipelineState(
+    { tasks: [syntheticTask] },
+    { kind: "synthetic", source: `quick:${sessionId}` }
+  );
   const state = {
     activeSessionId: sessionId,
     sessions: {
@@ -114,13 +127,7 @@ async function writeQuickSession(
         updatedAt: now,
         phase: "implementation",
         relevantFiles: [],
-        pipeline: {
-          taskIds: [task.id],
-          currentTaskId: task.id,
-          completed: [],
-          stepHistory: [],
-          syntheticTasks: [{ id: task.id, dependsOn: [], allowedFiles: task.allowedFiles }]
-        }
+        pipeline: { ...pipeline, syntheticTasks: [syntheticTask] }
       }
     }
   };
@@ -211,8 +218,9 @@ describe("collectChangedFiles", () => {
   it("a non-git directory degrades to empty files plus a warning", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "visp-nogit-"));
     const result = await collectChangedFiles(projectPath, { mode: "all" });
+    expect(result.ok).toBe(false);
     expect(result.files).toEqual([]);
-    expect(result.warnings.length).toBe(1);
+    expect(result.warnings.length).toBeGreaterThan(0);
   });
 });
 
@@ -265,6 +273,113 @@ describe("guard command integration", () => {
     expect(process.exitCode).toBeFalsy();
   });
 
+  it("AC004: a disk plan cannot replace the active quick session scope", async () => {
+    const projectPath = await createRepo();
+    await writeFile(join(projectPath, "PLAN.md"), "- [ ] unrelated disk task\n", "utf8");
+    await stage(projectPath, "PLAN.md");
+    await commit(projectPath, "add unrelated plan");
+    await writeQuickSession(projectPath, { id: "Q001", allowedFiles: ["src"] });
+    await mkdir(join(projectPath, "lib"), { recursive: true });
+    await writeFile(join(projectPath, "lib", "rogue.ts"), "export const rogue = 1;\n", "utf8");
+    await stage(projectPath, "lib/rogue.ts");
+
+    process.env.PATH = await gitNodeOnlyPath();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("scope: Q001");
+    expect(output).toContain("lib/rogue.ts: outside allowed files");
+    expect(output).toContain("status: BLOCKED");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: a tampered quick graph cannot authorize a broader scope", async () => {
+    const projectPath = await createRepo();
+    await writeQuickSession(projectPath, { id: "Q001", allowedFiles: ["src"] });
+    const state = await readState(projectPath);
+    const pipeline = state.sessions[state.activeSessionId!]!.pipeline!;
+    pipeline.syntheticTasks![0]!.allowedFiles = ["lib"];
+    await writeState(projectPath, state);
+    await mkdir(join(projectPath, "lib"), { recursive: true });
+    await writeFile(join(projectPath, "lib", "rogue.ts"), "export const rogue = 1;\n", "utf8");
+    await stage(projectPath, "lib/rogue.ts");
+
+    process.env.PATH = await gitNodeOnlyPath();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: pipeline_graph_mismatch");
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: a legacy pipeline cannot authorize guard scope", async () => {
+    const projectPath = await createRepo();
+    await writeQuickSession(projectPath, { id: "Q001", allowedFiles: ["src"] });
+    const state = await readState(projectPath);
+    const pipeline = state.sessions[state.activeSessionId!]!.pipeline!;
+    delete pipeline.graphIdentity;
+    delete pipeline.taskKeys;
+    delete pipeline.graphFingerprint;
+    await writeState(projectPath, state);
+    await writeFile(join(projectPath, "src", "ok.ts"), "export const ok = 1;\n", "utf8");
+    await stage(projectPath, "src/ok.ts");
+
+    process.env.PATH = await gitNodeOnlyPath();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: pipeline_identity_missing");
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: a completed pipeline cannot degrade to unrestricted scope", async () => {
+    const projectPath = await createRepo();
+    await writeQuickSession(projectPath, { id: "Q001", allowedFiles: ["src"] });
+    const state = await readState(projectPath);
+    const pipeline = state.sessions[state.activeSessionId!]!.pipeline!;
+    pipeline.currentTaskId = null;
+    pipeline.completed = ["Q001"];
+    pipeline.stepHistory = [
+      { taskId: "Q001", action: "checkpoint-passed", at: new Date().toISOString() }
+    ];
+    await writeState(projectPath, state);
+    await mkdir(join(projectPath, "lib"), { recursive: true });
+    await writeFile(join(projectPath, "lib", "rogue.ts"), "export const rogue = 1;\n", "utf8");
+    await stage(projectPath, "lib/rogue.ts");
+
+    process.env.PATH = await gitNodeOnlyPath();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: guard_scope_unavailable");
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: local task forbidden files override its allow list", async () => {
+    const projectPath = await createRepo();
+    await writeQuickSession(projectPath, {
+      id: "Q001",
+      allowedFiles: ["src"],
+      forbiddenFiles: ["src/secret.ts"]
+    });
+    await writeFile(join(projectPath, "src", "secret.ts"), "export const secret = 1;\n", "utf8");
+    await stage(projectPath, "src/secret.ts");
+
+    process.env.PATH = await gitNodeOnlyPath();
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("src/secret.ts: blocked path");
+    expect(output).toContain("status: BLOCKED");
+    expect(process.exitCode).toBe(1);
+  });
+
   it("AC002: no session/pipeline reports scope none and passes an ordinary file", async () => {
     const projectPath = await createRepo();
     await initializeProject(projectPath);
@@ -315,7 +430,7 @@ describe("guard command integration", () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it("AC003: a non-git directory degrades open with a warning and PASSES", async () => {
+  it("AC004: a local non-git directory fails closed", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "visp-guard-nogit-"));
     await initializeProject(projectPath);
 
@@ -323,9 +438,95 @@ describe("guard command integration", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
 
     const output = logs.join("\n");
-    expect(output).toContain("warning:");
-    expect(output).toContain("status: PASSED");
-    expect(process.exitCode).toBeFalsy();
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: changed_files_unavailable");
+    expect(output).not.toContain("status: PASSED");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: an invalid local --base ref fails closed", async () => {
+    const projectPath = await createRepo();
+    await initializeProject(projectPath);
+    process.env.PATH = await gitNodeOnlyPath();
+
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "guard",
+      "--base",
+      "missing-ref"
+    ]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: changed_files_unavailable");
+    expect(output).not.toContain("status: PASSED");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it.each([
+    {
+      name: "feature only",
+      args: ["--feature", "001-strict-guard"],
+      reasonCode: "guard_scope_arguments_incomplete"
+    },
+    {
+      name: "task only",
+      args: ["--task", "T900"],
+      reasonCode: "guard_scope_arguments_incomplete"
+    },
+    {
+      name: "whitespace-padded feature",
+      args: ["--feature", " 001-strict-guard", "--task", "T900"],
+      reasonCode: "guard_scope_arguments_invalid"
+    },
+    {
+      name: "empty task",
+      args: ["--feature", "001-strict-guard", "--task", ""],
+      reasonCode: "guard_scope_arguments_invalid"
+    },
+    {
+      name: "multiline task",
+      args: ["--feature", "001-strict-guard", "--task", "T900\nT901"],
+      reasonCode: "guard_scope_arguments_invalid"
+    }
+  ])("AC004: rejects $name scope assertions", async ({ args, reasonCode }) => {
+    const projectPath = await createRepo();
+    process.env.PATH = await gitNodeOnlyPath();
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard", ...args]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain(`reason_code: ${reasonCode}`);
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: explicit scope cannot invent authority without an active task", async () => {
+    const projectPath = await createRepo();
+    await initializeProject(projectPath);
+    process.env.PATH = await gitNodeOnlyPath();
+
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "guard",
+      "--feature",
+      "001-strict-guard",
+      "--task",
+      "T900"
+    ]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: guard_scope_unavailable");
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(process.exitCode).toBe(1);
   });
 
   it("AC003: configured guard uses the ready Kit action instead of local session scope", async () => {
@@ -342,6 +543,189 @@ describe("guard command integration", () => {
     expect(output).toContain("status: PASSED");
     expect(output).not.toContain("scope: Q001");
     expect(process.exitCode).toBeFalsy();
+  });
+
+  it("AC004: exact Kit feature/task assertions pass against the ready action", async () => {
+    const projectPath = await createRepo();
+    await writeFile(join(projectPath, "src", "ok.ts"), "export const ok = 1;\n", "utf8");
+    await stage(projectPath, "src/ok.ts");
+    await configureKit(projectPath);
+
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "guard",
+      "--feature",
+      "001-strict-guard",
+      "--task",
+      "T900"
+    ]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("scope: T900");
+    expect(output).toContain("status: PASSED");
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it.each([
+    {
+      name: "feature",
+      feature: "999-wrong-feature",
+      task: "T900",
+      reasonCode: "guard_feature_mismatch"
+    },
+    {
+      name: "task",
+      feature: "001-strict-guard",
+      task: "T901",
+      reasonCode: "guard_task_mismatch"
+    }
+  ])("AC004: a mismatched Kit $name assertion fails closed", async ({ feature, task, reasonCode }) => {
+    const projectPath = await createRepo();
+    await writeFile(join(projectPath, "src", "ok.ts"), "export const ok = 1;\n", "utf8");
+    await stage(projectPath, "src/ok.ts");
+    await configureKit(projectPath);
+
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "guard",
+      "--feature",
+      feature,
+      "--task",
+      task
+    ]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain(`reason_code: ${reasonCode}`);
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: disagreement between Kit status and the ready action fails closed", async () => {
+    const projectPath = await createRepo();
+    await configureKit(
+      projectPath,
+      healthyKitSpec({
+        status: {
+          stdout: {
+            success: true,
+            targetPath: ".",
+            initialized: true,
+            activeFeature: { id: "001", slug: "strict-guard" },
+            activeTask: { id: "T901", title: "Different task", status: "ready" }
+          }
+        }
+      })
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "guard"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: workflow_action_scope_mismatch");
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: a feature switch that reuses the task id fails closed", async () => {
+    const projectPath = await createRepo();
+    await writeFile(join(projectPath, "src", "ok.ts"), "export const ok = 1;\n", "utf8");
+    await stage(projectPath, "src/ok.ts");
+    await configureKit(projectPath);
+    vi.spyOn(kitBridge, "detectVisp")
+      .mockResolvedValueOnce({
+        state: "healthy",
+        available: true,
+        warnings: [],
+        status: {
+          success: true,
+          targetPath: projectPath,
+          initialized: true,
+          activeFeature: { id: "001", slug: "strict-guard" },
+          activeTask: { id: "T900", title: "Guard scope", status: "ready" }
+        }
+      })
+      .mockResolvedValueOnce({
+        state: "healthy",
+        available: true,
+        warnings: [],
+        status: {
+          success: true,
+          targetPath: projectPath,
+          initialized: true,
+          activeFeature: { id: "002", slug: "switched-feature" },
+          activeTask: { id: "T900", title: "Reused task", status: "ready" }
+        }
+      });
+
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "guard",
+      "--feature",
+      "001-strict-guard",
+      "--task",
+      "T900"
+    ]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: workflow_action_scope_mismatch");
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC004: a nonzero refreshed Kit status cannot authorize guard", async () => {
+    const projectPath = await createRepo();
+    await writeFile(join(projectPath, "src", "ok.ts"), "export const ok = 1;\n", "utf8");
+    await stage(projectPath, "src/ok.ts");
+    await configureKit(projectPath);
+    vi.spyOn(kitBridge, "detectVisp")
+      .mockResolvedValueOnce({
+        state: "healthy",
+        available: true,
+        warnings: [],
+        status: {
+          success: true,
+          targetPath: projectPath,
+          initialized: true,
+          activeFeature: { id: "001", slug: "strict-guard" },
+          activeTask: { id: "T900", title: "Guard scope", status: "ready" }
+        }
+      })
+      .mockResolvedValueOnce({
+        state: "configured-unhealthy",
+        available: false,
+        reasonCode: "status_nonzero",
+        reason: "visp status exited with code 1.",
+        warnings: ["visp status exited with code 1."]
+      });
+
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "guard",
+      "--feature",
+      "001-strict-guard",
+      "--task",
+      "T900"
+    ]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("status: INCONCLUSIVE");
+    expect(output).toContain("reason_code: status_nonzero");
+    expect(output).not.toContain("BEGIN_VISP_GUARD_RESULT");
+    expect(process.exitCode).toBe(1);
   });
 
   it("AC003: configured guard applies Kit forbidden paths inside writable scope", async () => {

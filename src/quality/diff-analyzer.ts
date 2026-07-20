@@ -1,4 +1,9 @@
-import { execFileResolved } from "../core/executable-resolver.js";
+import type { GitBaseline } from "../core/types.js";
+import { getActiveSession } from "../core/session-manager.js";
+import {
+  attributableChangedFiles,
+  collectChangedFiles
+} from "../governance/scope-guard.js";
 import { isBlockedPath } from "../governance/blocked-files.js";
 
 export type ReviewResult = {
@@ -15,10 +20,23 @@ export async function analyzeDiff(input: {
   projectPath: string;
   relevantFiles: string[];
   blockedPaths: string[];
+  baseline?: GitBaseline;
 }): Promise<ReviewResult> {
-  const { stdout } = await execFileResolved("git", ["diff", "--name-only", "HEAD"], { cwd: input.projectPath });
-  const changedFiles = stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  return analyzeChangedFiles({ ...input, changedFiles });
+  const baseline = input.baseline ?? (await getActiveSession(input.projectPath))?.gitBaseline;
+  if (!baseline) {
+    throw new Error("Complete Git evidence is unavailable: the active session has no recorded baseline");
+  }
+  const evidence = await collectChangedFiles(input.projectPath, {
+    mode: "baseline",
+    baseline
+  });
+  if (!evidence.ok) {
+    throw new Error(`Complete Git evidence is unavailable: ${evidence.warnings.join("; ")}`);
+  }
+  return analyzeChangedFiles({
+    ...input,
+    changedFiles: attributableChangedFiles(evidence.files)
+  });
 }
 
 export function analyzeChangedFiles(input: {
@@ -54,7 +72,7 @@ export function renderReviewReport(result: ReviewResult): string {
     "",
     "## Changed Files",
     "",
-    ...(result.changedFiles.length > 0 ? result.changedFiles.map((file) => `- ${file}`) : ["_No unstaged changes._"]),
+    ...(result.changedFiles.length > 0 ? result.changedFiles.map((file) => `- ${file}`) : ["_No attributable changes._"]),
     "",
     "## Warnings",
     "",

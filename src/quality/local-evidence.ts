@@ -1,7 +1,12 @@
 import { analyzeChangedFiles } from "./diff-analyzer.js";
-import { checkScope, collectChangedFiles, collectTrackedChangedFiles } from "../governance/scope-guard.js";
+import {
+  attributableChangedFiles,
+  checkScope,
+  collectChangedFiles,
+  type GitEvidenceInventory
+} from "../governance/scope-guard.js";
 import { ProjectValidationRunner } from "./validation-runner.js";
-import type { AssuranceLevel, EvidenceVerdict } from "../core/types.js";
+import type { AssuranceLevel, EvidenceVerdict, GitBaseline } from "../core/types.js";
 
 export type LocalEvidence = {
   verifyVerdict: EvidenceVerdict;
@@ -12,6 +17,8 @@ export type LocalEvidence = {
   reviewPassed: boolean;
   findings: string[]; // human-readable lines for the checkpoint block
   warnings: string[];
+  gitEvidence: GitEvidenceInventory;
+  changedFiles: string[];
 };
 
 /**
@@ -19,14 +26,15 @@ export type LocalEvidence = {
  * verify runs the project's detected (or task-declared) validation commands,
  * review combines the deterministic diff analyzer with a scope check against
  * the task's allowed files and the configured blocked paths. Never throws —
- * git or runner failures degrade to warnings so a non-git or no-script project
- * still produces a usable result.
+ * Git failures produce inconclusive evidence and can never authorize progress.
  */
 export async function collectLocalEvidence(input: {
   projectPath: string;
   task: { id: string; allowedFiles?: string[]; validationCommands?: string[] };
   blockedPaths: string[];
   configValidationCommands?: string[];
+  baseline: GitBaseline;
+  allowEmpty?: boolean;
 }): Promise<LocalEvidence> {
   const findings: string[] = [];
   const warnings: string[] = [];
@@ -76,30 +84,33 @@ export async function collectLocalEvidence(input: {
   // --- Review ---------------------------------------------------------------
   let reviewVerdict: EvidenceVerdict = "passed";
 
-  const diff = await collectChangedFiles(input.projectPath, { mode: "all" });
-  const gitFailed = diff.warnings.length > 0;
+  // Collect after validation: validation commands are allowed to generate or
+  // modify files, and those effects must be reviewed by the same checkpoint.
+  const diff = await collectChangedFiles(input.projectPath, {
+    mode: "baseline",
+    baseline: input.baseline
+  });
+  const gitFailed = !diff.ok;
   if (gitFailed) {
-    warnings.push("git diff could not be read; review scope check was skipped");
+    warnings.push(...diff.warnings);
+    findings.push(
+      `review inconclusive: complete Git evidence is unavailable${
+        diff.warnings.length > 0 ? ` — ${diff.warnings.join("; ")}` : ""
+      }`
+    );
     reviewVerdict = "inconclusive";
   }
-  // `.visp/` is visp-hyper's own managed output tree (handoff, state, context
-  // packs, telemetry). It is regenerated every run and is never user-authored
-  // source, so — like node_modules/dist — it must not count as a scope
-  // violation. Filter it before the scope check on all platforms.
-  const trackedChanges = await collectTrackedChangedFiles(input.projectPath);
-  if (trackedChanges === null) {
-    reviewVerdict = "inconclusive";
-    warnings.push("tracked Git scope could not be read; canonical artifact review is inconclusive");
-  }
-  const changedFiles = diff.files.filter((file) =>
-    !isVispOwned(file) && (!isCanonicalVisp(file) || trackedChanges?.has(file) === true)
-  );
+
+  // Hyper's runtime files are created by the evidence command itself. Every
+  // other nonignored file, including canonical `.visp` files, remains in scope.
+  const changedFiles = attributableChangedFiles(diff.files);
 
   if (changedFiles.length === 0 && !gitFailed) {
-    findings.push("no changes detected");
-    if ([...(input.task.allowedFiles ?? [])].some((file) => !isVispOwned(file))) {
-      findings.push("review inconclusive: task declares source scope but no source patch was detected");
-      reviewVerdict = "inconclusive";
+    if (input.allowEmpty) {
+      findings.push("no attributable changes detected (explicitly allowed)");
+    } else {
+      findings.push("review failed: no attributable changes detected; use --allow-empty only when intentional");
+      reviewVerdict = "failed";
     }
   }
 
@@ -142,22 +153,10 @@ export async function collectLocalEvidence(input: {
     verifyPassed: verifyVerdict === "passed",
     reviewPassed: reviewVerdict === "passed",
     findings,
-    warnings
+    warnings,
+    gitEvidence: diff,
+    changedFiles
   };
 }
 
-/**
- * True for paths inside visp-hyper's own `.visp/` output tree, tolerant of both
- * separators so Windows backslash paths are matched too.
- */
-function isVispOwned(file: string): boolean {
-  const normalized = file.replace(/\\/gu, "/");
-  // Exclude only Hyper's generated runtime. Canonical Kit policy/spec/task
-  // artifacts remain visible to scope review and cannot be silently tampered.
-  return normalized === ".visp/hyper" || normalized.startsWith(".visp/hyper/");
-}
-
-function isCanonicalVisp(file: string): boolean {
-  const normalized = file.replace(/\\/gu, "/");
-  return normalized === ".visp" || normalized.startsWith(".visp/");
-}
+export { attributableChangedFiles } from "../governance/scope-guard.js";

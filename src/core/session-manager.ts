@@ -3,11 +3,12 @@ import { join } from "node:path";
 import { z } from "zod";
 import { GitBranchSessionLocator } from "./branch-session-locator.js";
 import { defaultConfig } from "./defaults.js";
+import { execFileResolved } from "./executable-resolver.js";
 import { ensureDir, readTextIfExists, vispPath, writeText } from "./fs-utils.js";
 import { parseJsonStore } from "./json-store.js";
 import { withStoreLock } from "./store-lock.js";
 import { kitTaskSchema } from "../kit/kit-schemas.js";
-import type { HyperConfig, HyperState, SessionRecord, ToolProfile } from "./types.js";
+import type { GitBaseline, HyperConfig, HyperState, SessionRecord, ToolProfile } from "./types.js";
 
 const configSchema = z.object({
   defaultTool: z.enum(["generic", "codex", "claude-code", "copilot", "opencode"]),
@@ -40,6 +41,26 @@ const pipelineGraphIdentitySchema = z.object({
   featureSlug: z.string().min(1).optional()
 });
 
+const gitSettledPathStateSchema = z.object({
+  exists: z.boolean(),
+  worktreeHash: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
+  indexHash: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
+  indexMatchesWorktree: z.boolean()
+});
+
+const gitBaselineSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("commit"),
+    revision: z.string().regex(/^[a-f0-9]{40}([a-f0-9]{24})?$/u),
+    settledPaths: z.record(gitSettledPathStateSchema).optional()
+  }),
+  z.object({
+    kind: z.literal("unborn"),
+    settledPaths: z.record(gitSettledPathStateSchema).optional()
+  }),
+  z.object({ kind: z.literal("unavailable"), reason: z.string().min(1) })
+]);
+
 const pipelineStateSchema = z.object({
   taskIds: z.array(z.string()),
   currentTaskId: z.string().nullable(),
@@ -50,6 +71,7 @@ const pipelineStateSchema = z.object({
   graphIdentity: pipelineGraphIdentitySchema.optional(),
   taskKeys: z.record(z.string().min(1)).optional(),
   graphFingerprint: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  gitBaseline: gitBaselineSchema.optional(),
   injectedTaskFingerprints: z
     .record(z.string().regex(/^[a-f0-9]{64}$/u))
     .optional(),
@@ -77,6 +99,7 @@ const stateSchema = z.object({
       updatedAt: z.string(),
       phase: z.enum(["initialized", "implementation", "review", "remembered"]),
       relevantFiles: z.array(z.string()),
+      gitBaseline: gitBaselineSchema.optional(),
       pipeline: pipelineStateSchema.optional()
     })
   ),
@@ -169,14 +192,18 @@ export async function createSession(input: {
   tool: ToolProfile;
   relevantFiles: string[];
 }): Promise<SessionRecord> {
-  const branchKey = await currentBranchKey(input.projectPath);
+  const [branchKey, gitBaseline] = await Promise.all([
+    currentBranchKey(input.projectPath),
+    captureGitBaseline(input.projectPath)
+  ]);
   return withStoreLock(input.projectPath, async () => {
     const state = await readState(input.projectPath);
     const now = new Date().toISOString();
     const session: SessionRecord = {
       id: `vh_${now.slice(0, 10).replaceAll("-", "")}_${randomUUID().slice(0, 8)}`,
       goal: input.goal, tool: input.tool, projectPath: input.projectPath,
-      createdAt: now, updatedAt: now, phase: "implementation", relevantFiles: input.relevantFiles
+      createdAt: now, updatedAt: now, phase: "implementation", relevantFiles: input.relevantFiles,
+      gitBaseline
     };
     state.activeSessionId = session.id;
     state.sessions[session.id] = session;
@@ -204,7 +231,14 @@ export async function updateActiveSession(
     if (!sessionId || (expectedSessionId !== undefined && sessionId !== expectedSessionId)) {
       return null;
     }
-    const next = updater({ ...state.sessions[sessionId]!, updatedAt: new Date().toISOString() });
+    const current = state.sessions[sessionId]!;
+    let next = updater({ ...current, updatedAt: new Date().toISOString() });
+    if (next.pipeline && !next.pipeline.gitBaseline && current.gitBaseline) {
+      next = {
+        ...next,
+        pipeline: { ...next.pipeline, gitBaseline: current.gitBaseline }
+      };
+    }
     state.sessions[next.id] = next;
     await writeState(projectPath, state);
     return next;
@@ -213,4 +247,94 @@ export async function updateActiveSession(
 
 export function currentDir(projectPath: string): string {
   return join(projectPath, ".visp", "hyper", "current");
+}
+
+/** Capture an exact commit baseline without preventing non-Git sessions from starting. */
+export async function captureGitBaseline(projectPath: string): Promise<GitBaseline> {
+  try {
+    const { stdout } = await execFileResolved(
+      "git",
+      ["rev-parse", "--is-inside-work-tree"],
+      { cwd: projectPath, timeout: 5_000 }
+    );
+    if (stdout.trim() !== "true") {
+      return { kind: "unavailable", reason: "project is not inside a Git worktree" };
+    }
+  } catch (error) {
+    return { kind: "unavailable", reason: gitFailureReason(error) };
+  }
+
+  try {
+    const { stdout } = await execFileResolved(
+      "git",
+      ["rev-parse", "--verify", "HEAD^{commit}"],
+      { cwd: projectPath, timeout: 5_000 }
+    );
+    const revision = stdout.trim().toLowerCase();
+    if (/^[a-f0-9]{40}([a-f0-9]{24})?$/u.test(revision)) {
+      return { kind: "commit", revision };
+    }
+    return { kind: "unavailable", reason: "Git returned an invalid HEAD commit id" };
+  } catch {
+    return classifyUnresolvedSymbolicHead(projectPath);
+  }
+}
+
+/**
+ * A failed `HEAD^{commit}` is unborn only when HEAD is symbolic and its exact
+ * target ref does not exist. An existing-but-unresolvable ref is corrupt (or
+ * points at a non-commit) and must not be mistaken for an empty repository.
+ */
+async function classifyUnresolvedSymbolicHead(projectPath: string): Promise<GitBaseline> {
+  let headRef: string;
+  try {
+    const { stdout } = await execFileResolved(
+      "git",
+      ["symbolic-ref", "-q", "HEAD"],
+      { cwd: projectPath, timeout: 5_000 }
+    );
+    headRef = stdout.trim();
+    if (headRef.length === 0) {
+      return { kind: "unavailable", reason: "Git symbolic HEAD target is empty" };
+    }
+  } catch (error) {
+    return { kind: "unavailable", reason: gitFailureReason(error) };
+  }
+
+  try {
+    await execFileResolved(
+      "git",
+      ["show-ref", "--verify", "--quiet", headRef],
+      { cwd: projectPath, timeout: 5_000 }
+    );
+  } catch (error) {
+    if (gitExitCode(error) === 1) {
+      return { kind: "unborn" };
+    }
+    return {
+      kind: "unavailable",
+      reason: `Git symbolic HEAD target could not be verified: ${gitFailureReason(error)}`
+    };
+  }
+
+  return {
+    kind: "unavailable",
+    reason: `Git symbolic HEAD target ${headRef} exists but does not resolve to a commit`
+  };
+}
+
+function gitExitCode(error: unknown): number | null {
+  const code = (error as { code?: unknown })?.code;
+  return typeof code === "number" ? code : null;
+}
+
+function gitFailureReason(error: unknown): string {
+  const stderr = (error as { stderr?: unknown })?.stderr;
+  const raw =
+    typeof stderr === "string" && stderr.trim().length > 0
+      ? stderr
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  return raw.replace(/\s+/gu, " ").trim().slice(0, 240) || "Git command failed";
 }

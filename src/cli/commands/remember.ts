@@ -1,10 +1,10 @@
 import { rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { Command } from "commander";
-import { execFileResolved } from "../../core/executable-resolver.js";
 import { readTextIfExists } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
-import type { HyperConfig, MemoryRecord, SessionRecord } from "../../core/types.js";
+import type { GitBaseline, HyperConfig, MemoryRecord, SessionRecord } from "../../core/types.js";
+import { collectChangedFiles } from "../../governance/scope-guard.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { writeSessionMemory } from "../../memory/file-memory-provider.js";
 import { LlmMemoryProvider } from "../../memory/llm-memory-provider.js";
@@ -17,6 +17,7 @@ import {
 } from "../../skills/skill-proposals.js";
 import { installSkill, isDuplicate, readSkillRegistry, recordUsage } from "../../skills/skill-registry.js";
 import { appendUsage } from "../../telemetry/telemetry-store.js";
+import { attributableChangedFiles } from "../../quality/local-evidence.js";
 import { resolveProjectPath } from "./shared.js";
 
 const rememberOutcome =
@@ -49,13 +50,24 @@ export function rememberCommand(): Command {
       if (!session) {
         throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
       }
+      const changes = await changedFiles(projectPath, session.gitBaseline);
       const reviewSummary = await readTextIfExists(join(projectPath, ".visp", "hyper", "current", "review-report.md"));
+      const gitEvidenceWarning = changes.ok
+        ? undefined
+        : `Git evidence unavailable; changed files were not recorded: ${changes.warnings.join("; ")}`;
+      if (gitEvidenceWarning) {
+        console.warn(`warning: ${gitEvidenceWarning}`);
+      }
+      const summarizedReview = reviewSummary ? summarizeReview(reviewSummary) : undefined;
       const record = {
         sessionId: session.id,
         goal: session.goal,
         summary: options.summary,
-        changedFiles: await changedFiles(projectPath),
-        reviewSummary: reviewSummary ? summarizeReview(reviewSummary) : undefined,
+        changedFiles: changes.ok ? changes.files : undefined,
+        // Remember is not an authorization gate: preserve the user's learnings,
+        // but persist an explicit warning instead of presenting partial Git data
+        // as a complete empty inventory.
+        reviewSummary: [gitEvidenceWarning, summarizedReview].filter(Boolean).join("\n") || undefined,
         decisions: options.decision,
         followUps: options.followUp
       };
@@ -299,13 +311,30 @@ async function writeBackRemoteMemory(
   }
 }
 
-async function changedFiles(projectPath: string): Promise<string[]> {
-  try {
-    const { stdout } = await execFileResolved("git", ["diff", "--name-only"], { cwd: projectPath });
-    return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  } catch {
-    return [];
+async function changedFiles(
+  projectPath: string,
+  baseline: GitBaseline | undefined
+): Promise<{ ok: boolean; files: string[]; warnings: string[] }> {
+  if (!baseline) {
+    return {
+      ok: false,
+      files: [],
+      warnings: ["the active session has no recorded Git baseline"]
+    };
   }
+  if (baseline.kind === "unavailable") {
+    return {
+      ok: false,
+      files: [],
+      warnings: [`recorded Git baseline is unavailable: ${baseline.reason}`]
+    };
+  }
+  const evidence = await collectChangedFiles(projectPath, { mode: "baseline", baseline });
+  return {
+    ok: evidence.ok,
+    files: evidence.ok ? attributableChangedFiles(evidence.files) : [],
+    warnings: evidence.warnings
+  };
 }
 
 function summarizeReview(report: string): string {

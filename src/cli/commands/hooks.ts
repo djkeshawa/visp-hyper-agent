@@ -18,6 +18,9 @@ on:
 jobs:
   guard:
     runs-on: ubuntu-latest
+    env:
+      VISP_FEATURE: \${{ vars.VISP_FEATURE }}
+      VISP_TASK: \${{ vars.VISP_TASK }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,8 +28,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      # Requires visp-hyper to be installable (devDependency or npx once published).
-      - run: npx visp-hyper guard --base "origin/\${{ github.base_ref }}"
+      - name: Require explicit Visp scope
+        shell: bash
+        run: |
+          if [ -z "$VISP_FEATURE" ] || [ -z "$VISP_TASK" ]; then
+            echo "error: configure repository Actions variables VISP_FEATURE and VISP_TASK."
+            exit 1
+          fi
+      - run: npx --yes --package visp-kit --package visp-hyper-agent visp-hyper guard --base "origin/\${{ github.base_ref }}" --feature "$VISP_FEATURE" --task "$VISP_TASK"
 `;
 
 export function hooksCommand(): Command {

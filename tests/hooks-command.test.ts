@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { initializeProject } from "../src/core/session-manager.js";
+import { initialPipelineState } from "../src/pipeline/pipeline-engine.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -53,6 +54,7 @@ async function writeQuickSession(
   await initializeProject(projectPath);
   const now = new Date().toISOString();
   const sessionId = "vh_20260612_hooks001";
+  const syntheticTasks = [{ id: task.id, dependsOn: [], allowedFiles: task.allowedFiles }];
   const state = {
     activeSessionId: sessionId,
     sessions: {
@@ -66,11 +68,11 @@ async function writeQuickSession(
         phase: "implementation",
         relevantFiles: [],
         pipeline: {
-          taskIds: [task.id],
-          currentTaskId: task.id,
-          completed: [],
-          stepHistory: [],
-          syntheticTasks: [{ id: task.id, dependsOn: [], allowedFiles: task.allowedFiles }]
+          ...initialPipelineState(
+            { tasks: syntheticTasks },
+            { kind: "synthetic", source: `quick:${sessionId}` }
+          ),
+          syntheticTasks
         }
       }
     }
@@ -169,7 +171,19 @@ describe("hooks ci", () => {
     expect(await fileExists(workflowPath)).toBe(true);
     const content = await readFile(workflowPath, "utf8");
     expect(content).toContain("# visp-hyper-guard workflow");
-    expect(content).toContain('--base "origin/${{ github.base_ref }}"');
+    expect(content).toContain(
+      "    env:\n      VISP_FEATURE: ${{ vars.VISP_FEATURE }}\n      VISP_TASK: ${{ vars.VISP_TASK }}"
+    );
+    expect(content).toContain(
+      'if [ -z "$VISP_FEATURE" ] || [ -z "$VISP_TASK" ]; then\n' +
+        '            echo "error: configure repository Actions variables VISP_FEATURE and VISP_TASK."\n' +
+        "            exit 1"
+    );
+    expect(content).toContain(
+      'npx --yes --package visp-kit --package visp-hyper-agent visp-hyper guard --base "origin/${{ github.base_ref }}" --feature "$VISP_FEATURE" --task "$VISP_TASK"'
+    );
+    expect(content).toContain("--package visp-kit");
+    expect(content).not.toContain("- run: npx visp-hyper guard");
     expect(logs.join("\n")).toContain("hooks ci: installed .github/workflows/visp-hyper-gate.yml");
 
     // Re-run without --force → up to date.

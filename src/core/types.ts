@@ -60,6 +60,27 @@ export type PipelineGraphIdentity = {
   featureSlug?: string;
 };
 
+export type GitSettledPathState = {
+  exists: boolean;
+  /** SHA-256 of path kind, executable mode, and content (or symlink target). */
+  worktreeHash: string | null;
+  /** SHA-256 of the exact `git ls-files --stage` entry, or null when untracked. */
+  indexHash: string | null;
+  /** True when Git reports no content or mode difference between index and worktree. */
+  indexMatchesWorktree: boolean;
+};
+
+/**
+ * Exact Git anchor for a session or task. Task baselines may also retain the
+ * dirty paths already reviewed at the preceding checkpoint so unchanged work
+ * is not attributed to the next task. Unavailable anchors remain persisted so
+ * evidence consumers fail closed instead of guessing HEAD.
+ */
+export type GitBaseline =
+  | { kind: "commit"; revision: string; settledPaths?: Record<string, GitSettledPathState> }
+  | { kind: "unborn"; settledPaths?: Record<string, GitSettledPathState> }
+  | { kind: "unavailable"; reason: string };
+
 export type PipelineState = {
   taskIds: string[];
   currentTaskId: string | null;
@@ -71,6 +92,8 @@ export type PipelineState = {
   taskKeys?: Record<string, string>;
   /** SHA-256 of the base graph used to create the pipeline. */
   graphFingerprint?: string;
+  /** Current task's Git baseline; initially copied from the session and refreshed after each pass. */
+  gitBaseline?: GitBaseline;
   /** SHA-256 of each persisted remediation definition, keyed by its task id. */
   injectedTaskFingerprints?: Record<string, string>;
   /**
@@ -98,6 +121,8 @@ export type SessionRecord = {
   updatedAt: string;
   phase: "initialized" | "implementation" | "review" | "remembered";
   relevantFiles: string[];
+  /** Optional only so legacy sessions remain readable; missing evidence cannot authorize a checkpoint. */
+  gitBaseline?: GitBaseline;
   pipeline?: PipelineState;
 };
 

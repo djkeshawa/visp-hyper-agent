@@ -1,7 +1,14 @@
 import { Command, Option } from "commander";
 import { getActiveSession, readConfig } from "../../core/session-manager.js";
-import { loadTaskGraph } from "../../pipeline/pipeline-engine.js";
+import type { PipelineGraphIdentity } from "../../core/types.js";
+import { effectiveGraph } from "../../pipeline/adaptive-rules.js";
 import {
+  currentTask,
+  loadTaskGraphByIdentity,
+  validatePipelineState
+} from "../../pipeline/pipeline-engine.js";
+import {
+  attributableChangedFiles,
   checkScope,
   collectChangedFiles,
   type ChangedFilesMode,
@@ -9,10 +16,34 @@ import {
 } from "../../governance/scope-guard.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
-import type { WorkflowActionV2 } from "../../kit/kit-schemas.js";
+import type { KitStatus, WorkflowActionV2 } from "../../kit/kit-schemas.js";
 import { resolveProjectPath } from "./shared.js";
 
-type GuardOptions = { staged?: boolean; all?: boolean; base?: string };
+type GuardOptions = {
+  staged?: boolean;
+  all?: boolean;
+  base?: string;
+  feature?: string;
+  task?: string;
+};
+
+type ScopeAssertion = { feature: string; taskId: string };
+
+type ScopeAssertionResult =
+  | { ok: true; assertion: ScopeAssertion | null }
+  | { ok: false; reasonCode: string; reason: string };
+
+type LocalScopeResult =
+  | {
+      ok: true;
+      scope: {
+        feature: string | null;
+        taskId: string | null;
+        allowedFiles?: string[];
+        forbiddenFiles?: string[];
+      };
+    }
+  | { ok: false; reasonCode: string; reason: string };
 
 export function guardCommand(): Command {
   return new Command("guard")
@@ -20,8 +51,16 @@ export function guardCommand(): Command {
     .addOption(new Option("--staged", "Check staged changes (default)."))
     .addOption(new Option("--all", "Check the union of staged and working-tree changes."))
     .addOption(new Option("--base <ref>", "Check changes between <ref>...HEAD."))
+    .addOption(new Option("--feature <feature>", "Assert the exact active feature (for CI)."))
+    .addOption(new Option("--task <task-id>", "Assert the exact active task (for CI)."))
     .action(async function (this: Command, options: GuardOptions) {
       const projectPath = resolveProjectPath(this);
+      const assertionResult = parseScopeAssertion(options);
+      if (!assertionResult.ok) {
+        stopInconclusive(assertionResult.reasonCode, assertionResult.reason);
+        return;
+      }
+      const assertion = assertionResult.assertion;
 
       // Explicit precedence: base > all > staged.
       const mode: ChangedFilesMode =
@@ -64,22 +103,61 @@ export function guardCommand(): Command {
           );
           return;
         }
-        scope = kitScope(action, config.blockedPaths);
+        const refreshedKit = await detectVisp(projectPath);
+        if (refreshedKit.state !== "healthy") {
+          stopInconclusive(
+            refreshedKit.state === "configured-unhealthy"
+              ? refreshedKit.reasonCode
+              : "kit_status_refresh_unavailable",
+            refreshedKit.state === "configured-unhealthy"
+              ? refreshedKit.reason
+              : "Kit authority disappeared after the workflow action was read.",
+            action.nextCommand
+          );
+          return;
+        }
+        const authorityFailure = stableKitAuthority(kit.status, refreshedKit.status, action);
+        if (authorityFailure) {
+          stopInconclusive(
+            authorityFailure.reasonCode,
+            authorityFailure.reason,
+            action.nextCommand
+          );
+          return;
+        }
+        scope = kitScope(action, refreshedKit.status, config.blockedPaths);
       } else {
         const localScope = await resolveScope(projectPath);
+        if (!localScope.ok) {
+          stopInconclusive(localScope.reasonCode, localScope.reason);
+          return;
+        }
         scope = {
           authority: "local",
-          taskId: localScope?.taskId ?? null,
-          allowedFiles: localScope?.allowedFiles,
-          blockedPaths: config.blockedPaths
+          feature: localScope.scope.feature,
+          taskId: localScope.scope.taskId,
+          allowedFiles: localScope.scope.allowedFiles,
+          blockedPaths: [
+            ...new Set([...config.blockedPaths, ...(localScope.scope.forbiddenFiles ?? [])])
+          ]
         };
       }
 
-      const { files, warnings } = await collectChangedFiles(projectPath, mode);
-      if (scope.authority === "kit" && warnings.length > 0) {
-        stopInconclusive("changed_files_unavailable", warnings.join("; "));
+      const assertionFailure = checkScopeAssertion(scope, assertion);
+      if (assertionFailure) {
+        stopInconclusive(assertionFailure.reasonCode, assertionFailure.reason);
         return;
       }
+
+      const inventory = await collectChangedFiles(projectPath, mode);
+      if (!inventory.ok || inventory.warnings.length > 0) {
+        stopInconclusive(
+          "changed_files_unavailable",
+          inventory.warnings.join("; ") || "The Git evidence inventory is incomplete."
+        );
+        return;
+      }
+      const files = attributableChangedFiles(inventory.files);
       const violations = checkGuardScope(files, scope);
 
       const blocked = violations.length > 0;
@@ -103,13 +181,8 @@ export function guardCommand(): Command {
       lines.push(`status: ${blocked ? "BLOCKED" : "PASSED"}`);
       lines.push("END_VISP_GUARD_RESULT");
 
-      for (const warning of warnings) {
-        console.log(`warning: ${warning}`);
-      }
       console.log(lines.join("\n"));
 
-      // Degrade open: only REAL violations block. A broken git read (warnings)
-      // must not lock ordinary commits out.
       if (blocked) {
         process.exitCode = 1;
       }
@@ -122,18 +195,131 @@ function describeMode(mode: ChangedFilesMode): string {
 
 type GuardScope = {
   authority: "kit" | "local";
+  feature: string | null;
   taskId: string | null;
   allowedFiles?: string[];
   blockedPaths: string[];
 };
 
-function kitScope(action: WorkflowActionV2, configuredBlockedPaths: string[]): GuardScope {
+function kitScope(
+  action: WorkflowActionV2,
+  status: KitStatus,
+  configuredBlockedPaths: string[]
+): GuardScope {
   return {
     authority: "kit",
+    feature: featureKey(status.activeFeature),
     taskId: action.taskId,
     allowedFiles: action.writablePaths,
     blockedPaths: [...new Set([...configuredBlockedPaths, ...action.forbiddenPaths])]
   };
+}
+
+function featureKey(feature: { id: string; slug?: string } | null | undefined): string | null {
+  if (!feature?.id) {
+    return null;
+  }
+  return feature.slug ? `${feature.id}-${feature.slug}` : feature.id;
+}
+
+function stableKitAuthority(
+  initial: KitStatus,
+  refreshed: KitStatus,
+  action: WorkflowActionV2
+): { reasonCode: string; reason: string } | null {
+  const initialFeature = featureKey(initial.activeFeature);
+  const refreshedFeature = featureKey(refreshed.activeFeature);
+  const initialTask = initial.activeTask?.id ?? null;
+  const refreshedTask = refreshed.activeTask?.id ?? null;
+  if (!initialFeature || !refreshedFeature || !initialTask || !refreshedTask) {
+    return {
+      reasonCode: "kit_scope_identity_missing",
+      reason: "Kit status did not expose a complete feature/task identity around the workflow action."
+    };
+  }
+  if (
+    initialFeature !== refreshedFeature ||
+    initialTask !== refreshedTask ||
+    action.taskId !== refreshedTask
+  ) {
+    return {
+      reasonCode: "workflow_action_scope_mismatch",
+      reason:
+        `Kit scope changed while guard resolved authority ` +
+        `(${initialFeature}/${initialTask} -> ${refreshedFeature}/${refreshedTask}; action ${action.taskId ?? "none"}).`
+    };
+  }
+  return null;
+}
+
+function pipelineFeatureKey(identity: PipelineGraphIdentity): string | null {
+  if (!identity.featureId) {
+    return null;
+  }
+  return identity.featureSlug
+    ? `${identity.featureId}-${identity.featureSlug}`
+    : identity.featureId;
+}
+
+function parseScopeAssertion(options: GuardOptions): ScopeAssertionResult {
+  const hasFeature = options.feature !== undefined;
+  const hasTask = options.task !== undefined;
+  if (!hasFeature && !hasTask) {
+    return { ok: true, assertion: null };
+  }
+  if (!hasFeature || !hasTask) {
+    return {
+      ok: false,
+      reasonCode: "guard_scope_arguments_incomplete",
+      reason: "--feature and --task must be supplied together."
+    };
+  }
+  if (!isExactScopeValue(options.feature!) || !isExactScopeValue(options.task!)) {
+    return {
+      ok: false,
+      reasonCode: "guard_scope_arguments_invalid",
+      reason: "--feature and --task must be non-empty, trimmed, single-line values."
+    };
+  }
+  return { ok: true, assertion: { feature: options.feature!, taskId: options.task! } };
+}
+
+function isExactScopeValue(value: string): boolean {
+  return value.length > 0 && value === value.trim() && !/[\r\n]/u.test(value);
+}
+
+function checkScopeAssertion(
+  scope: GuardScope,
+  assertion: ScopeAssertion | null
+): { reasonCode: string; reason: string } | null {
+  if (!assertion) {
+    return null;
+  }
+  if (!scope.taskId) {
+    return {
+      reasonCode: "guard_scope_unavailable",
+      reason: "No active task scope is available to satisfy the explicit feature/task assertion."
+    };
+  }
+  if (!scope.feature) {
+    return {
+      reasonCode: "guard_feature_unavailable",
+      reason: "The active task scope has no feature identity to compare with --feature."
+    };
+  }
+  if (scope.feature !== assertion.feature) {
+    return {
+      reasonCode: "guard_feature_mismatch",
+      reason: `Configured feature ${assertion.feature} does not match active feature ${scope.feature}.`
+    };
+  }
+  if (scope.taskId !== assertion.taskId) {
+    return {
+      reasonCode: "guard_task_mismatch",
+      reason: `Configured task ${assertion.taskId} does not match active task ${scope.taskId}.`
+    };
+  }
+  return null;
 }
 
 function checkGuardScope(files: string[], scope: GuardScope): ScopeViolation[] {
@@ -167,32 +353,67 @@ function stopInconclusive(reasonCode: string, reason: string, nextAllowedCommand
 }
 
 /**
- * Resolve the active task's scope (id + allowed files). Any missing link in the
- * chain (no session, no pipeline, no current task, no matching task) yields
- * `null` so the caller falls back to "scope: none" — blocked paths still apply.
- * Mirrors checkpoint's disk-graph-then-synthetic-tasks resolution.
+ * Resolve only the graph pinned by the active session. A genuinely absent
+ * session/pipeline remains compatible with blocked-path-only local guarding;
+ * an ambiguous or stale persisted pipeline cannot authorize changes.
  */
-async function resolveScope(
-  projectPath: string
-): Promise<{ taskId: string; allowedFiles?: string[] } | null> {
+async function resolveScope(projectPath: string): Promise<LocalScopeResult> {
   const session = await getActiveSession(projectPath);
-  const currentTaskId = session?.pipeline?.currentTaskId;
-  if (!session || !currentTaskId) {
-    return null;
+  const pipeline = session?.pipeline;
+  if (!session || !pipeline) {
+    return {
+      ok: true,
+      scope: { feature: null, taskId: null }
+    };
   }
 
-  const syntheticTasks = session.pipeline?.syntheticTasks;
-  const graph =
-    (await loadTaskGraph(projectPath)) ??
-    (syntheticTasks && syntheticTasks.length > 0 ? { tasks: syntheticTasks } : null);
-  if (!graph) {
-    return null;
+  if (!pipeline.graphIdentity) {
+    return {
+      ok: false,
+      reasonCode: "pipeline_identity_missing",
+      reason: "The saved pipeline predates exact graph and task identity."
+    };
   }
 
-  const task = graph.tasks.find((entry) => entry.id === currentTaskId);
+  const loaded = await loadTaskGraphByIdentity(
+    projectPath,
+    pipeline.graphIdentity,
+    pipeline.syntheticTasks
+  );
+  if (!loaded.ok) {
+    return loaded;
+  }
+
+  const graph = effectiveGraph(loaded.graph, pipeline);
+  const validation = validatePipelineState(graph, pipeline, { sessionId: session.id });
+  if (!validation.ok) {
+    return validation;
+  }
+
+  if (!pipeline.currentTaskId) {
+    return {
+      ok: false,
+      reasonCode: "guard_scope_unavailable",
+      reason: "The persisted pipeline has no active task scope to enforce."
+    };
+  }
+
+  const task = currentTask(graph, pipeline);
   if (!task) {
-    return null;
+    return {
+      ok: false,
+      reasonCode: "pipeline_current_task_missing",
+      reason: "The active task is not present in the pinned task graph."
+    };
   }
 
-  return { taskId: task.id, allowedFiles: task.allowedFiles };
+  return {
+    ok: true,
+    scope: {
+      feature: pipelineFeatureKey(pipeline.graphIdentity),
+      taskId: task.id,
+      allowedFiles: task.allowedFiles,
+      forbiddenFiles: task.forbiddenFiles
+    }
+  };
 }
