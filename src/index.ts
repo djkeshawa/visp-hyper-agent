@@ -1,4 +1,6 @@
-import { runCli } from "./cli/index.js";
+import { runCliCommand } from "./cli/index.js";
 
-await runCli(process.argv);
-
+const result = await runCliCommand(process.argv);
+if (result.exitCode !== 0) {
+  process.exitCode = result.exitCode;
+}

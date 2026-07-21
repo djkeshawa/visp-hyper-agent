@@ -61,12 +61,25 @@ describe.skipIf(!RUN_LIVE)("real visp binary contract", () => {
     expect(bridge.warnings).toEqual([]);
   });
 
-  it("consumes the live WorkflowActionV2 contract", async () => {
+  it("consumes WorkflowActionV2 or fails closed for an older live binary", async () => {
+    const capabilityProbe = spawnSync(
+      LOCAL_BINARY ?? "visp",
+      ["next", "--format", "json", "--json"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    const lacksStructuredNext =
+      capabilityProbe.status !== 0 && capabilityProbe.stderr.includes("unknown option '--format'");
     const bridge = new KitCommandBridge({ projectPath: REPO_ROOT, binary: LOCAL_BINARY ?? undefined });
-    const action = await bridge.nextAction();
-    expect(action?.protocolVersion).toBe("2.0");
-    expect(["ready", "blocked", "inconclusive"]).toContain(action?.verdict);
-    expect(Array.isArray(action?.requiredReads)).toBe(true);
+    const diagnostic = await bridge.nextActionDiagnostic();
+    if (!diagnostic.ok) {
+      expect(lacksStructuredNext).toBe(true);
+      expect(diagnostic.reasonCode).toBe("strict_next_unavailable");
+      expect(bridge.warnings.length).toBeGreaterThan(0);
+      return;
+    }
+    expect(diagnostic.value.protocolVersion).toBe("2.0");
+    expect(["ready", "blocked", "inconclusive"]).toContain(diagnostic.value.verdict);
+    expect(Array.isArray(diagnostic.value.requiredReads)).toBe(true);
     expect(bridge.warnings).toEqual([]);
   });
 });

@@ -1,19 +1,22 @@
 import { createHash } from "node:crypto";
-import { runCli } from "../cli/index.js";
+import { runCliCommand } from "../cli/index.js";
 import type { McpBridge } from "../core/types.js";
 import { packageVersion } from "../core/package-version.js";
 import { readTextIfExists, vispPath } from "../core/fs-utils.js";
 import { checkContextFreshness } from "../context/context-freshness.js";
-import type {
-  McpContext,
-  McpPromptDef,
-  McpResourceContent,
-  McpResourceDef,
-  McpToolDef
+import {
+  MCP_PROTOCOL_VERSION,
+  McpRequestError,
+  type McpContext,
+  type McpPromptDef,
+  type McpResourceContent,
+  type McpResourceDef,
+  type McpToolDef
 } from "./mcp-server.js";
 
 /** Server version advertised over `initialize`; matches package.json. */
 const SERVER_VERSION = packageVersion();
+const TOOL_PROFILES = ["generic", "codex", "claude-code", "copilot", "opencode"] as const;
 
 type ToolArgs = Record<string, unknown>;
 
@@ -56,12 +59,24 @@ function isString(value: unknown): value is string {
   return typeof value === "string";
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return isString(value) && value.length > 0;
+}
+
+function isExactScopeValue(value: unknown): value is string {
+  return isString(value) && value.length > 0 && value === value.trim() && !/[\r\n]/u.test(value);
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isString);
 }
 
-function isNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isToolProfile(value: unknown): value is (typeof TOOL_PROFILES)[number] {
+  return isString(value) && TOOL_PROFILES.includes(value as (typeof TOOL_PROFILES)[number]);
 }
 
 /** Require a present string field; returns an error detail or null. */
@@ -84,6 +99,16 @@ function firstError(...checks: Array<string | null>): string | null {
   return checks.find((check) => check !== null) ?? null;
 }
 
+function validateToolArguments(spec: ToolSpec, args: ToolArgs): string | null {
+  const schema = spec.inputSchema as { properties?: Record<string, unknown> };
+  const allowed = new Set(Object.keys(schema.properties ?? {}));
+  const unexpected = Object.keys(args).find((key) => !allowed.has(key));
+  if (unexpected) {
+    return `unknown argument "${unexpected}"`;
+  }
+  return spec.validate(args);
+}
+
 const TOOL_SPECS: ToolSpec[] = [
   {
     name: "hyper_quick",
@@ -91,9 +116,9 @@ const TOOL_SPECS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       properties: {
-        goal: { type: "string" },
+        goal: { type: "string", minLength: 1 },
         files: { type: "array", items: { type: "string" } },
-        tool: { type: "string" }
+        tool: { type: "string", enum: TOOL_PROFILES }
       },
       required: ["goal"]
     },
@@ -101,13 +126,13 @@ const TOOL_SPECS: ToolSpec[] = [
       firstError(
         requireString(args, "goal"),
         optional(args, "files", isStringArray, "an array of strings"),
-        optional(args, "tool", isString, "a string")
+        optional(args, "tool", isToolProfile, `one of ${TOOL_PROFILES.join(", ")}`)
       ),
     toArgv: (args) => {
       const files = (args.files as string[] | undefined) ?? [];
-      const fileArgs = files.length > 0 ? ["--files", ...files] : [];
-      const toolArgs = isString(args.tool) ? ["--tool", args.tool] : [];
-      return ["quick", args.goal as string, ...fileArgs, ...toolArgs];
+      const fileArgs = files.map((file) => `--files=${file}`);
+      const toolArgs = isString(args.tool) ? [`--tool=${args.tool}`] : [];
+      return ["quick", ...fileArgs, ...toolArgs, "--", args.goal as string];
     }
   },
   {
@@ -116,15 +141,19 @@ const TOOL_SPECS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       properties: {
-        goal: { type: "string" },
-        tool: { type: "string" }
+        goal: { type: "string", minLength: 1 },
+        tool: { type: "string", enum: TOOL_PROFILES }
       },
       required: ["goal"]
     },
-    validate: (args) => firstError(requireString(args, "goal"), optional(args, "tool", isString, "a string")),
+    validate: (args) =>
+      firstError(
+        requireString(args, "goal"),
+        optional(args, "tool", isToolProfile, `one of ${TOOL_PROFILES.join(", ")}`)
+      ),
     toArgv: (args) => {
-      const toolArgs = isString(args.tool) ? ["--tool", args.tool] : [];
-      return ["run", args.goal as string, ...toolArgs];
+      const toolArgs = isString(args.tool) ? [`--tool=${args.tool}`] : [];
+      return ["run", ...toolArgs, "--", args.goal as string];
     }
   },
   {
@@ -171,15 +200,22 @@ const TOOL_SPECS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       properties: {
-        task: { type: "string" },
-        tier: { type: "string" }
+        task: { type: "string", minLength: 1 },
+        tier: { type: "string", minLength: 1 },
+        allowEmpty: { type: "boolean" }
       },
       required: ["task"]
     },
-    validate: (args) => firstError(requireString(args, "task"), optional(args, "tier", isString, "a string")),
+    validate: (args) =>
+      firstError(
+        requireString(args, "task"),
+        optional(args, "tier", isNonEmptyString, "a non-empty string"),
+        optional(args, "allowEmpty", (value) => typeof value === "boolean", "a boolean")
+      ),
     toArgv: (args) => {
-      const tierArgs = isString(args.tier) ? ["--tier", args.tier] : [];
-      return ["checkpoint", "--task", args.task as string, ...tierArgs];
+      const tierArgs = isString(args.tier) ? [`--tier=${args.tier}`] : [];
+      const emptyArgs = args.allowEmpty === true ? ["--allow-empty"] : [];
+      return ["checkpoint", `--task=${args.task as string}`, ...tierArgs, ...emptyArgs];
     }
   },
   {
@@ -189,23 +225,42 @@ const TOOL_SPECS: ToolSpec[] = [
       type: "object",
       properties: {
         mode: { type: "string", enum: ["staged", "all"] },
-        base: { type: "string" }
+        base: { type: "string", minLength: 1 },
+        feature: { type: "string", minLength: 1, pattern: "^\\S(?:[^\\r\\n]*\\S)?$" },
+        task: { type: "string", minLength: 1, pattern: "^\\S(?:[^\\r\\n]*\\S)?$" }
       }
     },
     validate: (args) => {
       if ("mode" in args && args.mode !== undefined && args.mode !== "staged" && args.mode !== "all") {
         return '"mode" must be "staged" or "all"';
       }
-      return optional(args, "base", isString, "a string");
+      const fieldError = firstError(
+        optional(args, "base", isNonEmptyString, "a non-empty string"),
+        optional(args, "feature", isExactScopeValue, "a non-empty, trimmed, single-line string"),
+        optional(args, "task", isExactScopeValue, "a non-empty, trimmed, single-line string")
+      );
+      if (fieldError) {
+        return fieldError;
+      }
+      if (args.base !== undefined && args.mode !== undefined) {
+        return '"base" and "mode" are mutually exclusive';
+      }
+      if ((args.feature === undefined) !== (args.task === undefined)) {
+        return '"feature" and "task" must be provided together';
+      }
+      return null;
     },
     toArgv: (args) => {
+      const scopeArgs = isString(args.feature) && isString(args.task)
+        ? [`--feature=${args.feature}`, `--task=${args.task}`]
+        : [];
       if (isString(args.base)) {
-        return ["guard", "--base", args.base];
+        return ["guard", `--base=${args.base}`, ...scopeArgs];
       }
       if (args.mode === "all") {
-        return ["guard", "--all"];
+        return ["guard", "--all", ...scopeArgs];
       }
-      return ["guard", "--staged"];
+      return ["guard", "--staged", ...scopeArgs];
     }
   },
   {
@@ -221,13 +276,13 @@ const TOOL_SPECS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       properties: {
-        summary: { type: "string" },
+        summary: { type: "string", minLength: 1 },
         decisions: { type: "array", items: { type: "string" } },
         followUps: { type: "array", items: { type: "string" } },
         usedSkills: { type: "array", items: { type: "string" } },
-        inputTokens: { type: "number" },
-        outputTokens: { type: "number" },
-        model: { type: "string" }
+        inputTokens: { type: "integer", minimum: 0 },
+        outputTokens: { type: "integer", minimum: 0 },
+        model: { type: "string", minLength: 1 }
       },
       required: ["summary"]
     },
@@ -237,32 +292,32 @@ const TOOL_SPECS: ToolSpec[] = [
         optional(args, "decisions", isStringArray, "an array of strings"),
         optional(args, "followUps", isStringArray, "an array of strings"),
         optional(args, "usedSkills", isStringArray, "an array of strings"),
-        optional(args, "inputTokens", isNumber, "a number"),
-        optional(args, "outputTokens", isNumber, "a number"),
-        optional(args, "model", isString, "a string")
+        optional(args, "inputTokens", isNonNegativeInteger, "a non-negative integer"),
+        optional(args, "outputTokens", isNonNegativeInteger, "a non-negative integer"),
+        optional(args, "model", isNonEmptyString, "a non-empty string")
       ),
     toArgv: (args) => {
-      const argv = ["remember", "--summary", args.summary as string];
+      const argv = ["remember", `--summary=${args.summary as string}`];
       const decisions = (args.decisions as string[] | undefined) ?? [];
       if (decisions.length > 0) {
-        argv.push("--decision", ...decisions);
+        argv.push(...decisions.map((decision) => `--decision=${decision}`));
       }
       const followUps = (args.followUps as string[] | undefined) ?? [];
       if (followUps.length > 0) {
-        argv.push("--follow-up", ...followUps);
+        argv.push(...followUps.map((followUp) => `--follow-up=${followUp}`));
       }
       const usedSkills = (args.usedSkills as string[] | undefined) ?? [];
       if (usedSkills.length > 0) {
-        argv.push("--used-skill", ...usedSkills);
+        argv.push(...usedSkills.map((skill) => `--used-skill=${skill}`));
       }
-      if (isNumber(args.inputTokens)) {
-        argv.push("--input-tokens", String(args.inputTokens));
+      if (isNonNegativeInteger(args.inputTokens)) {
+        argv.push(`--input-tokens=${args.inputTokens}`);
       }
-      if (isNumber(args.outputTokens)) {
-        argv.push("--output-tokens", String(args.outputTokens));
+      if (isNonNegativeInteger(args.outputTokens)) {
+        argv.push(`--output-tokens=${args.outputTokens}`);
       }
       if (isString(args.model)) {
-        argv.push("--model", args.model);
+        argv.push(`--model=${args.model}`);
       }
       return argv;
     }
@@ -465,7 +520,7 @@ async function executeTool(
     return { text: `invalid arguments: unknown tool ${name}`, isError: true };
   }
 
-  const validationError = spec.validate(args);
+  const validationError = validateToolArguments(spec, args);
   if (validationError) {
     return { text: `invalid arguments: ${validationError}`, isError: true };
   }
@@ -483,12 +538,18 @@ async function executeTool(
     };
 
     let isError = false;
+    let commanderError: { message: string } | undefined;
     process.exitCode = undefined;
     console.log = capture;
     console.warn = capture;
     console.error = capture;
     try {
-      await runCli(argv);
+      const cliResult = await runCliCommand(argv, {
+        writeOut: (chunk) => lines.push(chunk.replace(/\r?\n$/u, "")),
+        writeErr: (chunk) => lines.push(chunk.replace(/\r?\n$/u, ""))
+      });
+      commanderError = cliResult.commanderError;
+      isError = cliResult.exitCode !== 0;
     } catch (err) {
       lines.push(err instanceof Error ? err.message : String(err));
       isError = true;
@@ -499,6 +560,10 @@ async function executeTool(
       const capturedExit = process.exitCode;
       isError = isError || (capturedExit !== undefined && capturedExit !== 0);
       process.exitCode = previousExitCode;
+    }
+
+    if (commanderError) {
+      throw new McpRequestError(-32602, `Invalid arguments for ${name}: ${commanderError.message}`);
     }
 
     return { text: lines.join("\n"), isError };
@@ -517,7 +582,7 @@ function toolDefs(): McpToolDef[] {
   return TOOL_SPECS.map((spec) => ({
     name: spec.name,
     description: spec.description,
-    inputSchema: spec.inputSchema,
+    inputSchema: { ...spec.inputSchema, additionalProperties: false },
     outputSchema: HYPER_TOOL_OUTPUT_SCHEMA
   }));
 }
@@ -603,7 +668,7 @@ function resourceDefFromSpec(spec: ResourceSpec): McpResourceDef {
 
 function buildSurfaceManifest(): object {
   const surface = {
-    protocolVersion: "2025-06-18",
+    protocolVersion: MCP_PROTOCOL_VERSION,
     serverInfo: { name: "visp-hyper", version: SERVER_VERSION },
     capabilities: {
       tools: true,
@@ -829,6 +894,10 @@ export function createToolContext(projectPath: string): McpContext {
   return {
     tools: toolDefs(),
     execute: (name, args) => executeTool(projectPath, name, args),
+    validateToolArguments: (name, args) => {
+      const spec = SPEC_BY_NAME.get(name);
+      return spec ? validateToolArguments(spec, args) : `unknown tool ${name}`;
+    },
     resources: () => resourceDefs(projectPath),
     readResource: (uri) => readResource(projectPath, uri),
     prompts: PROMPTS,

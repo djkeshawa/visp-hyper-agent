@@ -4,17 +4,22 @@ import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { runCliCommand } from "../src/cli/index.js";
 import { execFileCrossPlatform } from "../src/core/exec.js";
 import { initializeProject } from "../src/core/session-manager.js";
 import {
   handleMessage,
+  MCP_PROTOCOL_VERSION,
+  runStdioServer,
   type JsonRpcMessage,
   type McpContext
 } from "../src/mcp/mcp-server.js";
 import { createMcpBridge, createToolContext } from "../src/mcp/tool-bridge.js";
+import { initialPipelineState } from "../src/pipeline/pipeline-engine.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -106,6 +111,19 @@ async function writeQuickSession(
   await initializeProject(projectPath);
   const now = new Date().toISOString();
   const sessionId = "vh_20260612_mcp00001";
+  const syntheticTask = {
+    id: task.id,
+    title: "Quick task",
+    description: "Quick task",
+    dependsOn: [],
+    allowedFiles: task.allowedFiles,
+    status: "pending" as const,
+    riskLevel: "low" as const
+  };
+  const pipeline = initialPipelineState(
+    { tasks: [syntheticTask] },
+    { kind: "synthetic", source: `quick:${sessionId}` }
+  );
   const state = {
     activeSessionId: sessionId,
     sessions: {
@@ -118,13 +136,7 @@ async function writeQuickSession(
         updatedAt: now,
         phase: "implementation",
         relevantFiles: [],
-        pipeline: {
-          taskIds: [task.id],
-          currentTaskId: task.id,
-          completed: [],
-          stepHistory: [],
-          syntheticTasks: [{ id: task.id, dependsOn: [], allowedFiles: task.allowedFiles }]
-        }
+        pipeline: { ...pipeline, syntheticTasks: [syntheticTask] }
       }
     }
   };
@@ -135,8 +147,8 @@ async function writeQuickSession(
   );
 }
 
-describe("handleMessage protocol core (AC001)", () => {
-  it("initialize echoes a custom protocolVersion and reports serverInfo", async () => {
+describe("handleMessage protocol core (AC001/AC005)", () => {
+  it("initialize negotiates an unsupported protocolVersion and reports serverInfo", async () => {
     const ctx = stubContext();
     const response = (await handleMessage(ctx, {
       jsonrpc: "2.0",
@@ -144,7 +156,7 @@ describe("handleMessage protocol core (AC001)", () => {
       method: "initialize",
       params: { protocolVersion: "2024-11-05" }
     })) as { result: { protocolVersion: string; capabilities: object; serverInfo: object } };
-    expect(response.result.protocolVersion).toBe("2024-11-05");
+    expect(response.result.protocolVersion).toBe(MCP_PROTOCOL_VERSION);
     expect(response.result.capabilities).toEqual({ tools: {} });
     expect(response.result.serverInfo).toEqual(ctx.serverInfo);
   });
@@ -155,7 +167,17 @@ describe("handleMessage protocol core (AC001)", () => {
       id: 1,
       method: "initialize"
     })) as { result: { protocolVersion: string } };
-    expect(response.result.protocolVersion).toBe("2025-06-18");
+    expect(response.result.protocolVersion).toBe(MCP_PROTOCOL_VERSION);
+  });
+
+  it("initialize rejects a non-string protocolVersion", async () => {
+    const response = (await handleMessage(stubContext(), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: 20250618 }
+    })) as { error: { code: number } };
+    expect(response.error.code).toBe(-32602);
   });
 
   it("initialize advertises resources and prompts when the context supports them", async () => {
@@ -207,11 +229,48 @@ describe("handleMessage protocol core (AC001)", () => {
     expect(response).toBeNull();
   });
 
+  it("a request method without an id is treated as a notification and not executed", async () => {
+    let executed = false;
+    const response = await handleMessage(
+      stubContext(async () => {
+        executed = true;
+        return { text: "unexpected", isError: false };
+      }),
+      {
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: { name: "alpha", arguments: {} }
+      }
+    );
+    expect(response).toBeNull();
+    expect(executed).toBe(false);
+  });
+
   it("a request missing a method but carrying an id is invalid", async () => {
     const response = (await handleMessage(stubContext(), {
       jsonrpc: "2.0",
       id: 3
     })) as { error: { code: number } };
+    expect(response.error.code).toBe(-32600);
+  });
+
+  it.each([
+    null,
+    "request",
+    7,
+    [],
+    {},
+    { jsonrpc: "1.0", id: 4, method: "ping" },
+    { jsonrpc: "2.0", id: { unsafe: true }, method: "ping" },
+    { jsonrpc: "2.0", id: 1.5, method: "ping" },
+    { jsonrpc: "2.0", id: Number.MAX_SAFE_INTEGER + 1, method: "ping" },
+    { jsonrpc: "2.0", id: 5, method: 42 }
+  ])("rejects an invalid JSON-RPC envelope without throwing: %j", async (message) => {
+    const response = (await handleMessage(stubContext(), message)) as {
+      jsonrpc: string;
+      error: { code: number };
+    };
+    expect(response.jsonrpc).toBe("2.0");
     expect(response.error.code).toBe(-32600);
   });
 });
@@ -239,6 +298,32 @@ describe("handleMessage tools surface (AC003)", () => {
     expect(report?.outputSchema?.properties).toHaveProperty("status");
     expect(report?.outputSchema?.properties).toHaveProperty("frames");
     expect(report?.outputSchema?.properties).toHaveProperty("resourceUris");
+  });
+
+  it("tools/list advertises the strict checkpoint and guard argument contract", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-input-schema-"));
+    const response = (await handleMessage(createToolContext(projectPath), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list"
+    })) as {
+      result: {
+        tools: Array<{
+          name: string;
+          inputSchema: { additionalProperties?: boolean; properties?: Record<string, unknown> };
+        }>;
+      };
+    };
+    const checkpoint = response.result.tools.find((tool) => tool.name === "hyper_checkpoint");
+    const guard = response.result.tools.find((tool) => tool.name === "hyper_guard");
+
+    expect(checkpoint?.inputSchema.additionalProperties).toBe(false);
+    expect(checkpoint?.inputSchema.properties).toHaveProperty("allowEmpty");
+    expect(guard?.inputSchema.additionalProperties).toBe(false);
+    expect(guard?.inputSchema.properties).toMatchObject({
+      feature: expect.objectContaining({ minLength: 1 }),
+      task: expect.objectContaining({ minLength: 1 })
+    });
   });
 
   it("tools/list keeps direct-entry, checkpoint, and remembrance authority explicit", async () => {
@@ -526,6 +611,70 @@ describe("handleMessage tools surface (AC003)", () => {
     expect(response.error.code).toBe(-32602);
     expect(response.error.message).toContain("Unknown tool: missing");
     expect(executed).toBe(false);
+  });
+
+  it.each([
+    null,
+    [],
+    "invalid",
+    {},
+    { name: 7 },
+    { name: "alpha", arguments: null },
+    { name: "alpha", arguments: [] },
+    { name: "alpha", arguments: "invalid" }
+  ])("rejects malformed tool params without executing: %j", async (params) => {
+    let executed = false;
+    const response = (await handleMessage(
+      stubContext(async () => {
+        executed = true;
+        return { text: "unexpected", isError: false };
+      }),
+      { jsonrpc: "2.0", id: 30, method: "tools/call", params }
+    )) as { error: { code: number } };
+
+    expect(response.error.code).toBe(-32602);
+    expect(executed).toBe(false);
+  });
+
+  it.each([
+    ["hyper_run", { goal: "ship", tool: "unsupported" }],
+    ["hyper_next", { extra: true }],
+    ["hyper_guard", { feature: "013-feature" }],
+    ["hyper_guard", { feature: " ", task: "T005" }],
+    ["hyper_guard", { mode: "all", base: "main" }],
+    ["hyper_remember", { summary: "done", inputTokens: -1 }]
+  ])("returns -32602 for invalid %s arguments", async (name, args) => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-invalid-tool-"));
+    const response = (await handleMessage(createToolContext(projectPath), {
+      jsonrpc: "2.0",
+      id: 31,
+      method: "tools/call",
+      params: { name, arguments: args }
+    })) as { error: { code: number; message: string } };
+
+    expect(response.error.code).toBe(-32602);
+    expect(response.error.message).toContain("Invalid arguments");
+    expect(await fileExists(join(projectPath, ".visp"))).toBe(false);
+  });
+
+  it("returns -32603 for an executor failure and still handles the next request", async () => {
+    const ctx = stubContext(async () => {
+      throw new Error("executor exploded");
+    });
+    const failed = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 32,
+      method: "tools/call",
+      params: { name: "alpha", arguments: {} }
+    })) as { error: { code: number; message: string } };
+    const next = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 33,
+      method: "ping"
+    })) as { result: object };
+
+    expect(failed.error).toEqual({ code: -32603, message: "Internal error" });
+    expect(next.result).toEqual({});
   });
 });
 
@@ -866,6 +1015,34 @@ describe("handleMessage resources and prompts surface", () => {
 describe("tool bridge execution", () => {
   afterEach(() => {
     process.exitCode = undefined;
+    vi.restoreAllMocks();
+  });
+
+  it("runs nested Commander validation without process exit and permits a later invocation", async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit must not be called");
+    }) as typeof process.exit);
+
+    const invalid = await runCliCommand(
+      ["node", "visp-hyper", "run", "goal", "--tool", "unsupported"],
+      {
+        writeOut: (chunk) => stdout.push(chunk),
+        writeErr: (chunk) => stderr.push(chunk)
+      }
+    );
+    const help = await runCliCommand(["node", "visp-hyper", "run", "--help"], {
+      writeOut: (chunk) => stdout.push(chunk),
+      writeErr: (chunk) => stderr.push(chunk)
+    });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.commanderError?.code).toBe("commander.invalidArgument");
+    expect(stderr.join("")).toContain("Allowed choices");
+    expect(help.exitCode).toBe(0);
+    expect(stdout.join("")).toContain("Usage: visp-hyper run");
   });
 
   it("hyper_guard blocks an out-of-scope staged file and restores console + exit code", async () => {
@@ -917,6 +1094,27 @@ describe("tool bridge execution", () => {
     expect(await fileExists(join(projectPath, ".visp"))).toBe(false);
   });
 
+  it("passes a dash-prefixed goal as data instead of Commander control input", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-dash-goal-"));
+    const ctx = createToolContext(projectPath);
+    const response = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 40,
+      method: "tools/call",
+      params: { name: "hyper_quick", arguments: { goal: "--help" } }
+    })) as { result: { content: Array<{ text: string }>; isError: boolean } };
+    const next = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 41,
+      method: "ping"
+    })) as { result: object };
+
+    expect(response.result.isError).toBe(false);
+    expect(response.result.content[0]?.text).toContain("--help");
+    expect(response.result.content[0]?.text).not.toContain("Usage: visp-hyper quick");
+    expect(next.result).toEqual({});
+  });
+
   it("AC006: the bridge advertises the hyper tools", async () => {
     const tools = await createMcpBridge().listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -935,6 +1133,128 @@ describe("tool bridge execution", () => {
     for (const tool of tools) {
       expect(tool.description.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("stdio request lifecycle (AC005)", () => {
+  it("returns protocol errors for malformed input and continues with a valid request", async () => {
+    const messages: object[] = [];
+    const diagnostics: string[] = [];
+    const input = Readable.from([
+      "{not-json}\n",
+      "null\n",
+      `${JSON.stringify({ jsonrpc: "2.0", id: 51, method: "ping" })}\n`
+    ]);
+
+    await runStdioServer(stubContext(), {
+      input,
+      writeMessage: (message) => messages.push(message),
+      writeDiagnostic: (message) => diagnostics.push(message)
+    });
+
+    expect(messages).toEqual([
+      { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } },
+      { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } },
+      { jsonrpc: "2.0", id: 51, result: {} }
+    ]);
+    expect(diagnostics.join("")).toContain("parse error");
+  });
+
+  it("waits for in-flight requests after input closes", async () => {
+    let release!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ctx = stubContext(async () => {
+      markStarted();
+      await gate;
+      return { text: "drained", isError: false };
+    });
+    const messages: object[] = [];
+    const input = Readable.from([
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 52,
+        method: "tools/call",
+        params: { name: "alpha", arguments: {} }
+      })}\n`
+    ]);
+    let settled = false;
+    const server = runStdioServer(ctx, {
+      input,
+      writeMessage: (message) => messages.push(message),
+      writeDiagnostic: () => undefined
+    }).then(() => {
+      settled = true;
+    });
+
+    await started;
+    expect(settled).toBe(false);
+    expect(messages).toEqual([]);
+
+    release();
+    await server;
+
+    expect(settled).toBe(true);
+    expect(messages).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 52,
+        result: {
+          content: [{ type: "text", text: "drained" }],
+          isError: false
+        }
+      }
+    ]);
+  });
+
+  it("handles input errors, drains accepted work, and rejects without an uncaught readline error", async () => {
+    let release!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ctx = stubContext(async () => {
+      markStarted();
+      await gate;
+      return { text: "completed before shutdown", isError: false };
+    });
+    const input = new Readable({ read: () => undefined });
+    const messages: object[] = [];
+    const server = runStdioServer(ctx, {
+      input,
+      writeMessage: (message) => messages.push(message),
+      writeDiagnostic: () => undefined
+    });
+
+    input.push(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 53,
+      method: "tools/call",
+      params: { name: "alpha", arguments: {} }
+    })}\n`);
+    await started;
+    input.destroy(new Error("stdin boom"));
+    release();
+
+    await expect(server).rejects.toThrow("stdin boom");
+    expect(messages).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 53,
+        result: {
+          content: [{ type: "text", text: "completed before shutdown" }],
+          isError: false
+        }
+      }
+    ]);
   });
 });
 
@@ -1008,6 +1328,13 @@ describe("serve --mcp stdio integration (AC002/AC005)", () => {
     send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
     send({ jsonrpc: "2.0", id: callId, method: "tools/call", params: { name: "hyper_report", arguments: {} } });
 
+    const exit = new Promise<number | null>((resolve) => {
+      child.on("exit", (code) => resolve(code));
+    });
+    // Close immediately after dispatch. The server must drain the tool request
+    // and write its response before the process can exit.
+    child.stdin.end();
+
     await callArrived;
 
     // Every emitted stdout line is valid JSON-RPC 2.0.
@@ -1027,10 +1354,7 @@ describe("serve --mcp stdio integration (AC002/AC005)", () => {
     const ids = parsedLines.map((message) => message.id).sort((a, b) => Number(a) - Number(b));
     expect(ids).toEqual([1, 2, callId]);
 
-    const exitCode = await new Promise<number | null>((resolve) => {
-      child.on("exit", (code) => resolve(code));
-      child.stdin.end();
-    });
+    const exitCode = await exit;
     expect(exitCode).toBe(0);
   }, 30_000);
 });
