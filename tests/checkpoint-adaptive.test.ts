@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
-import { initializeProject } from "../src/core/session-manager.js";
+import { captureGitBaseline, initializeProject } from "../src/core/session-manager.js";
+import { initialPipelineState } from "../src/pipeline/pipeline-engine.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -33,20 +34,28 @@ async function createRepo(): Promise<string> {
 }
 
 /** Kit-less session whose synthetic task runs the controllable check.js gate. */
-async function writeSession(projectPath: string): Promise<void> {
+async function writeSession(
+  projectPath: string,
+  options: { riskLevel?: "low" | "high"; withoutValidation?: boolean } = {}
+): Promise<void> {
   await initializeProject(projectPath);
   const now = new Date().toISOString();
   const sessionId = "vh_20260703_adapt001";
+  const gitBaseline = await captureGitBaseline(projectPath);
   const task = {
     id: TASK_ID,
     title: "adaptive demo task",
     description: "adaptive demo task",
     dependsOn: [],
     allowedFiles: ["src", "ok.txt"],
-    validationCommands: ["node check.js"],
-    status: "pending",
-    riskLevel: "low"
+    ...(options.withoutValidation ? {} : { validationCommands: ["node check.js"] }),
+    status: "pending" as const,
+    riskLevel: options.riskLevel ?? "low"
   };
+  const pipeline = initialPipelineState(
+    { tasks: [task] },
+    { kind: "synthetic", source: `quick:${sessionId}` }
+  );
   const state = {
     activeSessionId: sessionId,
     sessions: {
@@ -59,11 +68,10 @@ async function writeSession(projectPath: string): Promise<void> {
         updatedAt: now,
         phase: "implementation",
         relevantFiles: [],
+        gitBaseline,
         pipeline: {
-          taskIds: [TASK_ID],
-          currentTaskId: TASK_ID,
-          completed: [],
-          stepHistory: [],
+          ...pipeline,
+          gitBaseline,
           syntheticTasks: [task]
         }
       }
@@ -142,14 +150,8 @@ describe("checkpoint adaptive pipeline integration", () => {
 
   it("strict evidence: missing validation remains inconclusive and cannot advance", async () => {
     const projectPath = await createRepo();
-    await writeSession(projectPath);
     // High-risk task with no validation commands anywhere: vacuous verify.
-    const statePath = join(projectPath, ".visp", "hyper", "state.json");
-    const state = JSON.parse(await readFile(statePath, "utf8"));
-    const session = state.sessions[state.activeSessionId];
-    session.pipeline.syntheticTasks[0].riskLevel = "high";
-    delete session.pipeline.syntheticTasks[0].validationCommands;
-    await writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+    await writeSession(projectPath, { riskLevel: "high", withoutValidation: true });
     await writeFile(join(projectPath, "src", "feature.ts"), "export const value = 2;\n", "utf8");
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", TASK_ID]);

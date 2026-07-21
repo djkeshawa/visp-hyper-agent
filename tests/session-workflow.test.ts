@@ -161,7 +161,9 @@ describe("local session workflow", () => {
       });
       await mkdir(join(projectPath, ".visp"), { recursive: true });
       await writeFile(join(projectPath, ".visp", "policy.json"), JSON.stringify({ rules: [] }), "utf8");
-      const shim = await createVispShim({ status: { stdout: status } });
+      const shim = await createVispShim({
+        status: { stdout: { ...status, targetPath: projectPath } }
+      });
       process.env.PATH = `${dirname(shim.binary)}${delimiter}${originalPath ?? ""}`;
 
       await runCli(["node", "visp-hyper", "--project", projectPath, "start", "fix the parser"]);

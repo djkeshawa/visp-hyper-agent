@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { runCliCommand } from "../cli/index.js";
 import type { McpBridge } from "../core/types.js";
-import { packageVersion } from "../core/package-version.js";
 import { readTextIfExists, vispPath } from "../core/fs-utils.js";
 import { checkContextFreshness } from "../context/context-freshness.js";
+import { PACKAGE_VERSION } from "../version.js";
 import {
   MCP_PROTOCOL_VERSION,
   McpRequestError,
@@ -14,8 +14,6 @@ import {
   type McpToolDef
 } from "./mcp-server.js";
 
-/** Server version advertised over `initialize`; matches package.json. */
-const SERVER_VERSION = packageVersion();
 const TOOL_PROFILES = ["generic", "codex", "claude-code", "copilot", "opencode"] as const;
 
 type ToolArgs = Record<string, unknown>;
@@ -669,7 +667,7 @@ function resourceDefFromSpec(spec: ResourceSpec): McpResourceDef {
 function buildSurfaceManifest(): object {
   const surface = {
     protocolVersion: MCP_PROTOCOL_VERSION,
-    serverInfo: { name: "visp-hyper", version: SERVER_VERSION },
+    serverInfo: { name: "visp-hyper", version: PACKAGE_VERSION },
     capabilities: {
       tools: true,
       resources: true,
@@ -902,7 +900,7 @@ export function createToolContext(projectPath: string): McpContext {
     readResource: (uri) => readResource(projectPath, uri),
     prompts: PROMPTS,
     getPrompt: (name, args) => getPrompt(projectPath, name, args),
-    serverInfo: { name: "visp-hyper", version: SERVER_VERSION }
+    serverInfo: { name: "visp-hyper", version: PACKAGE_VERSION }
   };
 }
 

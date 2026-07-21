@@ -30,14 +30,16 @@
   "files": [
     "dist",
     "templates",
+    "examples/quickstart.md",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsup",
+    "pretest": "pnpm build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "check": "pnpm typecheck && pnpm test",
     "prepack": "pnpm build"
   },
   "engines": {

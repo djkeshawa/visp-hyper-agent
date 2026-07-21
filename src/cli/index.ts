@@ -1,5 +1,5 @@
 import { Command, CommanderError, Option } from "commander";
-import { packageVersion } from "../core/package-version.js";
+import { PACKAGE_VERSION } from "../version.js";
 import { checkpointCommand } from "./commands/checkpoint.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { guardCommand } from "./commands/guard.js";
@@ -61,7 +61,7 @@ export async function runCliCommand(
   const program = new Command()
     .name("visp-hyper")
     .description("Local-first companion workflow controller for existing AI coding tools.")
-    .version(packageVersion())
+    .version(PACKAGE_VERSION)
     .showHelpAfterError()
     .helpOption("-h, --help", "Display help for command.");
 

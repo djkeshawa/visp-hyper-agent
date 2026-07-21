@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
 import { execFileResolved } from "../../core/executable-resolver.js";
 import { readTextIfExists } from "../../core/fs-utils.js";
+import { PACKAGE_VERSION } from "../../version.js";
 import { resolveProjectPath } from "./shared.js";
 
 /** Marker identifying a visp-hyper-owned pre-commit hook. */
@@ -36,7 +37,7 @@ jobs:
             echo "error: configure repository Actions variables VISP_FEATURE and VISP_TASK."
             exit 1
           fi
-      - run: npx --yes --package visp-kit --package visp-hyper-agent visp-hyper guard --base "origin/\${{ github.base_ref }}" --feature "$VISP_FEATURE" --task "$VISP_TASK"
+      - run: npx --yes --package visp-kit --package visp-hyper-agent@${PACKAGE_VERSION} visp-hyper guard --base "origin/\${{ github.base_ref }}" --feature "$VISP_FEATURE" --task "$VISP_TASK"
 `;
 
 export function hooksCommand(): Command {

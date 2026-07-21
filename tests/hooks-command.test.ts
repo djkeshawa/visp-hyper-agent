@@ -2,23 +2,15 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { initializeProject } from "../src/core/session-manager.js";
 import { initialPipelineState } from "../src/pipeline/pipeline-engine.js";
+import { PACKAGE_VERSION } from "../src/version.js";
 
 const execFileAsync = promisify(execFile);
-
-const packageRoot = resolvePackageRoot();
-const distIndex = join(packageRoot, "dist", "index.js");
-
-function resolvePackageRoot(): string {
-  // tests/ → package root
-  return dirname(dirname(fileURLToPath(import.meta.url)));
-}
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -233,7 +225,7 @@ describe("hooks ci", () => {
         "            exit 1"
     );
     expect(content).toContain(
-      'npx --yes --package visp-kit --package visp-hyper-agent visp-hyper guard --base "origin/${{ github.base_ref }}" --feature "$VISP_FEATURE" --task "$VISP_TASK"'
+      `npx --yes --package visp-kit --package visp-hyper-agent@${PACKAGE_VERSION} visp-hyper guard --base "origin/\${{ github.base_ref }}" --feature "$VISP_FEATURE" --task "$VISP_TASK"`
     );
     expect(content).toContain("--package visp-kit");
     expect(content).not.toContain("- run: npx visp-hyper guard");
@@ -260,18 +252,6 @@ describe("hooks ci", () => {
 });
 
 describe("hooks git mechanical enforcement", () => {
-  beforeAll(async () => {
-    // The installed hook invokes `node dist/index.js guard --staged`. Ensure dist
-    // exists AND is current enough to expose the guard command (it may predate the
-    // guard/hooks work). `pnpm test` does not build, so build on demand.
-    const built = (await fileExists(distIndex))
-      ? (await readFile(distIndex, "utf8")).includes('"guard"')
-      : false;
-    if (!built) {
-      await execFileAsync("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
-    }
-  }, 320_000);
-
   it("AC006: an installed hook rejects an out-of-scope commit and allows an in-scope one", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "visp-hooks-e2e-"));
     await mkdir(join(projectPath, "src"), { recursive: true });

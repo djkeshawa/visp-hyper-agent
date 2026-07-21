@@ -143,6 +143,16 @@ function prependToPath(dir: string): void {
   process.env.PATH = `${dir}${process.platform === "win32" ? ";" : ":"}${originalPath ?? ""}`;
 }
 
+function kitStatus(projectPath: string): Record<string, unknown> {
+  return {
+    success: true,
+    targetPath: projectPath,
+    initialized: true,
+    activeFeature: { id: "001", slug: "demo" },
+    activeTask: { id: "T001", title: "Demo task", status: "ready" }
+  };
+}
+
 describe("doctor command", () => {
   let logs: string[];
 
@@ -166,14 +176,7 @@ describe("doctor command", () => {
     await writeActiveKitReadContract(projectPath);
     await writeHyperGitHook(projectPath);
     const shim = await createVispShim({
-      status: {
-        stdout: {
-          success: true,
-          initialized: true,
-          activeFeature: { id: "001", slug: "demo" },
-          activeTask: { id: "T001", title: "Demo task", status: "ready" }
-        }
-      },
+      status: { stdout: kitStatus(projectPath) },
       integration: {
         stdout: kit20IntegrationContract(projectPath)
       },
@@ -222,14 +225,7 @@ describe("doctor command", () => {
     await writeKitArtifacts(projectPath);
     await writeHyperGitHook(projectPath);
     const shim = await createVispShim({
-      status: {
-        stdout: {
-          success: true,
-          initialized: true,
-          activeFeature: { id: "001", slug: "demo" },
-          activeTask: { id: "T001", title: "Demo task", status: "ready" }
-        }
-      },
+      status: { stdout: kitStatus(projectPath) },
       integration: {
         stdout: kit20IntegrationContract(projectPath, kitReadContractArtifacts().slice(0, 1))
       },
@@ -262,14 +258,7 @@ describe("doctor command", () => {
     const projectPath = await createProject();
     await writeKitArtifacts(projectPath);
     const shim = await createVispShim({
-      status: {
-        stdout: {
-          success: true,
-          initialized: true,
-          activeFeature: { id: "001", slug: "demo" },
-          activeTask: { id: "T001", title: "Demo task", status: "ready" }
-        }
-      },
+      status: { stdout: kitStatus(projectPath) },
       integration: {
         stdout: {
           success: true,
