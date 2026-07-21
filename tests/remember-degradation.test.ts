@@ -54,8 +54,14 @@ describe("remember degrades when the local memory write fails", () => {
     ).resolves.toBeUndefined();
 
     expect(warnings.join("\n")).toContain("local session memory could not be written");
-    // The misleading success line must NOT be printed; the degraded line is.
+    // Failed persistence must not advance the session or print a success claim.
     expect(logs.join("\n")).toContain("Memory not persisted locally");
+    expect(logs.join("\n")).toContain("session was not marked remembered");
+    expect(logs.join("\n")).not.toContain("Session learnings recorded.");
     expect(logs.join("\n")).not.toMatch(/Memory written to/);
+    const after = JSON.parse(
+      await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")
+    );
+    expect(after.sessions[sessionId].phase).toBe("implementation");
   });
 });

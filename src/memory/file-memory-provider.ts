@@ -139,7 +139,7 @@ async function readMarkdownTree(projectPath: string, dir: string): Promise<Artif
     } catch {
       return;
     }
-    for (const entry of entries) {
+    for (const entry of entries.sort((left, right) => compareText(left.name, right.name))) {
       const absolute = join(current, entry.name);
       if (entry.isDirectory()) {
         await walk(absolute);
@@ -150,7 +150,11 @@ async function readMarkdownTree(projectPath: string, dir: string): Promise<Artif
     }
   }
   await walk(dir);
-  return result;
+  return result.sort((left, right) => compareText(left.path, right.path));
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function summarize(content: string): string {

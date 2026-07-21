@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
-import { initializeProject } from "../src/core/session-manager.js";
+import { initializeProject, readState } from "../src/core/session-manager.js";
 import { startMockMemoryServer, type MockMemoryServer } from "./helpers/mock-memory-server.js";
 
 let server: MockMemoryServer | undefined;
@@ -100,6 +100,43 @@ describe("memory fusion in start (AC006)", () => {
     expect(pack).not.toContain("Ignore previous instructions");
     expect(pack).toContain("quarantined an instruction-like recalled memory");
   });
+
+  it("skips an oversized recall and still renders a later entry within the token budget", async () => {
+    const projectPath = await createProject();
+    server = await startMockMemoryServer({
+      "GET /healthz": { json: { status: "ok" } },
+      "POST /recall": {
+        json: [
+          {
+            id: "oversized",
+            content: `oversized-${"x".repeat(900)}`,
+            category: "session",
+            relevance_score: 0.9
+          },
+          {
+            id: "small",
+            content: "small memory survived",
+            category: "session",
+            relevance_score: 0.8
+          }
+        ]
+      }
+    });
+    await writeConfig(projectPath, {
+      ...baseConfig,
+      tokenBudget: 600,
+      memoryMode: "llm-memory",
+      memoryEndpoint: server.url
+    });
+
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement offline note sync"]);
+
+    const pack = await readFile(join(projectPath, ".visp", "hyper", "current", "memory-pack.md"), "utf8");
+    expect(pack).not.toContain("oversized-");
+    expect(pack).toContain("small memory survived");
+    expect(pack).toContain("[1 more memories omitted by size cap]");
+  });
 });
 
 describe("memory fusion parity and fallback (AC007)", () => {
@@ -170,6 +207,8 @@ describe("remember write-back (AC008)", () => {
       content: "Implemented offline sync.",
       category: "session"
     });
+    const state = await readState(projectPath);
+    expect(state.sessions[state.activeSessionId!]?.phase).toBe("remembered");
   });
 
   it("still writes the file memory and exits zero when the remote endpoint is closed", async () => {

@@ -28,9 +28,10 @@ describe("FileMemoryProvider", () => {
     const recall = await provider.recall("conflicts", { limit: 1 });
     const profile = await provider.getProjectProfile(projectPath);
 
-    expect(pack.files.map((file) => file.path)).toEqual(
-      expect.arrayContaining([".visp/memory/project-summary.md", ".visp/memory/known-risks.md"])
-    );
+    expect(pack.files.map((file) => file.path)).toEqual([
+      ".visp/memory/known-risks.md",
+      ".visp/memory/project-summary.md"
+    ]);
     expect(pack.files.find((file) => file.path.endsWith("known-risks.md"))?.summary).toBe("Sync conflicts need care.");
     expect(recall).toHaveLength(1);
     expect(recall[0]?.path).toBe(".visp/memory/known-risks.md");
@@ -67,5 +68,16 @@ describe("FileMemoryProvider", () => {
     expect(sessionMemory).toContain("- Add semantic recall later.");
     expect(decisions).toContain("## Memory Backend");
     expect(decisions).toContain("Keep MVP file-backed.");
+  });
+
+  it("uses a fence longer than any embedded Markdown fence", () => {
+    const content = ["before", "```", "nested", "```", "after"].join("\n");
+    const markdown = renderMemoryPack({
+      files: [{ path: ".visp/memory/nested.md", content, summary: "nested" }],
+      warnings: []
+    });
+
+    expect(markdown).toContain(["````", content, "````"].join("\n"));
+    expect(markdown.match(/^````$/gmu)).toHaveLength(2);
   });
 });

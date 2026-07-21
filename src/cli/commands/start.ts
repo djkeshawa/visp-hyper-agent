@@ -171,7 +171,8 @@ export async function executeStart(
       renderMemoryPack(memory, {
         recalled: memoryFusion.recalled,
         recalledWarnings: memoryFusion.warnings,
-        failurePatterns
+        failurePatterns,
+        tokenBudget: config.tokenBudget
       })
     );
     await writeText(

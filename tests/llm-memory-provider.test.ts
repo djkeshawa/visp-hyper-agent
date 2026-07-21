@@ -20,9 +20,14 @@ afterEach(async () => {
 const projectPath = "/tmp/My Project";
 
 describe("repoIdForProject", () => {
-  it("lowercases the basename and replaces spaces with hyphens", () => {
-    expect(repoIdForProject("/tmp/My Project")).toBe("my-project");
-    expect(repoIdForProject("/a/b/Visp Hyper Agent")).toBe("visp-hyper-agent");
+  it("combines a normalized basename with a stable path digest", () => {
+    expect(repoIdForProject("/tmp/My Project")).toMatch(/^my-project-[a-f0-9]{12}$/u);
+    expect(repoIdForProject("/a/b/Visp Hyper Agent")).toMatch(/^visp-hyper-agent-[a-f0-9]{12}$/u);
+    expect(repoIdForProject("/tmp/My Project")).toBe(repoIdForProject("/tmp/My Project"));
+  });
+
+  it("isolates same-named projects in different parent directories", () => {
+    expect(repoIdForProject("/teams/alpha/app")).not.toBe(repoIdForProject("/teams/beta/app"));
   });
 });
 
@@ -64,7 +69,7 @@ describe("LlmMemoryProvider.recall (AC001)", () => {
     expect(recall?.body).toMatchObject({
       query: "auth flow",
       layers: ["episodic", "semantic", "intent"],
-      repo_id: "my-project",
+      repo_id: repoIdForProject(projectPath),
       limit: 5
     });
   });
@@ -85,6 +90,25 @@ describe("LlmMemoryProvider.recall (AC001)", () => {
     await provider.semanticRecall("q", { filters: { minScore: "0.7" } });
     const semantic = server.requests.at(-1);
     expect(semantic?.body).toMatchObject({ min_score: 0.7 });
+  });
+
+  it("uses the memory id as a deterministic tie-break for equal scores", async () => {
+    server = await startMockMemoryServer({
+      "POST /recall": {
+        json: [
+          { id: "z-last", content: "z", relevance_score: 0.5 },
+          { id: "a-first", content: "a", relevance_score: 0.5 }
+        ]
+      }
+    });
+    const provider = new LlmMemoryProvider({ endpoint: server.url, projectPath });
+
+    const results = await provider.recall("q");
+
+    expect(results.map((entry) => entry.path)).toEqual([
+      "llm-memory://a-first",
+      "llm-memory://z-last"
+    ]);
   });
 });
 
@@ -110,7 +134,7 @@ describe("LlmMemoryProvider.remember / storeDecision (AC002)", () => {
       content: "did the work",
       layer: "episodic",
       category: "session",
-      repo_id: "my-project",
+      repo_id: repoIdForProject(projectPath),
       source: "visp-hyper",
       metadata: { sessionId: "vh_1", goal: "ship feature", changedFiles: ["a.ts"] }
     });
@@ -134,7 +158,7 @@ describe("LlmMemoryProvider.remember / storeDecision (AC002)", () => {
         content: "Use zod: validate all inputs",
         layer: "episodic",
         category: "architecture_decision",
-        repo_id: "my-project",
+        repo_id: repoIdForProject(projectPath),
         source: "visp-hyper"
       });
     } finally {

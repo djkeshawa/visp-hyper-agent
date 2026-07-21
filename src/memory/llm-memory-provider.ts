@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, resolve } from "node:path";
 import { z } from "zod";
 import type {
   DecisionRecord,
@@ -29,11 +30,20 @@ const memoryArraySchema = z.array(memorySchema);
 type MemoryObject = z.infer<typeof memorySchema>;
 
 /**
- * Derive a stable repo id from the project path: the lowercased directory name
- * with spaces collapsed to hyphens.
+ * Derive a stable, privacy-preserving repo id from the absolute project path.
+ * The readable basename aids diagnostics while the digest prevents unrelated
+ * same-named projects from sharing a remote-memory namespace.
  */
 export function repoIdForProject(projectPath: string): string {
-  return basename(projectPath).toLowerCase().replace(/\s+/gu, "-");
+  const absolute = resolve(projectPath).replace(/\\/gu, "/");
+  const identity = process.platform === "win32" ? absolute.toLowerCase() : absolute;
+  const slug = basename(absolute)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "") || "project";
+  const digest = createHash("sha256").update(identity).digest("hex").slice(0, 12);
+  return `${slug}-${digest}`;
 }
 
 interface LlmMemoryInput {
@@ -167,7 +177,7 @@ export class LlmMemoryProvider implements SemanticMemoryProvider {
         score: scoreOf(item),
         category: item.category ?? ""
       }))
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      .sort(compareRecallEntries);
   }
 
   private async post(path: string, body: Record<string, unknown>): Promise<void> {
@@ -217,6 +227,24 @@ export class LlmMemoryProvider implements SemanticMemoryProvider {
     }
     return result.data;
   }
+}
+
+function compareRecallEntries(
+  left: { result: MemoryResult; score: number | null; category: string },
+  right: { result: MemoryResult; score: number | null; category: string }
+): number {
+  if (left.score !== right.score) {
+    if (left.score === null) return 1;
+    if (right.score === null) return -1;
+    return right.score - left.score;
+  }
+  return compareText(left.result.path, right.result.path) ||
+    compareText(left.category, right.category) ||
+    compareText(left.result.content, right.result.content);
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function toMemoryResult(item: MemoryObject): MemoryResult {

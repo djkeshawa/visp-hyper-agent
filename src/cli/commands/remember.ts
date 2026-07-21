@@ -82,6 +82,25 @@ export function rememberCommand(): Command {
           `warning: local session memory could not be written: ${error instanceof Error ? error.message : String(error)}`
         );
       }
+      let phaseRemembered = false;
+      if (path) {
+        try {
+          phaseRemembered = (await updateActiveSession(
+            projectPath,
+            (current) => ({ ...current, phase: "remembered" }),
+            session.id
+          )) !== null;
+          if (!phaseRemembered) {
+            console.warn(
+              "warning: session memory was persisted, but the active session changed before its phase could be updated."
+            );
+          }
+        } catch (error) {
+          console.warn(
+            `warning: session memory was persisted, but the remembered phase could not be recorded: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
       const config = await readConfig(projectPath);
       const harvest = await harvestSkillProposals(projectPath, config, session);
       for (const line of harvest.lines) {
@@ -90,13 +109,16 @@ export function rememberCommand(): Command {
       await writeBackRemoteMemory(projectPath, record, harvest.installed);
       await recordSkillUsage(projectPath, options.usedSkill);
       await recordTokenUsage(projectPath, session, options);
-      await updateActiveSession(projectPath, (current) => ({ ...current, phase: "remembered" }));
       if (path) {
         console.log(`Memory written to ${path}`);
       } else {
-        console.log("Memory not persisted locally (see warning above); session marked remembered.");
+        console.log("Memory not persisted locally (see warning above); session was not marked remembered.");
       }
-      console.log(rememberOutcome);
+      if (phaseRemembered) {
+        console.log(rememberOutcome);
+      } else {
+        console.log("Session was not marked remembered; retry after resolving the persistence warning.");
+      }
     });
 }
 
