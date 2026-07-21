@@ -115,3 +115,49 @@ Runtime behavior is not removed merely because an intended future contract is do
 - Every contract change requires packed-binary compatibility evidence before support is claimed.
 
 The Phase 0 inventory linked above records the current symbols, risks, contract gaps, and smallest follow-up units. This ADR authorizes documentation of the boundary only; it does not authorize a runtime correction or WorkflowAction `3.0` implementation.
+
+## P1-06 addendum: negotiated WorkflowAction consumption
+
+Accepted under workspace decision D-046, P1-06 adds a separate Hyper-owned
+negotiated action path without changing the historical Phase 0 decision above.
+The existing selector-less `nextAction` APIs and all strict command/MCP frames
+remain WorkflowAction `2.0` consumers until P1-07.
+
+The new path uses an immutable local preference table (`3.0`, then `2.0`) and
+literal local trust anchors for the accepted v2/v3 schema hashes. Advertised
+order, advertised default, Kit package SemVer, and runtime Kit files do not
+define Hyper preference or trust. A structurally coherent advertisement is
+required before an advertised exact protocol is requested, and a selected hash
+mismatch is terminal rather than a reason to try a lower version. An exact
+integration contract `2.0` with no own `protocols` property remains the bounded
+legacy exception: auto or explicit v2 uses selector-less v2, while explicit v3
+fails. Legacy provenance is labelled `legacy_unadvertised`; its local pin is
+not described as an advertised or remotely verified hash.
+
+Hyper validates the selected wire action with independent strict local schemas,
+checks the response protocol and contract/action identity, rejects configured
+`local_checked` assurance and process/verdict contradictions, and independently
+recomputes WorkflowAction `3.0` identity. V3 identity removes only
+`protocolVersion` and `actionId`, retaining `canonicalVersion` and every other
+canonical body field before canonical-json-v1 hashing with the accepted domain.
+
+Both wire versions adapt into one deeply immutable Hyper normalization model.
+That model is not a claim that lossy v2 is a complete Kit canonical v3 action.
+Every v3-only fact missing from v2 is explicitly
+`unavailable/not_in_protocol`; Hyper does not fill it from status, task graphs,
+sessions, routing, Memory, or prior output. V2 finding strings remain opaque and
+are not parsed into structured effects.
+
+The local schema hashes identify the reviewed Kit JSON Schema artifacts. Hash
+equality alone does not formally prove that Hyper's independently authored Zod
+validators are equivalent to those schemas. Support claims therefore remain
+bounded to the reviewed positive/negative corpus and exact packed Kit/Hyper
+pairs whose installed schemas, advertisement, selection, action parsing, and
+rendering evidence passed. P1-08 owns a broader compatibility matrix.
+
+P1-06 temporarily retains two v2 validators: the existing tolerant validator
+protects unchanged pre-P1-07 consumers, while the new negotiated path uses the
+strict public-contract mirror. P1-07 must consolidate that duplication when it
+migrates `run`, `next`, `resume`, checkpoint, `guard`, and MCP rendering. Doctor
+may exercise and report the negotiated path as diagnostics; it does not turn
+that result into an independent permission decision.

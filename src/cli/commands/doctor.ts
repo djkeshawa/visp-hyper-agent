@@ -191,6 +191,13 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
       detail: "visp integration contract could not be read; falling back to legacy status and artifact probing.",
       recovery: "Upgrade or link a Visp Kit version that supports `visp integration contract --json`."
     });
+    checks.push({
+      id: "kit-workflow-action",
+      label: "Kit WorkflowAction protocol",
+      status: "fail",
+      detail: "integration_contract_unavailable: no supported Kit contract is available for WorkflowAction negotiation.",
+      recovery: "Upgrade or link a compatible Visp Kit, then re-run `visp-hyper doctor`."
+    });
   } else {
     const provenanceWarning = provenanceFreshnessContractWarning(contract);
     checks.push({
@@ -208,6 +215,32 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
     const activeReadContract = await checkActiveKitReadContract(projectPath, contract);
     if (activeReadContract) {
       checks.push(activeReadContract);
+    }
+
+    const action = await bridge.nextCanonicalActionDiagnostic("auto", contract);
+    addWarnings(checks, drainWarnings(bridge.warnings), "kit-workflow-action-warning");
+    if (!action.ok) {
+      checks.push({
+        id: "kit-workflow-action",
+        label: "Kit WorkflowAction protocol",
+        status: "fail",
+        detail: `${action.reasonCode}: ${action.reason}`,
+        recovery: "Link a Kit/Hyper pair with matching WorkflowAction advertisement, schema, and action identity."
+      });
+    } else {
+      const { source } = action.value;
+      checks.push({
+        id: "kit-workflow-action",
+        label: "Kit WorkflowAction protocol",
+        status: "pass",
+        detail: [
+          `Kit ${contract.kit.packageName} ${contract.kit.version}; integration contract ${contract.contractVersion}.`,
+          `Selected protocol ${source.protocolVersion} via ${source.selectionMode}.`,
+          `Local schema hash ${source.localSchemaHash}; verification state ${source.schemaHashVerification.state}.`,
+          `Authoritative action verdict ${action.value.verdict}.`,
+          "Current strict command surfaces remain on WorkflowAction 2.0 until P1-07."
+        ].join(" ")
+      });
     }
   }
 

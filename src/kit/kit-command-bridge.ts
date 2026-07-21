@@ -13,6 +13,19 @@ import {
   unsupportedWorkflowActionWarning
 } from "./kit-contract-compat.js";
 import {
+  normalizeWorkflowAction,
+  type NormalizedWorkflowAction,
+  type WorkflowActionAdapterReasonCode
+} from "./workflow-action-adapter.js";
+import {
+  parseSelectedWorkflowAction,
+  selectWorkflowActionProtocol,
+  type WorkflowActionPreference,
+  type WorkflowActionProtocolReasonCode,
+  type WorkflowActionProtocolSelection,
+  type WorkflowActionWire
+} from "./workflow-action-protocol.js";
+import {
   kitBudgetResultSchema,
   kitAuthoritativeContextPackSchema,
   kitContextPackSchema,
@@ -61,7 +74,9 @@ export type KitBridgeDiagnosticReasonCode =
   | "integration_contract_unavailable"
   | "unsupported_integration_contract"
   | "strict_next_unavailable"
-  | "unsupported_workflow_action";
+  | "unsupported_workflow_action"
+  | Exclude<WorkflowActionProtocolReasonCode, "unsupported_integration_contract" | "unsupported_workflow_action">
+  | WorkflowActionAdapterReasonCode;
 
 export type KitBridgeDiagnostic<T> =
   | { ok: true; value: T }
@@ -76,6 +91,11 @@ export type KitContextPackArtifact = {
   path: string;
   sha256: string;
 };
+
+export type WorkflowActionProtocolContext = Readonly<{
+  contract: KitIntegrationContract;
+  selection: WorkflowActionProtocolSelection;
+}>;
 
 /**
  * Probe whether the external `visp` CLI is installed and the target project has
@@ -362,6 +382,78 @@ export class KitCommandBridge {
     return { ok: true, value: action };
   }
 
+  async workflowActionProtocolDiagnostic(
+    preference: WorkflowActionPreference = "auto",
+    contract?: KitIntegrationContract
+  ): Promise<KitBridgeDiagnostic<WorkflowActionProtocolContext>> {
+    let currentContract = contract;
+    if (currentContract === undefined) {
+      const contractResult = await this.integrationContractDiagnostic();
+      if (!contractResult.ok) return contractResult;
+      currentContract = contractResult.value;
+    }
+    const selected = selectWorkflowActionProtocol(currentContract, preference);
+    if (!selected.ok) {
+      this.warnings.push(selected.reason);
+      return diagnosticFailure(selected.reasonCode, selected.reason);
+    }
+    return {
+      ok: true,
+      value: { contract: currentContract, selection: selected.value }
+    };
+  }
+
+  async nextCanonicalAction(
+    preference: WorkflowActionPreference = "auto"
+  ): Promise<NormalizedWorkflowAction | null> {
+    const result = await this.nextCanonicalActionDiagnostic(preference);
+    return result.ok ? result.value : null;
+  }
+
+  async nextCanonicalActionDiagnostic(
+    preference: WorkflowActionPreference = "auto",
+    contract?: KitIntegrationContract
+  ): Promise<KitBridgeDiagnostic<NormalizedWorkflowAction>> {
+    const protocol = await this.workflowActionProtocolDiagnostic(preference, contract);
+    if (!protocol.ok) return protocol;
+
+    const { selection } = protocol.value;
+    const args =
+      selection.mode === "legacy_v2"
+        ? ["next", "--format", "json"]
+        : ["next", "--format", "json", "--protocol", selection.protocolVersion];
+    const result = await this.run(args);
+    if (!result) {
+      return diagnosticFailure(
+        "strict_next_unavailable",
+        this.warnings[this.warnings.length - 1] ?? "Kit strict next action is unavailable."
+      );
+    }
+
+    const parsed = parseSelectedWorkflowAction(parseUnknownJson(result.stdout), selection);
+    if (!parsed.ok) {
+      this.warnings.push(parsed.reason);
+      return diagnosticFailure(parsed.reasonCode, parsed.reason);
+    }
+    if (result.exitCode !== 0 && parsed.value.verdict === "ready") {
+      const reason = `visp ${args.join(" ")} exited with code ${result.exitCode} while reporting verdict=ready.`;
+      this.warnings.push(reason);
+      return diagnosticFailure("workflow_action_contradiction", reason);
+    }
+
+    const contradiction = contractActionContradiction(protocol.value.contract, parsed.value);
+    if (contradiction !== undefined) {
+      this.warnings.push(contradiction);
+      return diagnosticFailure("workflow_action_contradiction", contradiction);
+    }
+    const normalized = normalizeWorkflowAction(parsed.value, selection);
+    if (!normalized.ok) {
+      this.warnings.push(normalized.reason);
+      return diagnosticFailure(normalized.reasonCode, normalized.reason);
+    }
+    return normalized;
+  }
+
   async integrationContract(options: { quiet?: boolean } = {}): Promise<KitIntegrationContract | null> {
     const warningStart = this.warnings.length;
     const result = await this.integrationContractDiagnostic();
@@ -639,6 +731,30 @@ function parseJson<T>(stdout: string, schema: OutputSchema<T>): T | null {
 function parseData<T>(data: unknown, schema: OutputSchema<T>): T | null {
   const result = schema.safeParse(data);
   return result.success ? result.data : null;
+}
+
+function contractActionContradiction(
+  contract: KitIntegrationContract,
+  action: WorkflowActionWire
+): string | undefined {
+  const contractTaskId = contract.activeTask?.id ?? null;
+  const actionTaskId = action.protocolVersion === "2.0" ? action.taskId : action.task?.id ?? null;
+  if (contractTaskId !== actionTaskId) {
+    return `Kit integration contract active task ${contractTaskId ?? "null"} contradicts WorkflowAction task ${actionTaskId ?? "null"}.`;
+  }
+  if (action.protocolVersion === "3.0") {
+    const contractFeature = contract.activeFeature;
+    const actionFeature = action.feature;
+    if (
+      (contractFeature === null) !== (actionFeature === null) ||
+      (contractFeature !== null &&
+        actionFeature !== null &&
+        (contractFeature.id !== actionFeature.id || contractFeature.slug !== actionFeature.slug))
+    ) {
+      return "Kit integration contract active feature contradicts WorkflowAction 3.0 feature identity.";
+    }
+  }
+  return undefined;
 }
 
 function diagnosticFailure(

@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectVisp, KitCommandBridge } from "../src/kit/kit-command-bridge.js";
+import { createWorkflowActionV3Id } from "../src/kit/workflow-action-adapter.js";
+import { TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES } from "../src/kit/workflow-action-protocol.js";
 import {
   kitContextPackSchema,
   kitGateResultSchema,
@@ -56,6 +58,97 @@ function integrationContractFixture(contractVersion = "2.0") {
     },
     warnings: []
   };
+}
+
+function advertisedIntegrationContractFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    ...integrationContractFixture(),
+    activeFeature: {
+      id: "001",
+      slug: "demo",
+      key: "001-demo",
+      path: ".visp/features/001-demo"
+    },
+    activeTask: { id: "T001", title: "Demo task", status: "ready" },
+    protocols: {
+      workflowAction: {
+        supported: ["2.0", "3.0"],
+        default: "2.0",
+        schemaHashes: TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES
+      }
+    },
+    ...overrides
+  };
+}
+
+function bridgeWorkflowActionV2(overrides: Record<string, unknown> = {}) {
+  return {
+    protocolVersion: "2.0",
+    phase: "implement",
+    taskId: "T001",
+    goal: "Implement the current task.",
+    requiredReads: [],
+    writablePaths: ["src/feature.ts"],
+    forbiddenPaths: ["package.json"],
+    acceptanceOracles: [],
+    validationCommands: ["pnpm test"],
+    assuranceLevel: "kit_strict",
+    verdict: "ready",
+    findings: [],
+    nextCommand: "visp implement",
+    ...overrides
+  };
+}
+
+function bridgeWorkflowActionV3(overrides: Record<string, unknown> = {}) {
+  const unavailable = { state: "unavailable", reasonCode: "not_in_source_artifact" } as const;
+  const action = {
+    protocolVersion: "3.0",
+    canonicalVersion: "1.0",
+    actionId: `sha256:${"0".repeat(64)}`,
+    phase: "implement",
+    feature: { id: "001", slug: "demo" },
+    task: {
+      id: "T001",
+      title: "Demo task",
+      status: "ready",
+      dependsOn: [],
+      parallelizable: false
+    },
+    taskClass: unavailable,
+    risk: {
+      level: { state: "available", value: "medium" },
+      factors: unavailable
+    },
+    assurance: {
+      level: "kit_strict",
+      profile: unavailable,
+      workflowStrictness: { state: "available", value: "strict" }
+    },
+    goal: "Implement the current task.",
+    baseCommit: { state: "unavailable", reasonCode: "not_captured" },
+    requiredReads: [],
+    scope: {
+      writablePaths: ["src/feature.ts"],
+      expectedPaths: unavailable,
+      forbiddenPaths: ["package.json"],
+      operationLimits: unavailable
+    },
+    claims: unavailable,
+    validationOracles: [],
+    validationCommands: ["pnpm test"],
+    requiredEvidence: unavailable,
+    policy: {
+      status: { state: "available", value: "valid" },
+      appliedOverrides: { state: "available", value: [] }
+    },
+    findings: [],
+    verdict: "ready",
+    nextCommand: "visp implement",
+    ...overrides
+  };
+  action.actionId = createWorkflowActionV3Id(action);
+  return action;
 }
 
 async function createPinnedContextProject(payload: unknown, taskId = "T001") {
@@ -703,6 +796,467 @@ describe("KitCommandBridge", () => {
       expect.arrayContaining([expect.stringMatching(/exited with code 1.*verdict=ready/i)])
     );
   });
+
+  it("P1_06_AUTO: negotiates advertised v3 and invokes the exact selected protocol", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: advertisedIntegrationContractFixture() },
+      next: { stdout: bridgeWorkflowActionV3() }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    const result = await bridge.nextCanonicalActionDiagnostic();
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        source: {
+          protocolVersion: "3.0",
+          selectionMode: "advertised",
+          localSchemaHash: TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.0"],
+          schemaHashVerification: { state: "advertised_verified" }
+        },
+        task: { id: "T001" },
+        verdict: "ready"
+      }
+    });
+    expect(bridge.warnings).toEqual([]);
+    const argv = (await readFile(shim.argvLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(argv).toEqual([
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.0", "--json"]
+    ]);
+  });
+
+  it("P1_06_AUTO_V2: auto selects the only mutually advertised v2 protocol", async () => {
+    const contract = advertisedIntegrationContractFixture({
+      protocols: {
+        workflowAction: {
+          supported: ["2.0"],
+          default: "2.0",
+          schemaHashes: { "2.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["2.0"] }
+        }
+      }
+    });
+    const shim = await createVispShim({
+      integration: { stdout: contract },
+      next: { stdout: bridgeWorkflowActionV2() }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic()).toMatchObject({
+      ok: true,
+      value: { source: { protocolVersion: "2.0", selectionMode: "advertised" } }
+    });
+    const argv = (await readFile(shim.argvLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(argv).toEqual([
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "2.0", "--json"]
+    ]);
+  });
+
+  it("P1_06_EXPLICIT_V3: explicit v3 invokes the exact selected protocol", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: advertisedIntegrationContractFixture() },
+      next: { stdout: bridgeWorkflowActionV3() }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic("3.0")).toMatchObject({
+      ok: true,
+      value: { source: { protocolVersion: "3.0", selectionMode: "advertised" } }
+    });
+    const argv = (await readFile(shim.argvLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(argv).toEqual([
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.0", "--json"]
+    ]);
+  });
+
+  it("P1_06_LEGACY: explicit v2 uses selector-less legacy invocation", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: integrationContractFixture() },
+      next: { stdout: bridgeWorkflowActionV2({ taskId: null, writablePaths: [] }) }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    const result = await bridge.nextCanonicalActionDiagnostic("2.0");
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        source: {
+          protocolVersion: "2.0",
+          selectionMode: "legacy_v2",
+          schemaHashVerification: { state: "legacy_unadvertised" }
+        },
+        task: null
+      }
+    });
+    const argv = (await readFile(shim.argvLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(argv).toEqual([
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--json"]
+    ]);
+  });
+
+  it("P1_06_LEGACY_AUTO: auto uses selector-less v2 for an unadvertised contract", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: integrationContractFixture() },
+      next: { stdout: bridgeWorkflowActionV2({ taskId: null, writablePaths: [] }) }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic()).toMatchObject({
+      ok: true,
+      value: {
+        source: {
+          protocolVersion: "2.0",
+          selectionMode: "legacy_v2",
+          schemaHashVerification: { state: "legacy_unadvertised" }
+        }
+      }
+    });
+    const argv = (await readFile(shim.argvLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(argv).toEqual([
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--json"]
+    ]);
+  });
+
+  it("P1_06_EXPLICIT: advertised v2 requests the exact protocol without downgrade", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: advertisedIntegrationContractFixture() },
+      next: { stdout: bridgeWorkflowActionV2() }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic("2.0")).toMatchObject({
+      ok: true,
+      value: { source: { protocolVersion: "2.0", selectionMode: "advertised" } }
+    });
+    const argv = (await readFile(shim.argvLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(argv[1]).toEqual([
+      "next",
+      "--format",
+      "json",
+      "--protocol",
+      "2.0",
+      "--json"
+    ]);
+  });
+
+  it("P1_06_FAIL_CLOSED: invalid advertisement stops before next", async () => {
+    const contract: Record<string, unknown> = advertisedIntegrationContractFixture();
+    contract.protocols = {
+      workflowAction: {
+        supported: ["3.0", "3.0"],
+        default: "3.0",
+        schemaHashes: { "3.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.0"] }
+      }
+    };
+    const shim = await createVispShim({ integration: { stdout: contract } });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic()).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_advertisement_invalid"
+    });
+    expect((await readFile(shim.argvLogPath, "utf8")).trim().split("\n")).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      label: "present-null protocols",
+      contract: advertisedIntegrationContractFixture({ protocols: null }),
+      preference: "auto" as const,
+      reasonCode: "workflow_action_advertisement_invalid"
+    },
+    {
+      label: "empty supported set",
+      contract: advertisedIntegrationContractFixture({
+        protocols: {
+          workflowAction: { supported: [], default: "2.0", schemaHashes: {} }
+        }
+      }),
+      preference: "auto" as const,
+      reasonCode: "workflow_action_advertisement_invalid"
+    },
+    {
+      label: "default outside supported set",
+      contract: advertisedIntegrationContractFixture({
+        protocols: {
+          workflowAction: {
+            supported: ["2.0"],
+            default: "3.0",
+            schemaHashes: { "2.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["2.0"] }
+          }
+        }
+      }),
+      preference: "auto" as const,
+      reasonCode: "workflow_action_advertisement_invalid"
+    },
+    {
+      label: "incomplete hash key set",
+      contract: advertisedIntegrationContractFixture({
+        protocols: {
+          workflowAction: {
+            supported: ["2.0", "3.0"],
+            default: "2.0",
+            schemaHashes: { "2.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["2.0"] }
+          }
+        }
+      }),
+      preference: "auto" as const,
+      reasonCode: "workflow_action_advertisement_invalid"
+    },
+    {
+      label: "malformed hash",
+      contract: advertisedIntegrationContractFixture({
+        protocols: {
+          workflowAction: {
+            supported: ["2.0"],
+            default: "2.0",
+            schemaHashes: { "2.0": "sha256:ABC" }
+          }
+        }
+      }),
+      preference: "auto" as const,
+      reasonCode: "workflow_action_advertisement_invalid"
+    },
+    {
+      label: "no mutually supported protocol",
+      contract: advertisedIntegrationContractFixture({
+        protocols: {
+          workflowAction: {
+            supported: ["4.0"],
+            default: "4.0",
+            schemaHashes: { "4.0": `sha256:${"4".repeat(64)}` }
+          }
+        }
+      }),
+      preference: "auto" as const,
+      reasonCode: "workflow_action_no_mutual_protocol"
+    },
+    {
+      label: "explicit v3 without downgrade",
+      contract: advertisedIntegrationContractFixture({
+        protocols: {
+          workflowAction: {
+            supported: ["2.0"],
+            default: "2.0",
+            schemaHashes: { "2.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["2.0"] }
+          }
+        }
+      }),
+      preference: "3.0" as const,
+      reasonCode: "workflow_action_no_mutual_protocol"
+    },
+    {
+      label: "selected hash mismatch without downgrade",
+      contract: advertisedIntegrationContractFixture({
+        protocols: {
+          workflowAction: {
+            supported: ["2.0", "3.0"],
+            default: "2.0",
+            schemaHashes: {
+              "2.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["2.0"],
+              "3.0": `sha256:${"0".repeat(64)}`
+            }
+          }
+        }
+      }),
+      preference: "auto" as const,
+      reasonCode: "workflow_action_schema_hash_mismatch"
+    },
+    {
+      label: "unexpected Kit identity",
+      contract: advertisedIntegrationContractFixture({
+        kit: { packageName: "lookalike-kit", cliName: "visp", version: "0.1.1" }
+      }),
+      preference: "auto" as const,
+      reasonCode: "unsupported_integration_contract"
+    }
+  ])(
+    "P1_06_PREFLIGHT: $label stops before next",
+    async ({ contract, preference, reasonCode }) => {
+      const shim = await createVispShim({ integration: { stdout: contract } });
+      const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+      expect(await bridge.nextCanonicalActionDiagnostic(preference)).toMatchObject({
+        ok: false,
+        reasonCode
+      });
+      const argv = (await readFile(shim.argvLogPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(argv).toEqual([["integration", "contract", "--json"]]);
+    }
+  );
+
+  it("P1_06_FAIL_CLOSED: rejects a response protocol different from selection", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: advertisedIntegrationContractFixture() },
+      next: { stdout: bridgeWorkflowActionV2() }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic()).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_protocol_mismatch"
+    });
+  });
+
+  it("P1_06_FAIL_CLOSED: maps Kit's structured unsupported-protocol error", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: advertisedIntegrationContractFixture() },
+      next: {
+        stdout: {
+          success: false,
+          error: {
+            code: "UNSUPPORTED_WORKFLOW_ACTION_PROTOCOL",
+            requested: "3.0",
+            supported: ["2.0"],
+            default: "2.0"
+          }
+        },
+        exitCode: 1
+      }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic()).toMatchObject({
+      ok: false,
+      reasonCode: "unsupported_workflow_action"
+    });
+  });
+
+  it.each([
+    ["malformed JSON", "not-json"],
+    ["strict-schema extra field", { ...bridgeWorkflowActionV3(), unexpected: true }]
+  ])("P1_06_FAIL_CLOSED: rejects %s action output", async (_label, stdout) => {
+    const shim = await createVispShim({
+      integration: { stdout: advertisedIntegrationContractFixture() },
+      next: { stdout }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic()).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_schema_invalid"
+    });
+  });
+
+  it("P1_06_FAIL_CLOSED: rejects contract/action identity races", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: advertisedIntegrationContractFixture() },
+      next: { stdout: bridgeWorkflowActionV3({ task: null }) }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic()).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_contradiction"
+    });
+  });
+
+  it("P1_06_FAIL_CLOSED: rejects v3 feature identity races", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: advertisedIntegrationContractFixture() },
+      next: { stdout: bridgeWorkflowActionV3({ feature: { id: "002", slug: "other" } }) }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic()).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_contradiction"
+    });
+  });
+
+  it("P1_06_FAIL_CLOSED: rejects a negotiated ready action from a nonzero process", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: advertisedIntegrationContractFixture() },
+      next: { stdout: bridgeWorkflowActionV3(), exitCode: 1 }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic()).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_contradiction"
+    });
+  });
+
+  it("P1_06_AUTHORITY: preserves a coherent blocked negotiated v2 action from exit 1", async () => {
+    const shim = await createVispShim({
+      integration: { stdout: advertisedIntegrationContractFixture() },
+      next: {
+        stdout: bridgeWorkflowActionV2({
+          verdict: "blocked",
+          findings: ["VSP001: Blocked."],
+          writablePaths: []
+        }),
+        exitCode: 1
+      }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic("2.0")).toMatchObject({
+      ok: true,
+      value: { verdict: "blocked", findingMessages: ["VSP001: Blocked."] }
+    });
+  });
+
+  it.each([
+    ["blocked", "blocks", "error"],
+    ["inconclusive", "uncertain", "warning"]
+  ] as const)(
+    "P1_06_AUTHORITY: preserves coherent v3 %s from a nonzero Kit exit",
+    async (verdict, effect, severity) => {
+      const action = bridgeWorkflowActionV3({
+        verdict,
+        findings: [
+          {
+            code: `VISP.TEST.${effect.toUpperCase()}`,
+            source: "workflow",
+            severity,
+            effect,
+            message: `The action is ${verdict}.`,
+            recommendation: "Follow the authoritative next command.",
+            evidence: []
+          }
+        ],
+        nextCommand: verdict === "blocked" ? "visp scan" : "visp clarify"
+      });
+      const shim = await createVispShim({
+        integration: { stdout: advertisedIntegrationContractFixture() },
+        next: { stdout: action, exitCode: 1 }
+      });
+      const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+      expect(await bridge.nextCanonicalActionDiagnostic("3.0")).toMatchObject({
+        ok: true,
+        value: { verdict, structuredFindings: { state: "available" } }
+      });
+    }
+  );
 
   it("CONTEXT_EXACT: reads a complete authoritative context artifact from the pinned contract path", async () => {
     const context = authoritativeContextPackFixture({
