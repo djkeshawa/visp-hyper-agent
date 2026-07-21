@@ -25,6 +25,9 @@ export type RoutingQuarantine = z.infer<typeof routingQuarantineSchema>;
 export type RoutingDecision = z.infer<typeof routingDecisionSchema>;
 export type RoutingState = z.infer<typeof routingStateSchema>;
 
+export const MAX_ROUTING_QUARANTINES = 50;
+export const MAX_ROUTING_DECISIONS = 50;
+
 function routingPath(projectPath: string): string {
   return vispPath(projectPath, "hyper", "routing.json");
 }
@@ -49,12 +52,16 @@ export async function readRoutingState(
     "routing.json",
     "an empty state"
   );
+  surfaceWarnings(warnings);
   return { state: value, warnings };
 }
 
 export async function writeRoutingState(projectPath: string, state: RoutingState): Promise<void> {
   await withProjectLock(projectPath, async () => {
-    await writeText(routingPath(projectPath), `${JSON.stringify(state, null, 2)}\n`);
+    await writeText(
+      routingPath(projectPath),
+      `${JSON.stringify(boundRoutingState(state), null, 2)}\n`
+    );
   });
 }
 
@@ -68,17 +75,15 @@ export async function updateRoutingState(
 ): Promise<RoutingState> {
   return withProjectLock(projectPath, async () => {
     const { state } = await readRoutingState(projectPath);
-    const next = await updater(state);
+    const next = boundRoutingState(await updater(state));
     await writeRoutingState(projectPath, next);
     return next;
   });
 }
 
-const MAX_DECISIONS = 50;
-
 /**
  * Append an advisory routing decision to the persisted state, capping the
- * history at the most recent {@link MAX_DECISIONS} entries. Never throws on a
+ * history at the most recent {@link MAX_ROUTING_DECISIONS} entries. Never throws on a
  * missing/corrupt store — it reads defensively and writes a clean state.
  */
 export async function recordRoutingDecision(
@@ -87,6 +92,29 @@ export async function recordRoutingDecision(
 ): Promise<void> {
   await updateRoutingState(projectPath, (state) => ({
     ...state,
-    decisions: [...state.decisions, decision].slice(-MAX_DECISIONS)
+    decisions: [...state.decisions, decision]
   }));
+}
+
+/** Apply the same bounds and quarantine de-duplication to every write path. */
+export function boundRoutingState(state: RoutingState): RoutingState {
+  const quarantines = new Map<string, RoutingQuarantine>();
+  for (const entry of state.quarantines) {
+    const existing = quarantines.get(entry.taskClass);
+    quarantines.delete(entry.taskClass);
+    quarantines.set(entry.taskClass, {
+      taskClass: entry.taskClass,
+      untilSessionCount: Math.max(existing?.untilSessionCount ?? 0, entry.untilSessionCount)
+    });
+  }
+  return {
+    quarantines: [...quarantines.values()].slice(-MAX_ROUTING_QUARANTINES),
+    decisions: state.decisions.slice(-MAX_ROUTING_DECISIONS)
+  };
+}
+
+function surfaceWarnings(warnings: string[]): void {
+  for (const warning of warnings) {
+    console.warn(`warning: ${warning}`);
+  }
 }

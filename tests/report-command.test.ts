@@ -56,8 +56,10 @@ async function writeRouting(projectPath: string, state: RoutingState): Promise<v
 }
 
 function attempt(overrides: Partial<TelemetryFile["attempts"][number]>): TelemetryFile["attempts"][number] {
+  const taskId = overrides.taskId ?? "T001";
   return {
-    taskId: "T001",
+    taskKey: overrides.taskKey ?? `graph:${taskId}`,
+    taskId,
     taskClass: "medium",
     tier: "implementer",
     attempt: 1,
@@ -92,8 +94,19 @@ describe("report command (AC006)", () => {
         attempt({ taskId: "T005", tier: "scout", taskClass: "low", firstAttempt: true, verifyPassed: true, reviewPassed: true })
       ],
       usage: [
-        { sessionId: "vh_seed", inputTokens: 1000, outputTokens: 200, at: "2026-06-11T00:00:00.000Z" },
-        { sessionId: "vh_seed", inputTokens: 500, at: "2026-06-11T00:01:00.000Z" }
+        {
+          usageKey: '["session","vh_seed_1"]',
+          sessionId: "vh_seed_1",
+          inputTokens: 1000,
+          outputTokens: 200,
+          at: "2026-06-11T00:00:00.000Z"
+        },
+        {
+          usageKey: '["session","vh_seed_2"]',
+          sessionId: "vh_seed_2",
+          inputTokens: 500,
+          at: "2026-06-11T00:01:00.000Z"
+        }
       ]
     };
     await writeTelemetry(projectPath, telemetry);
@@ -123,6 +136,7 @@ describe("report command (AC006)", () => {
     // 4 distinct first-attempt records: T001, T002, T003(first fail), T004, T005 pass → 4/5 first-attempts pass.
     // First-attempts: T001✓ T002✓ T003✗ T004✓ T005✓ → 4/5 = 80.0%
     expect(text).toContain("first_attempt_pass_rate: 80.0%");
+    expect(text).toContain("legacy_records: attempts=0 usage=0");
     expect(text).toContain("tokens: input=1500 output=200");
     expect(text).toContain("implementer: attempts=4 pass_rate=75.0%");
     expect(text).toContain("scout: attempts=2 pass_rate=100.0%");
@@ -145,6 +159,8 @@ describe("report command (AC006)", () => {
     expect(parsed.totals.sessions).toBe(3);
     expect(parsed.totals.tasks).toBe(5);
     expect(parsed.totals.attempts).toBe(6);
+    expect(parsed.totals.legacyAttempts).toBe(0);
+    expect(parsed.totals.legacyUsageRecords).toBe(0);
     expect(parsed.totals.firstAttemptPassRate).toBeCloseTo(0.8);
     expect(parsed.tokens).toEqual({ inputTokens: 1500, outputTokens: 200 });
     expect(parsed.quarantines).toEqual([{ taskClass: "high", untilSessionCount: 5 }]);
@@ -167,6 +183,23 @@ describe("report command (AC006)", () => {
     expect(text).toContain("quarantines:\n  - none");
     expect(text).toContain("recent_routing_decisions:\n  - none");
     expect(text).toContain("note: no telemetry recorded yet.");
+    expect(text).toContain("END_VISP_HYPER_REPORT");
+  });
+
+  it("surfaces corrupt telemetry and routing stores in the report", async () => {
+    const projectPath = await createProject();
+    const hyperDir = join(projectPath, ".visp", "hyper");
+    await mkdir(hyperDir, { recursive: true });
+    await writeFile(join(hyperDir, "telemetry.json"), "{broken", "utf8");
+    await writeFile(join(hyperDir, "routing.json"), "[broken", "utf8");
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "report"]);
+    const text = logs.join("\n");
+
+    expect(text).toContain("telemetry.json could not be parsed as JSON");
+    expect(text).toContain("routing.json could not be parsed as JSON");
+    expect(text).toContain("warnings:");
     expect(text).toContain("END_VISP_HYPER_REPORT");
   });
 });

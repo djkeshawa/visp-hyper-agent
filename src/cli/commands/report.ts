@@ -24,6 +24,8 @@ interface ReportAggregate {
     sessions: number;
     tasks: number;
     attempts: number;
+    legacyAttempts: number;
+    legacyUsageRecords: number;
     firstAttemptPassRate: number | null;
   };
   perTier: TierBreakdown[];
@@ -35,6 +37,7 @@ interface ReportAggregate {
   quarantines: Array<{ taskClass: string; untilSessionCount: number }>;
   recentDecisions: RoutingDecision[];
   skills: SkillReport[];
+  warnings: string[];
 }
 
 interface SkillReport {
@@ -63,13 +66,19 @@ export function reportCommand(): Command {
 
 async function buildReport(projectPath: string): Promise<ReportAggregate> {
   const state = await readState(projectPath);
-  const { data: telemetry } = await readTelemetry(projectPath);
-  const { state: routing } = await readRoutingState(projectPath);
+  const telemetryResult = await readTelemetry(projectPath);
+  const routingResult = await readRoutingState(projectPath);
+  const telemetry = telemetryResult.data;
+  const routing = routingResult.state;
 
   const sessionCount = Object.keys(state.sessions).length;
   const attempts = telemetry.attempts;
+  const legacyAttempts = attempts.filter((entry) => entry.taskKey === undefined).length;
+  const legacyUsageRecords = telemetry.usage.filter((entry) => entry.usageKey === undefined).length;
 
-  const taskIds = new Set(attempts.map((entry) => entry.taskId));
+  const taskIds = new Set(
+    attempts.map((entry) => entry.taskKey ?? `legacy:${entry.taskId}`)
+  );
 
   const tokens = telemetry.usage.reduce(
     (acc, entry) => ({
@@ -80,7 +89,7 @@ async function buildReport(projectPath: string): Promise<ReportAggregate> {
   );
 
   const quarantines = routing.quarantines
-    .filter((quarantine) => quarantine.untilSessionCount > sessionCount)
+    .filter((quarantine) => quarantine.untilSessionCount >= sessionCount)
     .map((quarantine) => ({
       taskClass: quarantine.taskClass,
       untilSessionCount: quarantine.untilSessionCount
@@ -99,11 +108,21 @@ async function buildReport(projectPath: string): Promise<ReportAggregate> {
     };
   });
 
+  const warnings = [...telemetryResult.warnings, ...routingResult.warnings];
+  if (legacyAttempts > 0) {
+    warnings.push(`${legacyAttempts} legacy telemetry attempt record(s) lack stable task keys.`);
+  }
+  if (legacyUsageRecords > 0) {
+    warnings.push(`${legacyUsageRecords} legacy telemetry usage record(s) lack stable usage keys.`);
+  }
+
   return {
     totals: {
       sessions: sessionCount,
       tasks: taskIds.size,
       attempts: attempts.length,
+      legacyAttempts,
+      legacyUsageRecords,
       firstAttemptPassRate: firstAttemptPassRate(attempts)
     },
     perTier: groupBy(attempts, (entry) => entry.tier).map(([tier, rows]) => ({
@@ -119,7 +138,8 @@ async function buildReport(projectPath: string): Promise<ReportAggregate> {
     tokens,
     quarantines,
     recentDecisions,
-    skills
+    skills,
+    warnings
   };
 }
 
@@ -159,11 +179,14 @@ function formatRate(rate: number | null): string {
 }
 
 function renderReport(aggregate: ReportAggregate): string {
-  const { totals, perTier, perClass, tokens, quarantines, recentDecisions, skills } = aggregate;
+  const { totals, perTier, perClass, tokens, quarantines, recentDecisions, skills, warnings } = aggregate;
   const lines: string[] = [];
   lines.push("BEGIN_VISP_HYPER_REPORT");
   lines.push(`sessions: ${totals.sessions}    tasks: ${totals.tasks}    attempts: ${totals.attempts}`);
   lines.push(`first_attempt_pass_rate: ${formatRate(totals.firstAttemptPassRate)}`);
+  lines.push(
+    `legacy_records: attempts=${totals.legacyAttempts} usage=${totals.legacyUsageRecords}`
+  );
   lines.push(`tokens: input=${tokens.inputTokens} output=${tokens.outputTokens}`);
   lines.push("");
 
@@ -208,6 +231,13 @@ function renderReport(aggregate: ReportAggregate): string {
 
   if (totals.attempts === 0 && tokens.inputTokens === 0 && tokens.outputTokens === 0) {
     lines.push("note: no telemetry recorded yet.");
+  }
+
+  if (warnings.length > 0) {
+    lines.push("warnings:");
+    for (const warning of warnings) {
+      lines.push(`  - ${warning}`);
+    }
   }
 
   lines.push("END_VISP_HYPER_REPORT");

@@ -1,5 +1,5 @@
 import type { TelemetryAttempt } from "../telemetry/telemetry-store.js";
-import type { RoutingDecision, RoutingState } from "./routing-state.js";
+import { boundRoutingState, type RoutingDecision, type RoutingState } from "./routing-state.js";
 
 export const DOWNGRADE_MIN_SAMPLES = 30;
 export const DOWNGRADE_MIN_WILSON_LOWER_BOUND = 0.85;
@@ -37,7 +37,11 @@ function downgradeEvidence(
   taskClass: string
 ): RoutingSuggestion["evidence"] {
   const relevant = attempts.filter(
-    (entry) => entry.taskClass === taskClass && entry.tier === CHEAP_TIER && entry.firstAttempt === true
+    (entry) =>
+      entry.taskKey !== undefined &&
+      entry.taskClass === taskClass &&
+      entry.tier === CHEAP_TIER &&
+      entry.firstAttempt === true
   );
   const samples = relevant.length;
   if (samples === 0) {
@@ -74,8 +78,10 @@ export function computeSuggestedTier(input: {
   const evidence = downgradeEvidence(attempts, taskClass);
 
   // 3. Active quarantine forces strongest tier — quality recovers unconditionally.
-  const quarantine = routingState.quarantines.find((entry) => entry.taskClass === taskClass);
-  if (quarantine && quarantine.untilSessionCount > sessionCount) {
+  const quarantine = routingState.quarantines
+    .filter((entry) => entry.taskClass === taskClass)
+    .sort((left, right) => right.untilSessionCount - left.untilSessionCount)[0];
+  if (quarantine && quarantine.untilSessionCount >= sessionCount) {
     return {
       taskId,
       taskClass,
@@ -129,14 +135,13 @@ export function escalate(input: {
   const { state, taskId, taskClass, sessionCount, now } = input;
   const untilSessionCount = sessionCount + QUARANTINE_SESSIONS;
 
-  const existing = state.quarantines.find((entry) => entry.taskClass === taskClass);
-  const quarantines = existing
-    ? state.quarantines.map((entry) =>
-        entry.taskClass === taskClass
-          ? { ...entry, untilSessionCount: Math.max(entry.untilSessionCount, untilSessionCount) }
-          : entry
-      )
-    : [...state.quarantines, { taskClass, untilSessionCount }];
+  const existingExpiry = state.quarantines
+    .filter((entry) => entry.taskClass === taskClass)
+    .reduce((maximum, entry) => Math.max(maximum, entry.untilSessionCount), 0);
+  const quarantines = [
+    ...state.quarantines.filter((entry) => entry.taskClass !== taskClass),
+    { taskClass, untilSessionCount: Math.max(existingExpiry, untilSessionCount) }
+  ];
 
   const decision: RoutingDecision = {
     taskId,
@@ -146,10 +151,10 @@ export function escalate(input: {
     at: now
   };
 
-  return {
+  return boundRoutingState({
     quarantines,
     decisions: [...state.decisions, decision]
-  };
+  });
 }
 
 export function renderModelRouting(suggestion: RoutingSuggestion): string {

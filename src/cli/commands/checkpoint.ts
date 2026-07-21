@@ -46,6 +46,7 @@ import {
   isPipelineComplete,
   loadTaskGraphByIdentity,
   pinInjectedTaskIntegrity,
+  taskKeyFor,
   validatePipelineState
 } from "../../pipeline/pipeline-engine.js";
 import {
@@ -53,7 +54,11 @@ import {
   escalate,
   renderModelRouting
 } from "../../routing/routing-engine.js";
-import { readRoutingState, updateRoutingState } from "../../routing/routing-state.js";
+import {
+  readRoutingState,
+  recordRoutingDecision,
+  updateRoutingState
+} from "../../routing/routing-state.js";
 import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
 import {
   printWarnings,
@@ -459,6 +464,7 @@ export function checkpointCommand(): Command {
       }
       try {
         await appendAttempt(projectPath, {
+          taskKey: pipeline.taskKeys[taskId] ?? taskKeyFor(pipeline.graphIdentity, taskId),
           taskId,
           taskClass,
           tier: options.tier ?? DEFAULT_TIER,
@@ -624,8 +630,17 @@ export function checkpointCommand(): Command {
             });
             console.log("");
             console.log(renderModelRouting(suggestion));
-          } catch {
-            // Advisory only; never fail the checkpoint because routing could not be computed.
+            await recordRoutingDecision(projectPath, {
+              taskId: suggestion.taskId,
+              taskClass: suggestion.taskClass,
+              tier: suggestion.suggestedTier,
+              reason: suggestion.reason,
+              at: new Date().toISOString()
+            });
+          } catch (error) {
+            console.log(
+              `warning: checkpoint routing advice was not recorded: ${error instanceof Error ? error.message : String(error)}`
+            );
           }
           printWorkflowDirectiveIfAny(graph, nextState, session.tool, session.id);
         }

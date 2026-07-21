@@ -11,12 +11,18 @@ import {
   wilsonLowerBound
 } from "../src/routing/routing-engine.js";
 import type { TelemetryAttempt } from "../src/telemetry/telemetry-store.js";
-import type { RoutingState } from "../src/routing/routing-state.js";
+import {
+  MAX_ROUTING_DECISIONS,
+  MAX_ROUTING_QUARANTINES,
+  type RoutingDecision,
+  type RoutingState
+} from "../src/routing/routing-state.js";
 
 const emptyState = (): RoutingState => ({ quarantines: [], decisions: [] });
 
 function scoutAttempts(taskClass: string, passes: number, samples: number): TelemetryAttempt[] {
   return Array.from({ length: samples }, (_, index) => ({
+    taskKey: `graph:${taskClass}:T${index}`,
     taskId: `T${index}`,
     taskClass,
     tier: CHEAP_TIER,
@@ -77,15 +83,28 @@ describe("evidence-first routing", () => {
     expect(result.reason).toContain("insufficient evidence");
   });
 
-  it("lets active quarantine override otherwise sufficient evidence", () => {
+  it("keeps quarantine active through its inclusive final session", () => {
     const result = computeSuggestedTier({
       task: { id: "T001", riskLevel: "medium" },
       attempts: scoutAttempts("medium", 30, 30),
       routingState: { quarantines: [{ taskClass: "medium", untilSessionCount: 5 }], decisions: [] },
-      sessionCount: 4
+      sessionCount: 5
     });
     expect(result.suggestedTier).toBe(STRONGEST_TIER);
     expect(result.reason).toContain("quarantined");
+  });
+
+  it("does not use ambiguous legacy attempts as downgrade evidence", () => {
+    const attempts = scoutAttempts("medium", 30, 30).map(({ taskKey: _taskKey, ...attempt }) => attempt);
+    const result = computeSuggestedTier({
+      task: { id: "T001", riskLevel: "medium" },
+      attempts,
+      routingState: emptyState(),
+      sessionCount: 0
+    });
+
+    expect(result.suggestedTier).toBe(STRONGEST_TIER);
+    expect(result.evidence.samples).toBe(0);
   });
 
   it("renders sample counts and confidence evidence", () => {
@@ -132,5 +151,38 @@ describe("quality recovery", () => {
       now: "2026-07-11T00:00:00.000Z"
     });
     expect(next.quarantines).toEqual([{ taskClass: "medium", untilSessionCount: 7 }]);
+  });
+
+  it("caps both histories when escalation records a recovery decision", () => {
+    const decisions: RoutingDecision[] = Array.from(
+      { length: MAX_ROUTING_DECISIONS + 5 },
+      (_, index) => ({
+        taskId: `T${index}`,
+        taskClass: `class-${index}`,
+        tier: STRONGEST_TIER,
+        reason: "seed",
+        at: new Date(index).toISOString()
+      })
+    );
+    const quarantines = Array.from(
+      { length: MAX_ROUTING_QUARANTINES + 5 },
+      (_, index) => ({ taskClass: `class-${index}`, untilSessionCount: index + 1 })
+    );
+
+    const next = escalate({
+      state: { quarantines, decisions },
+      taskId: "LATEST",
+      taskClass: "latest-class",
+      sessionCount: 10,
+      now: "2026-07-11T00:00:00.000Z"
+    });
+
+    expect(next.quarantines).toHaveLength(MAX_ROUTING_QUARANTINES);
+    expect(next.quarantines.at(-1)).toEqual({
+      taskClass: "latest-class",
+      untilSessionCount: 10 + QUARANTINE_SESSIONS
+    });
+    expect(next.decisions).toHaveLength(MAX_ROUTING_DECISIONS);
+    expect(next.decisions.at(-1)?.taskId).toBe("LATEST");
   });
 });

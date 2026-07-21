@@ -12,6 +12,8 @@ import {
   ProjectLockTimeoutError,
   withProjectLock
 } from "../src/core/project-lock.js";
+import { readRoutingState } from "../src/routing/routing-state.js";
+import { readTelemetry } from "../src/telemetry/telemetry-store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -90,6 +92,25 @@ describe("store readers degrade, never crash", () => {
 
     expect(config.defaultTool).toBe(defaultConfig.defaultTool);
     expect(warnings).toEqual([]);
+  });
+
+  it("telemetry and routing readers visibly warn when their stores are corrupt", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-degrade-"));
+    const dir = await hyperDir(projectPath);
+    await writeFile(join(dir, "telemetry.json"), "{ broken", "utf8");
+    await writeFile(join(dir, "routing.json"), "[ broken", "utf8");
+    const warnings: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((message?: unknown) => {
+      warnings.push(String(message));
+    });
+
+    const telemetry = await readTelemetry(projectPath);
+    const routing = await readRoutingState(projectPath);
+
+    expect(telemetry.data).toEqual({ attempts: [], usage: [] });
+    expect(routing.state).toEqual({ quarantines: [], decisions: [] });
+    expect(warnings.join("\n")).toContain("telemetry.json could not be parsed as JSON");
+    expect(warnings.join("\n")).toContain("routing.json could not be parsed as JSON");
   });
 });
 

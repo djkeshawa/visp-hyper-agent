@@ -6,8 +6,18 @@ import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
-import { appendAttempt, readTelemetry } from "../src/telemetry/telemetry-store.js";
-import type { TelemetryAttempt } from "../src/telemetry/telemetry-store.js";
+import { getActiveSession, updateActiveSession } from "../src/core/session-manager.js";
+import { initialPipelineState } from "../src/pipeline/pipeline-engine.js";
+import {
+  MAX_TELEMETRY_ATTEMPTS,
+  MAX_TELEMETRY_USAGE_RECORDS,
+  appendAttempt,
+  appendUsage,
+  readTelemetry,
+  usageKeyForSession,
+  type TelemetryAttempt,
+  type TelemetryFile
+} from "../src/telemetry/telemetry-store.js";
 import {
   CHEAP_TIER,
   STRONGEST_TIER,
@@ -281,6 +291,7 @@ describe("telemetry store and budget round-trip", () => {
     const projectPath = await createProject();
 
     const first = await appendAttempt(projectPath, {
+      taskKey: "graph-a:T001",
       taskId: "T001",
       taskClass: "high",
       tier: "implementer",
@@ -292,6 +303,7 @@ describe("telemetry store and budget round-trip", () => {
     expect(first.firstAttempt).toBe(true);
 
     const second = await appendAttempt(projectPath, {
+      taskKey: "graph-a:T001",
       taskId: "T001",
       taskClass: "high",
       tier: "implementer",
@@ -308,6 +320,95 @@ describe("telemetry store and budget round-trip", () => {
     expect(data.attempts[0]?.attempt).toBe(1);
     expect(data.attempts[1]?.attempt).toBe(2);
     expect(data.attempts[1]?.verifyPassed).toBe(false);
+
+    const reusedDisplayId = await appendAttempt(projectPath, {
+      taskKey: "graph-b:T001",
+      taskId: "T001",
+      taskClass: "high",
+      tier: "implementer",
+      verifyPassed: true,
+      reviewPassed: true,
+      sessionId: "vh_test_2"
+    });
+    expect(reusedDisplayId.attempt).toBe(1);
+    expect(reusedDisplayId.firstAttempt).toBe(true);
+  });
+
+  it("upserts usage by a stable per-session key", async () => {
+    const projectPath = await createProject();
+
+    const first = await appendUsage(projectPath, {
+      sessionId: "vh_usage",
+      inputTokens: 100
+    });
+    const second = await appendUsage(projectPath, {
+      sessionId: "vh_usage",
+      outputTokens: 25,
+      model: "sonnet"
+    });
+
+    expect(first.usageKey).toBe(usageKeyForSession("vh_usage"));
+    expect(second.usageKey).toBe(first.usageKey);
+    expect(second.at).toBe(first.at);
+    expect((await readTelemetry(projectPath)).data.usage).toEqual([
+      {
+        usageKey: usageKeyForSession("vh_usage"),
+        sessionId: "vh_usage",
+        inputTokens: 100,
+        outputTokens: 25,
+        model: "sonnet",
+        at: first.at
+      }
+    ]);
+  });
+
+  it("caps telemetry histories while retaining the newest records", async () => {
+    const projectPath = await createProject();
+    const telemetryPath = join(projectPath, ".visp", "hyper", "telemetry.json");
+    await mkdir(dirname(telemetryPath), { recursive: true });
+    const seed: TelemetryFile = {
+      attempts: Array.from({ length: MAX_TELEMETRY_ATTEMPTS }, (_, index) => ({
+        taskKey: `graph:T${index}`,
+        taskId: `T${index}`,
+        taskClass: "medium",
+        tier: "implementer",
+        attempt: 1,
+        verifyPassed: true,
+        reviewPassed: true,
+        firstAttempt: true,
+        sessionId: `vh_attempt_${index}`,
+        at: new Date(index).toISOString()
+      })),
+      usage: Array.from({ length: MAX_TELEMETRY_USAGE_RECORDS }, (_, index) => ({
+        usageKey: usageKeyForSession(`vh_usage_${index}`),
+        sessionId: `vh_usage_${index}`,
+        inputTokens: index,
+        at: new Date(index).toISOString()
+      }))
+    };
+    await writeFile(telemetryPath, `${JSON.stringify(seed)}\n`, "utf8");
+
+    await appendAttempt(projectPath, {
+      taskKey: "graph:latest",
+      taskId: "LATEST",
+      taskClass: "high",
+      tier: "implementer",
+      verifyPassed: true,
+      reviewPassed: true,
+      sessionId: "vh_latest_attempt"
+    });
+    await appendUsage(projectPath, {
+      sessionId: "vh_latest_usage",
+      outputTokens: 42
+    });
+
+    const { data } = await readTelemetry(projectPath);
+    expect(data.attempts).toHaveLength(MAX_TELEMETRY_ATTEMPTS);
+    expect(data.attempts[0]?.taskId).toBe("T1");
+    expect(data.attempts.at(-1)?.taskId).toBe("LATEST");
+    expect(data.usage).toHaveLength(MAX_TELEMETRY_USAGE_RECORDS);
+    expect(data.usage[0]?.sessionId).toBe("vh_usage_1");
+    expect(data.usage.at(-1)?.sessionId).toBe("vh_latest_usage");
   });
 
   it("serializes concurrent telemetry and routing updates without losing records", async () => {
@@ -317,6 +418,7 @@ describe("telemetry store and budget round-trip", () => {
     const attempts = await Promise.all(
       Array.from({ length: count }, (_, index) =>
         appendAttempt(projectPath, {
+          taskKey: "graph-a:T001",
           taskId: "T001",
           taskClass: "high",
           tier: "implementer",
@@ -357,8 +459,10 @@ describe("telemetry store and budget round-trip", () => {
     expect(result.data.attempts).toEqual([]);
     expect(result.data.usage).toEqual([]);
     expect(result.warnings.length).toBe(1);
+    expect(logs.join("\n")).toContain("telemetry.json could not be parsed as JSON");
 
     const record = await appendAttempt(projectPath, {
+      taskKey: "graph-a:T001",
       taskId: "T001",
       taskClass: "unknown",
       tier: "implementer",
@@ -381,6 +485,7 @@ describe("telemetry store and budget round-trip", () => {
     const telemetry = await readTelemetryFile(projectPath);
     expect(telemetry.attempts).toHaveLength(1);
     expect(telemetry.attempts[0].taskId).toBe("Q001");
+    expect(telemetry.attempts[0].taskKey).toBeTypeOf("string");
     expect(telemetry.attempts[0].verifyPassed).toBe(true);
     expect(telemetry.attempts[0].reviewPassed).toBe(true);
     expect(telemetry.attempts[0].taskClass).toBe("low");
@@ -421,6 +526,7 @@ describe("telemetry store and budget round-trip", () => {
 
     const telemetry = await readTelemetryFile(projectPath);
     expect(telemetry.usage).toHaveLength(1);
+    expect(telemetry.usage[0].usageKey).toBe(usageKeyForSession(telemetry.usage[0].sessionId));
     expect(telemetry.usage[0].inputTokens).toBe(1000);
     expect(telemetry.usage[0].outputTokens).toBe(200);
     expect(telemetry.usage[0].model).toBe("sonnet");
@@ -474,6 +580,7 @@ describe("telemetry store and budget round-trip", () => {
 
     const telemetry = await readTelemetryFile(projectPath);
     expect(telemetry.usage).toHaveLength(1);
+    expect(telemetry.usage[0].usageKey).toBe(usageKeyForSession(telemetry.usage[0].sessionId));
     expect(telemetry.usage[0].inputTokens).toBe(500);
   });
 });
@@ -484,6 +591,7 @@ function emptyRoutingState(): RoutingState {
 
 function scoutAttempt(overrides: Partial<TelemetryAttempt> = {}): TelemetryAttempt {
   return {
+    taskKey: "graph:T001",
     taskId: "T001",
     taskClass: "medium",
     tier: CHEAP_TIER,
@@ -585,7 +693,7 @@ describe("routing engine (pure)", () => {
       task: { id: "T001", riskLevel: "medium" },
       attempts,
       routingState,
-      sessionCount: 5
+      sessionCount: 8
     });
     // Perfect evidence exists, but an active quarantine forces the strongest tier.
     expect(suggestion.evidence.passRate).toBe(1);
@@ -593,7 +701,7 @@ describe("routing engine (pure)", () => {
     expect(suggestion.reason).toContain("quarantined until session 8");
   });
 
-  it("AC004b: expired quarantine re-enables evidence-based downgrade", () => {
+  it("AC004b: quarantine expires after the third following session", () => {
     const attempts = Array.from({ length: 30 }, () => scoutAttempt());
     const routingState: RoutingState = {
       quarantines: [{ taskClass: "medium", untilSessionCount: 8 }],
@@ -603,7 +711,7 @@ describe("routing engine (pure)", () => {
       task: { id: "T001", riskLevel: "medium" },
       attempts,
       routingState,
-      sessionCount: 8
+      sessionCount: 9
     });
     expect(suggestion.suggestedTier).toBe(CHEAP_TIER);
     expect(suggestion.reason).toContain("samples");
@@ -726,5 +834,52 @@ describe("routing CLI integration", () => {
     const telemetry = await readTelemetryFile(projectPath);
     expect(telemetry.attempts).toHaveLength(1);
     expect(telemetry.attempts[0].tier).toBe("scout");
+  });
+
+  it("persists routing advice computed by a passing checkpoint", async () => {
+    const projectPath = await createProject();
+    await startLocalQuick(projectPath, 0);
+    const session = await getActiveSession(projectPath);
+    if (!session?.pipeline?.graphIdentity || !session.pipeline.syntheticTasks?.[0]) {
+      throw new Error("expected quick to create a pinned synthetic pipeline");
+    }
+    const firstTask = session.pipeline.syntheticTasks[0];
+    const secondTask = {
+      ...firstTask,
+      id: "Q002",
+      title: "follow-up task",
+      description: "follow-up task",
+      dependsOn: [firstTask.id]
+    };
+    const syntheticTasks = [firstTask, secondTask];
+    const pipeline = initialPipelineState(
+      { tasks: syntheticTasks },
+      session.pipeline.graphIdentity
+    );
+    const updated = await updateActiveSession(
+      projectPath,
+      (current) => ({
+        ...current,
+        pipeline: {
+          ...pipeline,
+          gitBaseline: current.gitBaseline,
+          syntheticTasks
+        }
+      }),
+      session.id
+    );
+    expect(updated).not.toBeNull();
+    await writeFile(join(projectPath, "src", "feature.ts"), "export const value = 2;\n", "utf8");
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "Q001"]);
+
+    const routing = await readRoutingFile(projectPath);
+    expect(routing.decisions.at(-1)).toMatchObject({
+      taskId: "Q002",
+      taskClass: "low",
+      tier: STRONGEST_TIER
+    });
+    expect(logs.join("\n")).toContain("next_task: Q002");
   });
 });
