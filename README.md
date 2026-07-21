@@ -53,12 +53,15 @@ visp-hyper remember --summary "Implemented offline note sync"
 | `visp-hyper start "<goal>" [--tool <tool>]` | Starts a guided local session only when the project is genuinely Kit-less. A healthy or configured-but-unhealthy Kit stops the command before it creates Hyper state; use `run` for Kit-backed work. The local path writes the handoff and context files, uses the deterministic relevance scanner, and fuses recalled llm-memory entries when enabled. |
 | `visp-hyper next` | Prints the next bounded action: the current pipeline task's action block (with model-routing advice) when a task DAG is active, otherwise the generic next-step block. |
 | `visp-hyper resume [--json]` | Reprints the active handoff, current task action, context freshness, required read status, latest checkpoint, current git diff file list, and exact checkpoint-to-current file deltas after a context reset. |
-| `visp-hyper checkpoint [--task <id>] [--tier <tier>]` | Appends git diff evidence to `checkpoints.md`. With `--task`: runs Visp Kit verify + review through the bridge, confirms pinned Kit context and provenance artifacts have not changed since handoff, and records the attempt in telemetry. Its result is local evidence; strict progression and remediation come only from Kit's exact current ready action. |
+| `visp-hyper checkpoint [--task <id>] [--tier <tier>] [--allow-empty]` | Appends git diff evidence to `checkpoints.md`. With `--task`: runs Visp Kit verify + review through the bridge, confirms pinned Kit context and provenance artifacts have not changed since handoff, and records the attempt in telemetry. Empty evidence fails by default; `--allow-empty` permits an intentionally empty checkpoint, but Git errors still block. Its result is local evidence; strict progression and remediation come only from Kit's exact current ready action. |
+| `visp-hyper guard [--staged\|--all\|--base <ref>] [--feature <feature>] [--task <id>]` | Mechanically checks changed paths against the active task scope. CI callers can assert the exact feature and task instead of inferring scope. |
+| `visp-hyper hooks git` / `visp-hyper hooks ci [--force]` | Installs the marker-owned pre-commit guard or writes its GitHub Actions equivalent. The generated CI workflow requires repository Actions variables `VISP_FEATURE` and `VISP_TASK`. |
 | `visp-hyper review` | Writes `review-report.md` and prints `BEGIN_VISP_REVIEW_RESULT` (deterministic path-based warnings from `git diff`). |
 | `visp-hyper remember [--summary <s>] [--decision <d>...] [--follow-up <f>...] [--used-skill <name>...] [--input-tokens <n>] [--output-tokens <n>] [--model <m>]` | Records session learnings: always writes `.visp/memory/session-history/`; additionally writes to llm-memory (session record, decisions, follow-ups) when enabled, records token usage in telemetry and forwards it to `visp budget`, harvests pending skill proposals, and tracks skill usage. It does not complete a Kit task. |
 | `visp-hyper report [--json]` | The cost/accuracy evidence view: first-attempt verify+review pass rates per model tier and per task class, token totals, active routing quarantines, recent routing decisions, and skill usage with prune flags. |
 | `visp-hyper status` | Session metadata, generated files, context freshness, checkpoint/review state, and memory status. |
 | `visp-hyper doctor [--json]` | Read-only compatibility check for the Hyper + Visp Kit chain: Hyper state, active context freshness, Kit artifacts, `visp --json` parsing, Kit contract capabilities including provenance freshness and orchestrator read contracts, policy validation, next gate, active task context pack, git scope hook, and MCP surface manifest hash. |
+| `visp-hyper serve --mcp` | Serves the workflow over newline-delimited JSON-RPC 2.0 on stdio for MCP-capable hosts. |
 
 ## MCP Server
 
@@ -163,10 +166,10 @@ Then, inside a Claude Code session:
 #   subagent and implementation to `implementer` via the Agent tool,
 #   validating each result before checkpointing.
 
-/hyper-checkpoint T001
+/hyper-checkpoint --task T001
 # → collects verify + review evidence; follow Kit's exact ready action for strict progress
 
-/hyper-remember done: implemented note sync --input-tokens 18000 --output-tokens 4200
+/hyper-remember --summary "Implemented note sync" --input-tokens 18000 --output-tokens 4200
 # → session memory, token telemetry, budget round-trip, skill harvest
 ```
 

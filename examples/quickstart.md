@@ -150,7 +150,7 @@ visp-hyper report
 }
 ```
 
-The server advertises seven tools: `hyper_quick`, `hyper_run`, `hyper_next`, `hyper_checkpoint`, `hyper_guard`, `hyper_remember`, and `hyper_report`. Each runs the matching CLI command in-process and returns its output block as text.
+The server advertises eleven tools: `hyper_quick`, `hyper_run`, `hyper_next`, `hyper_resume`, `hyper_status`, `hyper_doctor`, `hyper_checkpoint`, `hyper_guard`, `hyper_review`, `hyper_remember`, and `hyper_report`. Each runs the matching CLI path in-process and returns its human-readable output together with structured status, frame, resource URI, and raw text fields.
 
 ## Team memory (optional)
 
