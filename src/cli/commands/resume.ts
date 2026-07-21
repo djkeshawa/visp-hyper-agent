@@ -8,7 +8,12 @@ import type { SessionRecord } from "../../core/types.js";
 import { requiredReads, renderHandoff } from "../../handoff/handoff-protocol.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
-import type { WorkflowActionV2 } from "../../kit/kit-schemas.js";
+import type { NormalizedWorkflowAction } from "../../kit/workflow-action-adapter.js";
+import {
+  renderHyperActionFrame,
+  toHyperActionEnvelope,
+  type HyperActionEnvelopeV1
+} from "../../kit/workflow-action-renderer.js";
 import { buildActionBlock, currentTask, loadTaskGraph, readySet } from "../../pipeline/pipeline-engine.js";
 import { compareCurrentToCheckpoint, emptyDelta, type CheckpointDelta } from "../../quality/checkpoint-snapshot.js";
 import { contextPackPathIfExists, resolveProjectPath } from "./shared.js";
@@ -69,23 +74,23 @@ export function resumeCommand(): Command {
       }
       if (kit.state === "healthy") {
         const bridge = new KitCommandBridge({ projectPath });
-        const diagnostic = await bridge.nextActionDiagnostic();
+        const diagnostic = await bridge.nextCanonicalActionDiagnostic("auto");
         if (!diagnostic.ok) {
           for (const warning of bridge.warnings) console.warn(`warning: ${warning}`);
           stopInconclusive(diagnostic.reasonCode, diagnostic.reason);
           return;
         }
         const action = diagnostic.value;
-        if (action.verdict !== "ready") {
-          stopInconclusive(
-            `workflow_action_${action.verdict}`,
-            action.findings.join("; ") || `Kit workflow action verdict is ${action.verdict}.`,
-            action.nextCommand
-          );
-          return;
-        }
+        const envelope = toHyperActionEnvelope(action);
 
-        console.log(options.json ? JSON.stringify(action, null, 2) : formatKitResume(action));
+        console.log(
+          options.json
+            ? JSON.stringify(envelope, null, 2)
+            : formatKitResume(action, envelope)
+        );
+        if (action.verdict !== "ready") {
+          process.exitCode = 1;
+        }
         return;
       }
 
@@ -103,17 +108,19 @@ export function resumeCommand(): Command {
     });
 }
 
-function formatKitResume(action: WorkflowActionV2): string {
+function formatKitResume(
+  action: NormalizedWorkflowAction,
+  envelope: HyperActionEnvelopeV1
+): string {
   return [
     "BEGIN_VISP_RESUME",
     "authority: kit",
-    `task: ${action.taskId ?? "none"}`,
+    `task: ${action.task?.id ?? "none"}`,
+    `verdict: ${action.verdict}`,
     `next: ${action.nextCommand}`,
     "END_VISP_RESUME",
     "",
-    "BEGIN_VISP_WORKFLOW_ACTION_V2",
-    JSON.stringify(action),
-    "END_VISP_WORKFLOW_ACTION_V2"
+    renderHyperActionFrame(envelope)
   ].join("\n");
 }
 

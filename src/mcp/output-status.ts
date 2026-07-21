@@ -1,3 +1,5 @@
+import { classifyHyperActionEnvelope } from "../kit/workflow-action-renderer.js";
+
 export type OutputStatus =
   | "OK"
   | "PASSED"
@@ -9,6 +11,7 @@ export type OutputStatus =
 type RecognizedFrameName =
   | "VISP_POLICY_BLOCKED"
   | "VISP_PIPELINE_BLOCKED"
+  | "VISP_HYPER_ACTION_V1"
   | "VISP_WORKFLOW_ACTION_V2"
   | "VISP_CHECKPOINT_RESULT"
   | "VISP_HYPER_REPORT";
@@ -28,7 +31,7 @@ const OUTPUT_STATUSES = new Set<OutputStatus>([
 ]);
 
 const FRAME_MARKER =
-  /^(BEGIN|END)_(VISP_POLICY_BLOCKED|VISP_PIPELINE_BLOCKED|VISP_WORKFLOW_ACTION_V2|VISP_CHECKPOINT_RESULT|VISP_HYPER_REPORT)$/u;
+  /^(BEGIN|END)_(VISP_POLICY_BLOCKED|VISP_PIPELINE_BLOCKED|VISP_HYPER_ACTION_V1|VISP_WORKFLOW_ACTION_V2|VISP_CHECKPOINT_RESULT|VISP_HYPER_REPORT)$/u;
 
 function isOutputStatus(value: string): value is OutputStatus {
   return OUTPUT_STATUSES.has(value as OutputStatus);
@@ -88,7 +91,10 @@ function scanRecognizedFrames(lines: string[]): { frames: RecognizedFrame[]; mal
   return { frames, malformed: malformed || active !== null };
 }
 
-function collectWorkflowAction(frame: RecognizedFrame, signals: Set<OutputStatus>): boolean {
+function collectLegacyWorkflowAction(
+  frame: RecognizedFrame,
+  signals: Set<OutputStatus>
+): boolean {
   try {
     const value: unknown = JSON.parse(frame.body.join("\n").trim());
     if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -100,21 +106,84 @@ function collectWorkflowAction(frame: RecognizedFrame, signals: Set<OutputStatus
       return true;
     }
 
-    switch (action.verdict.toLowerCase()) {
-      case "ready":
-        signals.add("OK");
-        return false;
-      case "blocked":
-        signals.add("BLOCKED");
-        return false;
-      case "inconclusive":
-        signals.add("INCONCLUSIVE");
-        return false;
-      default:
-        return true;
-    }
+    return collectActionVerdict(action.verdict, signals);
   } catch {
     return true;
+  }
+}
+
+function collectHyperAction(
+  frame: RecognizedFrame,
+  signals: Set<OutputStatus>
+): boolean {
+  try {
+    const classification = classifyHyperActionEnvelope(
+      JSON.parse(frame.body.join("\n").trim())
+    );
+    if (classification.kind !== "valid") {
+      return true;
+    }
+    return collectActionVerdict(classification.verdict, signals);
+  } catch {
+    return true;
+  }
+}
+
+function collectStandaloneHyperAction(
+  text: string,
+  signals: Set<OutputStatus>
+): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) {
+    return false;
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(trimmed);
+  } catch {
+    return claimsMalformedHyperAction(trimmed);
+  }
+
+  const classification = classifyHyperActionEnvelope(value);
+  if (classification.kind === "unrelated") {
+    return false;
+  }
+  if (classification.kind === "invalid") {
+    return true;
+  }
+  return collectActionVerdict(classification.verdict, signals);
+}
+
+function claimsMalformedHyperAction(text: string): boolean {
+  const hasFrameKey = /"frameVersion"\s*:/u.test(text);
+  const hasAuthorityKey = /"authority"\s*:/u.test(text);
+  const hasActionKey = /"action"\s*:/u.test(text);
+  const hasExactDiscriminants =
+    /"frameVersion"\s*:\s*"1\.0"/u.test(text) &&
+    /"authority"\s*:\s*"kit"/u.test(text);
+  const hasNormalizationDiscriminant =
+    /"normalizationVersion"\s*:\s*"1\.0"/u.test(text);
+  return (
+    (hasFrameKey && hasAuthorityKey && hasActionKey) ||
+    hasExactDiscriminants ||
+    (hasActionKey && hasNormalizationDiscriminant)
+  );
+}
+
+function collectActionVerdict(verdict: string, signals: Set<OutputStatus>): boolean {
+  switch (verdict.toLowerCase()) {
+    case "ready":
+      signals.add("OK");
+      return false;
+    case "blocked":
+      signals.add("BLOCKED");
+      return false;
+    case "inconclusive":
+      signals.add("INCONCLUSIVE");
+      return false;
+    default:
+      return true;
   }
 }
 
@@ -147,8 +216,10 @@ function collectCheckpointVerdicts(frame: RecognizedFrame, signals: Set<OutputSt
 
 export function deriveOutputStatus(text: string, isError: boolean): OutputStatus {
   const lines = text.split(/\r?\n/u);
-  const signals = new Set<OutputStatus>();
-  let malformed = collectExplicitStatuses(lines, signals);
+  const commandSignals = new Set<OutputStatus>();
+  const actionSignals = new Set<OutputStatus>();
+  let actionFrameCount = 0;
+  let malformed = collectExplicitStatuses(lines, commandSignals);
   const scanned = scanRecognizedFrames(lines);
   malformed ||= scanned.malformed;
 
@@ -156,25 +227,49 @@ export function deriveOutputStatus(text: string, isError: boolean): OutputStatus
     switch (frame.name) {
       case "VISP_POLICY_BLOCKED":
       case "VISP_PIPELINE_BLOCKED":
-        signals.add("BLOCKED");
+        commandSignals.add("BLOCKED");
+        break;
+      case "VISP_HYPER_ACTION_V1":
+        actionFrameCount += 1;
+        malformed ||= collectHyperAction(frame, actionSignals);
         break;
       case "VISP_WORKFLOW_ACTION_V2":
-        malformed ||= collectWorkflowAction(frame, signals);
+        actionFrameCount += 1;
+        malformed ||= collectLegacyWorkflowAction(frame, actionSignals);
         break;
       case "VISP_CHECKPOINT_RESULT":
-        malformed ||= collectCheckpointVerdicts(frame, signals);
+        malformed ||= collectCheckpointVerdicts(frame, commandSignals);
         break;
       case "VISP_HYPER_REPORT":
-        signals.add("OK");
+        commandSignals.add("OK");
         break;
     }
   }
 
-  if (malformed || signals.size > 1) {
+  if (actionFrameCount === 0) {
+    malformed ||= collectStandaloneHyperAction(text, actionSignals);
+  } else if (actionFrameCount > 1) {
+    malformed = true;
+  }
+
+  if (malformed || commandSignals.size > 1 || actionSignals.size > 1) {
     return "INCONCLUSIVE";
   }
-  if (signals.size === 1) {
-    return [...signals][0]!;
+
+  const commandStatus =
+    commandSignals.size === 1 ? [...commandSignals][0] : undefined;
+  const actionStatus = actionSignals.size === 1 ? [...actionSignals][0] : undefined;
+  if (commandStatus !== undefined) {
+    if (isError && (commandStatus === "OK" || commandStatus === "PASSED")) {
+      return "INCONCLUSIVE";
+    }
+    return commandStatus;
+  }
+  if (actionStatus !== undefined) {
+    if (isError && actionStatus === "OK") {
+      return "INCONCLUSIVE";
+    }
+    return actionStatus;
   }
   return isError ? "ERROR" : "INCONCLUSIVE";
 }

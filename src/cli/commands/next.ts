@@ -11,6 +11,10 @@ import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { contextPackPathIfExists, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
+import {
+  renderHyperActionFrame,
+  toHyperActionEnvelope
+} from "../../kit/workflow-action-renderer.js";
 
 export function nextCommand(): Command {
   return new Command("next")
@@ -26,17 +30,18 @@ export function nextCommand(): Command {
             reason: kit.reason
           })
         );
+        process.exitCode = 1;
         return;
       }
       if (kit.state === "healthy") {
         const bridge = new KitCommandBridge({ projectPath });
-        const actionDiagnostic = await bridge.nextActionDiagnostic();
+        const actionDiagnostic = await bridge.nextCanonicalActionDiagnostic("auto");
         if (actionDiagnostic.ok) {
-          console.log(
-            ["BEGIN_VISP_WORKFLOW_ACTION_V2", JSON.stringify(actionDiagnostic.value), "END_VISP_WORKFLOW_ACTION_V2"].join(
-              "\n"
-            )
-          );
+          const envelope = toHyperActionEnvelope(actionDiagnostic.value);
+          console.log(renderHyperActionFrame(envelope));
+          if (actionDiagnostic.value.verdict !== "ready") {
+            process.exitCode = 1;
+          }
           return;
         }
         for (const warning of bridge.warnings) console.warn(`warning: ${warning}`);
@@ -47,6 +52,7 @@ export function nextCommand(): Command {
             reason: actionDiagnostic.reason
           })
         );
+        process.exitCode = 1;
         return;
       }
       const session = await getActiveSession(projectPath);
@@ -146,4 +152,3 @@ async function printAndRecordRouting(projectPath: string, task: KitTask): Promis
     // Advisory only; never fail the next command because routing could not be computed.
   }
 }
-

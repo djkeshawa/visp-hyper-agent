@@ -79,6 +79,33 @@ async function callStructuredTool(
   })) as StructuredToolCallResponse;
 }
 
+function hyperActionEnvelope(
+  verdict: "ready" | "blocked" | "inconclusive",
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    frameVersion: "1.0",
+    authority: "kit",
+    action: {
+      normalizationVersion: "1.0",
+      verdict,
+      nextCommand: "visp next",
+      ...overrides
+    }
+  };
+}
+
+function hyperActionFrame(
+  verdict: "ready" | "blocked" | "inconclusive",
+  overrides: Record<string, unknown> = {}
+): string {
+  return [
+    "BEGIN_VISP_HYPER_ACTION_V1",
+    JSON.stringify(hyperActionEnvelope(verdict, overrides)),
+    "END_VISP_HYPER_ACTION_V1"
+  ].join("\n");
+}
+
 async function gitInit(projectPath: string): Promise<void> {
   await execFileAsync("git", ["init", "-b", "main"], { cwd: projectPath });
   await execFileAsync("git", ["add", "."], { cwd: projectPath });
@@ -467,6 +494,191 @@ describe("handleMessage tools surface (AC003)", () => {
         { name: "VISP_WORKFLOW_ACTION_V2", boundary: "begin" },
         { name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }
       ]);
+    });
+
+    it.each([
+      ["ready", "OK"],
+      ["blocked", "BLOCKED"],
+      ["inconclusive", "INCONCLUSIVE"]
+    ] as const)(
+      "AC003: maps a framed canonical %s action to %s",
+      async (verdict, expectedStatus) => {
+        const text = hyperActionFrame(verdict);
+        const response = await callStructuredTool(text, false, 60);
+
+        expect.soft(response.result.structuredContent.status).toBe(expectedStatus);
+        expect.soft(response.result.structuredContent.frames).toEqual([
+          { name: "VISP_HYPER_ACTION_V1", boundary: "begin" },
+          { name: "VISP_HYPER_ACTION_V1", boundary: "end" }
+        ]);
+        expect.soft(response.result.structuredContent.text).toBe(text);
+      }
+    );
+
+    it.each([
+      ["ready", "OK"],
+      ["blocked", "BLOCKED"],
+      ["inconclusive", "INCONCLUSIVE"]
+    ] as const)(
+      "AC003: maps a standalone canonical %s resume envelope to %s",
+      async (verdict, expectedStatus) => {
+        const text = JSON.stringify(hyperActionEnvelope(verdict), null, 2);
+        const response = await callStructuredTool(text, false, 61);
+
+        expect.soft(response.result.structuredContent.status).toBe(expectedStatus);
+        expect.soft(response.result.structuredContent.frames).toEqual([]);
+      }
+    );
+
+    it.each([
+      ["wrong frame version", { ...hyperActionEnvelope("ready"), frameVersion: "2.0" }],
+      ["wrong authority", { ...hyperActionEnvelope("ready"), authority: "hyper" }],
+      ["missing action", { frameVersion: "1.0", authority: "kit" }],
+      ["unknown verdict", hyperActionEnvelope("ready", { verdict: "passed" })],
+      ["leaked wire", hyperActionEnvelope("ready", { wire: { protocolVersion: "3.0" } })]
+    ])("AC003: maps a %s envelope to INCONCLUSIVE", async (_name, envelope) => {
+      const response = await callStructuredTool(JSON.stringify(envelope), false, 62);
+
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+    });
+
+    it("AC003: rejects mixed canonical and legacy action frames", async () => {
+      const legacy = [
+        "BEGIN_VISP_WORKFLOW_ACTION_V2",
+        JSON.stringify({ protocolVersion: "2.0", verdict: "ready" }),
+        "END_VISP_WORKFLOW_ACTION_V2"
+      ].join("\n");
+      const response = await callStructuredTool(
+        [hyperActionFrame("ready"), legacy].join("\n"),
+        false,
+        63
+      );
+
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+    });
+
+    it("AC003: rejects duplicate canonical action frames", async () => {
+      const response = await callStructuredTool(
+        [hyperActionFrame("ready"), hyperActionFrame("ready")].join("\n"),
+        false,
+        69
+      );
+
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+    });
+
+    it("AC003: rejects malformed framed canonical JSON", async () => {
+      const response = await callStructuredTool(
+        [
+          "BEGIN_VISP_HYPER_ACTION_V1",
+          '{"frameVersion":"1.0",',
+          "END_VISP_HYPER_ACTION_V1"
+        ].join("\n"),
+        false,
+        70
+      );
+
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+    });
+
+    it.each(["BLOCKED", "FAILED"] as const)(
+      "AC003: a coherent %s command result overrides ready action context",
+      async (status) => {
+        const response = await callStructuredTool(
+          [hyperActionFrame("ready"), `status: ${status}`].join("\n"),
+          false,
+          64
+        );
+
+        expect.soft(response.result.structuredContent.status).toBe(status);
+      }
+    );
+
+    it("AC003: a coherent success result overrides blocked action readiness", async () => {
+      const response = await callStructuredTool(
+        [hyperActionFrame("blocked"), "status: OK"].join("\n"),
+        false,
+        65
+      );
+
+      expect.soft(response.result.structuredContent.status).toBe("OK");
+    });
+
+    it("AC003: checkpoint evidence remains PASSED when its next action is blocked", async () => {
+      const checkpoint = [
+        "BEGIN_VISP_CHECKPOINT_RESULT",
+        "verdict: PASSED",
+        "END_VISP_CHECKPOINT_RESULT"
+      ].join("\n");
+      const response = await callStructuredTool(
+        [checkpoint, hyperActionFrame("blocked")].join("\n"),
+        false,
+        67
+      );
+
+      expect.soft(response.result.structuredContent.status).toBe("PASSED");
+    });
+
+    it("AC003: unrelated standalone JSON preserves transport ERROR", async () => {
+      const response = await callStructuredTool(
+        JSON.stringify({ message: "transport failed" }),
+        true,
+        66
+      );
+
+      expect.soft(response.result.structuredContent.status).toBe("ERROR");
+    });
+
+    it("AC003: unrelated transport authority JSON preserves ERROR", async () => {
+      const response = await callStructuredTool(
+        JSON.stringify({ authority: "proxy", message: "transport failed" }),
+        true,
+        71
+      );
+
+      expect.soft(response.result.structuredContent.status).toBe("ERROR");
+    });
+
+    it("AC003: unrelated truncated normalization JSON preserves ERROR", async () => {
+      const response = await callStructuredTool(
+        '{"normalizationVersion":"1.0"',
+        true,
+        73
+      );
+
+      expect.soft(response.result.structuredContent.status).toBe("ERROR");
+    });
+
+    it("AC003: a truncated claimed action envelope is INCONCLUSIVE", async () => {
+      const response = await callStructuredTool(
+        '{"frameVersion":"1.0","authority":"kit"',
+        true,
+        68
+      );
+
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+    });
+
+    it("AC003: a ready action from a failed execution is INCONCLUSIVE", async () => {
+      const response = await callStructuredTool(hyperActionFrame("ready"), true, 72);
+
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+    });
+
+    it.each([
+      ["explicit OK", "status: OK"],
+      [
+        "checkpoint PASSED",
+        [
+          "BEGIN_VISP_CHECKPOINT_RESULT",
+          "verdict: PASSED",
+          "END_VISP_CHECKPOINT_RESULT"
+        ].join("\n")
+      ]
+    ])("AC003: failed execution plus %s is INCONCLUSIVE", async (_name, text) => {
+      const response = await callStructuredTool(text, true, 74);
+
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
     });
 
     it("maps an unsupported explicit status to INCONCLUSIVE", async () => {

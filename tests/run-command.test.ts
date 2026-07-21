@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
+import { createWorkflowActionV3Id } from "../src/kit/workflow-action-adapter.js";
 import {
   authoritativeContextPackFixture,
   authoritativeTaskFixture,
@@ -19,8 +20,17 @@ import {
 const execFileAsync = promisify(execFile);
 
 const originalPath = process.env.PATH;
+const V2_HASH =
+  "sha256:c63b279b1ce89f047b2be696a47e845a57adda7f8437892e211e3a4cfad39ed6";
+const V3_HASH =
+  "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7";
 
 const FEATURE_DIR = "001-pipeline";
+const unavailable = (reasonCode = "not_in_source_artifact") => ({
+  state: "unavailable" as const,
+  reasonCode
+});
+const available = <T>(value: T) => ({ state: "available" as const, value });
 
 async function createProject(): Promise<string> {
   const projectPath = await mkdtemp(join(tmpdir(), "visp-run-"));
@@ -96,7 +106,7 @@ async function writeTaskGraph(projectPath: string, options: TaskGraphOptions = {
   );
 }
 
-function integrationContractFixture(contractVersion = "2.0") {
+function integrationContractFixture(contractVersion = "2.0", protocols?: unknown) {
   return {
     success: true,
     contractVersion,
@@ -137,7 +147,8 @@ function integrationContractFixture(contractVersion = "2.0") {
         staleContextBlocks: ["implementation", "checkpoint", "pr"]
       }
     },
-    warnings: []
+    warnings: [],
+    ...(protocols === undefined ? {} : { protocols })
   };
 }
 
@@ -156,6 +167,51 @@ function workflowActionFixture(protocolVersion = "2.0") {
     verdict: "ready",
     findings: [],
     nextCommand: "visp implement"
+  };
+}
+
+function workflowActionV3Fixture() {
+  const draft = {
+    protocolVersion: "3.0" as const,
+    canonicalVersion: "1.0" as const,
+    actionId: `sha256:${"0".repeat(64)}`,
+    phase: "implement" as const,
+    feature: { id: "001", slug: "pipeline" },
+    task: {
+      id: "T001",
+      title: "First task",
+      status: "ready" as const,
+      dependsOn: [],
+      parallelizable: false
+    },
+    taskClass: unavailable(),
+    risk: { level: available("high" as const), factors: unavailable() },
+    assurance: {
+      level: "kit_strict" as const,
+      profile: unavailable(),
+      workflowStrictness: available("strict" as const)
+    },
+    goal: "Implement the first task",
+    baseCommit: unavailable("not_captured"),
+    requiredReads: [],
+    scope: {
+      writablePaths: ["src/feature.ts"],
+      expectedPaths: unavailable(),
+      forbiddenPaths: [],
+      operationLimits: unavailable()
+    },
+    claims: unavailable(),
+    validationOracles: [],
+    validationCommands: ["pnpm typecheck"],
+    requiredEvidence: unavailable(),
+    policy: { status: available("valid" as const), appliedOverrides: available([]) },
+    findings: [],
+    verdict: "ready" as const,
+    nextCommand: 'visp implement --task "T001 exact"'
+  };
+  return {
+    ...draft,
+    actionId: createWorkflowActionV3Id(draft)
   };
 }
 
@@ -255,6 +311,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
   afterEach(() => {
     process.env.PATH = originalPath;
+    process.exitCode = undefined;
     vi.restoreAllMocks();
   });
 
@@ -346,6 +403,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(output).toContain("reason_code: binary_not_found");
     expectNoLocalFallthrough(output);
     expectNoInventedRecovery(output);
+    expect.soft(process.exitCode).toBe(1);
     expect.soft(await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")).toBe(stateBefore);
     expect.soft(await readFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "utf8")).toBe(handoffBefore);
   });
@@ -722,17 +780,17 @@ describe("run command and pipeline-aware next/checkpoint", () => {
   });
 
   it.each([
-    { label: "missing", next: undefined, reasonCode: "strict_next_unavailable" },
-    { label: "malformed", next: { stdout: "not workflow action json" }, reasonCode: "strict_next_unavailable" },
+    { label: "missing", next: undefined, reasonCode: "workflow_action_schema_invalid" },
+    { label: "malformed", next: { stdout: "not workflow action json" }, reasonCode: "workflow_action_schema_invalid" },
     {
       label: "unsupported",
       next: { stdout: workflowActionFixture("3.0") },
-      reasonCode: "unsupported_workflow_action"
+      reasonCode: "workflow_action_protocol_mismatch"
     },
     {
       label: "nonzero ready",
       next: { stdout: workflowActionFixture(), exitCode: 1 },
-      reasonCode: "strict_next_unavailable"
+      reasonCode: "workflow_action_contradiction"
     }
   ])("FAIL_CLOSED: $label strict next action cannot fall through locally", async ({ next, reasonCode }) => {
     const projectPath = await createProject();
@@ -757,6 +815,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     const argv = await readArgvLog(shim.argvLogPath);
     expect.soft(argv).toEqual([
       ["status", "--json"],
+      ["integration", "contract", "--json"],
       ["next", "--format", "json", "--json"]
     ]);
     expect.soft(argv.some((args) => args[0] === "gate")).toBe(false);
@@ -779,7 +838,6 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
     await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
-
     const output = logs.join("\n");
     expect(output).toContain("BEGIN_VISP_AGENT_HANDOFF");
     expect(output).toContain("BEGIN_VISP_TASK_ACTION");
@@ -1137,15 +1195,24 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     await expectNoSession(projectPath);
   });
 
-  it("AC007: strict next renders WorkflowAction 2.0 while genuine no-Kit next stays local", async () => {
+  it("AC002: strict next auto-selects v3 while genuine no-Kit next stays local", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
       kitStatusSpec({
+        integration: {
+          stdout: integrationContractFixture("2.0", {
+            workflowAction: {
+              supported: ["2.0", "3.0"],
+              default: "2.0",
+              schemaHashes: { "2.0": V2_HASH, "3.0": V3_HASH }
+            }
+          })
+        },
         policy: { stdout: policyValidateFixture() },
         ...allowedRunGateSpec(),
-        next: { stdout: workflowActionFixture() }
+        next: { stdout: workflowActionV3Fixture() }
       })
     );
     prependToPath(dirname(shim.binary));
@@ -1153,13 +1220,31 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
     await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
 
+    const stateBeforeNext = await readFile(
+      join(projectPath, ".visp", "hyper", "state.json"),
+      "utf8"
+    );
     logs = [];
     await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
     let output = logs.join("\n");
-    expect(output).toContain("BEGIN_VISP_WORKFLOW_ACTION_V2");
-    expect(output).toContain('"protocolVersion":"2.0"');
-    expect(output).toContain('"assuranceLevel":"kit_strict"');
+    expect(output).toContain("BEGIN_VISP_HYPER_ACTION_V1");
+    expect(output).toContain('"frameVersion":"1.0"');
+    expect(output).toContain('"protocolVersion":"3.0"');
+    expect(output).toContain('"nextCommand":"visp implement --task \\"T001 exact\\""');
+    expect(output).not.toContain('"wire"');
     expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect(
+      await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")
+    ).toBe(stateBeforeNext);
+    expect(process.exitCode).toBeFalsy();
+    expect(await readArgvLog(shim.argvLogPath)).toContainEqual([
+      "next",
+      "--format",
+      "json",
+      "--protocol",
+      "3.0",
+      "--json"
+    ]);
 
     // A separate project with no Kit signals retains explicitly local behavior.
     const localProjectPath = await createProject();
@@ -1174,6 +1259,44 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
     expect(output).toContain("read .visp/hyper/current/agent-instructions.md");
   });
+
+  it.each(["blocked", "inconclusive"] as const)(
+    "AC002: strict next renders a coherent %s action and exits nonzero",
+    async (verdict) => {
+      const projectPath = await createProject();
+      await writeTaskGraph(projectPath);
+      const shim = await createVispShim(
+        kitStatusSpec({
+          integration: {
+            stdout: { ...integrationContractFixture(), activeTask: null }
+          },
+          next: {
+            stdout: {
+              ...workflowActionFixture(),
+              taskId: null,
+              writablePaths: [],
+              verdict,
+              findings: [`Kit action is ${verdict}`],
+              nextCommand: "visp scan"
+            },
+            exitCode: 1
+          }
+        })
+      );
+      prependToPath(dirname(shim.binary));
+
+      logs = [];
+      await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
+
+      const output = logs.join("\n");
+      expect(output).toContain("BEGIN_VISP_HYPER_ACTION_V1");
+      expect(output).toContain(`"verdict":"${verdict}"`);
+      expect(output).toContain('"task":null');
+      expect(output).toContain('"nextCommand":"visp scan"');
+      expectNoLocalFallthrough(output);
+      expect(process.exitCode).toBe(1);
+    }
+  );
 
   it("POLICY_BLOCKED: failing policy validate stops before any handoff or kit artifacts", async () => {
     const projectPath = await createProject();
