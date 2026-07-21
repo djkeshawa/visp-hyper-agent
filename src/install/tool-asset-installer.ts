@@ -62,7 +62,10 @@ const MANIFEST: Record<ToolName, AssetSpec[]> = {
     }
   ],
   generic: [{ templatePath: "visp-hyper-instructions.md", destination: "visp-hyper-instructions.md" }],
-  opencode: [{ templatePath: "visp-hyper-instructions.md", destination: "visp-hyper-instructions.md" }]
+  opencode: [
+    { templatePath: "visp-hyper-instructions.md", destination: "visp-hyper-instructions.md" },
+    { templatePath: "opencode.json", destination: "opencode.json" }
+  ]
 };
 
 /** Model-map token placeholders, keyed by the model-map role they fill. */

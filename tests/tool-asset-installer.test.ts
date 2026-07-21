@@ -72,7 +72,9 @@ describe("non-claude installs (AC001b)", () => {
     const project = await makeProject();
     const report = await installAssets("copilot", project, { templatesDir: REAL_TEMPLATES });
     expect(report.created).toEqual([".github/instructions/visp-hyper.instructions.md"]);
-    expect(await pathExists(join(project, ".github/instructions/visp-hyper.instructions.md"))).toBe(true);
+    const destination = join(project, ".github/instructions/visp-hyper.instructions.md");
+    expect(await pathExists(destination)).toBe(true);
+    expect(await readFile(destination, "utf8")).toMatch(/^---\napplyTo: "\*\*"\n---\n/u);
   });
 
   it("writes generic destination", async () => {
@@ -87,8 +89,11 @@ describe("non-claude installs (AC001b)", () => {
   it("writes opencode destination", async () => {
     const project = await makeProject();
     const report = await installAssets("opencode", project, { templatesDir: REAL_TEMPLATES });
-    expect(report.created).toEqual(["visp-hyper-instructions.md"]);
+    expect(report.created).toEqual(["visp-hyper-instructions.md", "opencode.json"]);
     expect(await pathExists(join(project, "visp-hyper-instructions.md"))).toBe(true);
+    expect(JSON.parse(await readFile(join(project, "opencode.json"), "utf8"))).toMatchObject({
+      instructions: ["visp-hyper-instructions.md"]
+    });
   });
 });
 
@@ -146,6 +151,22 @@ describe("installed workflow authority wording", () => {
 
     const remember = await readFile(join(project, ".claude/commands/hyper-remember.md"), "utf8");
     expect(remember).toContain(remembrance);
+  });
+
+  it("forwards Claude slash-command arguments and flags unchanged", async () => {
+    const project = await makeProject();
+    await installAssets("claude-code", project, { templatesDir: REAL_TEMPLATES });
+
+    const checkpoint = await readFile(
+      join(project, ".claude/commands/hyper-checkpoint.md"),
+      "utf8"
+    );
+    const remember = await readFile(join(project, ".claude/commands/hyper-remember.md"), "utf8");
+
+    expect(checkpoint).toContain("visp-hyper checkpoint $ARGUMENTS");
+    expect(checkpoint).not.toContain("checkpoint --task $ARGUMENTS");
+    expect(remember).toContain("visp-hyper remember $ARGUMENTS");
+    expect(remember).not.toContain('remember --summary "$ARGUMENTS"');
   });
 });
 

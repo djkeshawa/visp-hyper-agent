@@ -2,10 +2,11 @@
 description: Persist learnings from the active visp-hyper session.
 ---
 
-Run the following via Bash to persist what was learned this session:
+Run the following via Bash to persist what was learned this session. Pass
+`--summary "<summary>"` and any telemetry or learning flags through unchanged:
 
 ```
-visp-hyper remember --summary "$ARGUMENTS"
+visp-hyper remember $ARGUMENTS
 ```
 
 Capture the durable decisions, gotchas, and follow-ups — not a play-by-play.

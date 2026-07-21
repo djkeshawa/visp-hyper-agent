@@ -1,8 +1,9 @@
 import { statSync } from "node:fs";
-import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, lstat, mkdir, realpath, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
+import { execFileResolved } from "../../core/executable-resolver.js";
 import { readTextIfExists } from "../../core/fs-utils.js";
 import { resolveProjectPath } from "./shared.js";
 
@@ -52,14 +53,20 @@ function gitSubcommand(): Command {
     .description("Install a pre-commit hook that runs `visp-hyper guard --staged`.")
     .action(async function (this: Command) {
       const projectPath = resolveProjectPath(this);
-
-      if (!(await isDir(join(projectPath, ".git")))) {
-        console.error("error: not a git repository (run inside a project with .git).");
+      let resolvedHook: ResolvedGitHook;
+      try {
+        resolvedHook = await resolveGitHook(projectPath);
+      } catch (error) {
+        if (error instanceof UnsafeHookPathError) {
+          console.error(`error: ${error.message}`);
+        } else {
+          console.error("error: not a git repository (run inside a project with .git).");
+        }
         process.exitCode = 1;
         return;
       }
 
-      const hookPath = join(projectPath, ".git", "hooks", "pre-commit");
+      const hookPath = resolvedHook.absolutePath;
       const existing = await readTextIfExists(hookPath);
 
       if (existing !== undefined && !existing.includes(GIT_HOOK_MARKER)) {
@@ -70,13 +77,131 @@ function gitSubcommand(): Command {
       }
 
       const updating = existing !== undefined;
-      await mkdir(dirname(hookPath), { recursive: true });
+      await mkdir(resolvedHook.hooksDirectory, { recursive: true });
       await writeFile(hookPath, gitHookContent(), "utf8");
       await chmod(hookPath, 0o755);
       console.log(
-        `hooks git: ${updating ? "updated" : "installed"} .git/hooks/pre-commit`
+        `hooks git: ${updating ? "updated" : "installed"} ${resolvedHook.displayPath}`
       );
     });
+}
+
+type ResolvedGitHook = {
+  absolutePath: string;
+  hooksDirectory: string;
+  displayPath: string;
+};
+
+class UnsafeHookPathError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsafeHookPathError";
+  }
+}
+
+async function resolveGitHook(projectPath: string): Promise<ResolvedGitHook> {
+  const inside = await execFileResolved("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd: projectPath
+  });
+  if (inside.stdout.trim() !== "true") {
+    throw new Error("not a Git worktree");
+  }
+
+  const [hookResult, commonDirResult] = await Promise.all([
+    execFileResolved(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit"],
+      { cwd: projectPath }
+    ),
+    execFileResolved("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      cwd: projectPath
+    })
+  ]);
+
+  const hookPath = parseAbsoluteGitPath(hookResult.stdout, "hook");
+  const commonDir = parseAbsoluteGitPath(commonDirResult.stdout, "common directory");
+  const [projectRoot, gitCommonRoot, canonicalHook] = await Promise.all([
+    realpath(resolve(projectPath)),
+    realpath(commonDir),
+    canonicalWritePath(hookPath)
+  ]);
+
+  if (!isContained(projectRoot, canonicalHook) && !isContained(gitCommonRoot, canonicalHook)) {
+    throw new UnsafeHookPathError(
+      `refusing Git hook path outside the project and repository metadata: ${hookPath}`
+    );
+  }
+
+  return {
+    absolutePath: canonicalHook,
+    hooksDirectory: dirname(canonicalHook),
+    displayPath: displayHookPath(projectPath, hookPath)
+  };
+}
+
+function parseAbsoluteGitPath(output: string, label: string): string {
+  const value = output.replace(/\r?\n$/u, "");
+  if (!value || /[\0\r\n]/u.test(value) || !isAbsolute(value)) {
+    throw new UnsafeHookPathError(`Git returned an invalid ${label} path`);
+  }
+  return resolve(value);
+}
+
+async function canonicalWritePath(candidate: string): Promise<string> {
+  const missingSegments: string[] = [];
+  let cursor = candidate;
+
+  while (true) {
+    try {
+      await lstat(cursor);
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) {
+        throw error;
+      }
+      const parent = dirname(cursor);
+      if (parent === cursor) {
+        throw new UnsafeHookPathError("Git hook path has no accessible parent");
+      }
+      missingSegments.unshift(basename(cursor));
+      cursor = parent;
+      continue;
+    }
+
+    let canonicalParent: string;
+    try {
+      canonicalParent = await realpath(cursor);
+    } catch {
+      throw new UnsafeHookPathError("Git hook path contains an unreadable or dangling symlink");
+    }
+    const canonicalInfo = await stat(canonicalParent);
+    if (missingSegments.length > 0 && !canonicalInfo.isDirectory()) {
+      throw new UnsafeHookPathError("Git hook path has a non-directory parent");
+    }
+    if (missingSegments.length === 0 && !canonicalInfo.isFile()) {
+      throw new UnsafeHookPathError("Git hook path is not a regular file");
+    }
+    return join(canonicalParent, ...missingSegments);
+  }
+}
+
+function displayHookPath(projectPath: string, hookPath: string): string {
+  const projectRoot = resolve(projectPath);
+  if (isContained(projectRoot, hookPath)) {
+    return relative(projectRoot, hookPath).replaceAll("\\", "/");
+  }
+  return hookPath;
+}
+
+function isContained(rootPath: string, candidatePath: string): boolean {
+  const relation = relative(rootPath, candidatePath);
+  return (
+    relation === "" ||
+    (!relation.startsWith(`..${sep}`) && relation !== ".." && !isAbsolute(relation))
+  );
+}
+
+function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
 function ciSubcommand(): Command {
@@ -153,14 +278,6 @@ function distIndexPath(): string {
   throw new Error(
     `Could not locate dist/index.js starting from ${start}. Run \`pnpm build\` first.`
   );
-}
-
-async function isDir(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 function existsSyncFile(path: string): boolean {

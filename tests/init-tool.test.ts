@@ -29,6 +29,17 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+function initializedKitStatus(projectPath: string): Record<string, unknown> {
+  return {
+    success: true,
+    targetPath: projectPath,
+    initialized: true,
+    activeFeature: { id: "001", slug: "pipeline" },
+    activeTask: { id: "T001", title: "First task", status: "ready" },
+    featureState: "ready"
+  };
+}
+
 describe("init --tool asset installation and hook wiring", () => {
   let logs: string[];
 
@@ -90,6 +101,10 @@ describe("init --tool asset installation and hook wiring", () => {
     await runCli(["node", "visp-hyper", "--project", codexProject, "init", "--tool", "codex"]);
     expect(await fileExists(join(codexProject, "AGENTS.visp-hyper.md"))).toBe(true);
     expect(await fileExists(join(codexProject, ".agents", "skills", "visp-hyper", "SKILL.md"))).toBe(true);
+    expect(
+      JSON.parse(await readFile(join(codexProject, ".visp", "hyper", "config.json"), "utf8"))
+        .defaultTool
+    ).toBe("codex");
 
     logs = [];
     const copilotProject = await createProject();
@@ -97,6 +112,10 @@ describe("init --tool asset installation and hook wiring", () => {
     expect(
       await fileExists(join(copilotProject, ".github", "instructions", "visp-hyper.instructions.md"))
     ).toBe(true);
+    expect(
+      JSON.parse(await readFile(join(copilotProject, ".visp", "hyper", "config.json"), "utf8"))
+        .defaultTool
+    ).toBe("copilot");
 
     logs = [];
     const plainProject = await createProject();
@@ -108,14 +127,12 @@ describe("init --tool asset installation and hook wiring", () => {
   });
 
   it("AC006: prints hook hint when kit is present; installs hook with --with-hooks; silent without kit", async () => {
-    const initializedSpec = {
-      status: { stdout: { success: true, initialized: true } }
-    };
-
     // Kit present, no --with-hooks → hint only.
     const hintProject = await createProject();
     await writeKitArtifacts(hintProject);
-    const hintShim = await createVispShim(initializedSpec);
+    const hintShim = await createVispShim({
+      status: { stdout: initializedKitStatus(hintProject) }
+    });
     prependToPath(dirname(hintShim.binary));
     await runCli(["node", "visp-hyper", "--project", hintProject, "init", "--tool", "claude-code"]);
     expect(logs.join("\n")).toContain("visp hooks claude");
@@ -126,7 +143,7 @@ describe("init --tool asset installation and hook wiring", () => {
     const installProject = await createProject();
     await writeKitArtifacts(installProject);
     const installShim = await createVispShim({
-      ...initializedSpec,
+      status: { stdout: initializedKitStatus(installProject) },
       hooks: { stdout: { success: true } }
     });
     prependToPath(dirname(installShim.binary));
@@ -153,15 +170,11 @@ describe("init --tool asset installation and hook wiring", () => {
   });
 
   it("AC006: warns (does not install or throw) when --with-hooks hook output is unparseable", async () => {
-    const initializedSpec = {
-      status: { stdout: { success: true, initialized: true } }
-    };
-
     const garbageProject = await createProject();
     await writeKitArtifacts(garbageProject);
     // `hooks` emits a STRING → non-JSON → hooksClaude() parses to null → warn branch.
     const garbageShim = await createVispShim({
-      ...initializedSpec,
+      status: { stdout: initializedKitStatus(garbageProject) },
       hooks: { stdout: "<<garbage>>" }
     });
     prependToPath(dirname(garbageShim.binary));
@@ -185,15 +198,11 @@ describe("init --tool asset installation and hook wiring", () => {
   });
 
   it("AC006: warns when --with-hooks hook output reports success:false", async () => {
-    const initializedSpec = {
-      status: { stdout: { success: true, initialized: true } }
-    };
-
     const failProject = await createProject();
     await writeKitArtifacts(failProject);
     // `hooks` returns valid JSON with success:false → hooksClaude() returns {success:false} → warn branch.
     const failShim = await createVispShim({
-      ...initializedSpec,
+      status: { stdout: initializedKitStatus(failProject) },
       hooks: { stdout: { success: false } }
     });
     prependToPath(dirname(failShim.binary));

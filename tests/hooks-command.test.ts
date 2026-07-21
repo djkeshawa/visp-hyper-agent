@@ -146,6 +146,59 @@ describe("hooks git", () => {
     expect(errors.join("\n")).toContain("error: not a git repository (run inside a project with .git).");
     expect(process.exitCode).toBe(1);
   });
+
+  it("AC008: honors a safe project-local core.hooksPath", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-hooks-configured-"));
+    await gitInit(projectPath);
+    await execFileAsync("git", ["config", "core.hooksPath", ".githooks"], {
+      cwd: projectPath
+    });
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "hooks", "git"]);
+
+    const hookPath = join(projectPath, ".githooks", "pre-commit");
+    expect(await readFile(hookPath, "utf8")).toContain("# visp-hyper-guard hook");
+    expect(logs.join("\n")).toContain("hooks git: installed .githooks/pre-commit");
+  });
+
+  it("AC008: refuses a configured hook path outside the project and Git metadata", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-hooks-external-"));
+    const externalHooks = await mkdtemp(join(tmpdir(), "visp-external-hooks-"));
+    await gitInit(projectPath);
+    await execFileAsync("git", ["config", "core.hooksPath", externalHooks], {
+      cwd: projectPath
+    });
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "hooks", "git"]);
+
+    expect(await fileExists(join(externalHooks, "pre-commit"))).toBe(false);
+    expect(errors.join("\n")).toContain("refusing Git hook path outside the project");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("AC008: installs through Git's shared hook path from a linked worktree", async () => {
+    const mainProject = await mkdtemp(join(tmpdir(), "visp-hooks-main-"));
+    await gitInit(mainProject);
+    await writeFile(join(mainProject, "README.md"), "# Worktree fixture\n", "utf8");
+    await execFileAsync("git", ["add", "README.md"], { cwd: mainProject });
+    expect((await commit(mainProject, "initial commit")).code).toBe(0);
+
+    const worktreeParent = await mkdtemp(join(tmpdir(), "visp-hooks-linked-parent-"));
+    const worktreePath = join(worktreeParent, "linked");
+    await execFileAsync("git", ["worktree", "add", "-b", "linked", worktreePath], {
+      cwd: mainProject
+    });
+
+    await runCli(["node", "visp-hyper", "--project", worktreePath, "hooks", "git"]);
+
+    const { stdout } = await execFileAsync(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit"],
+      { cwd: worktreePath }
+    );
+    expect(await readFile(stdout.trim(), "utf8")).toContain("# visp-hyper-guard hook");
+    expect(process.exitCode).toBeUndefined();
+  });
 });
 
 describe("hooks ci", () => {

@@ -58,6 +58,7 @@ export function initCommand(): Command {
       }
 
       const report = await installAssets(tool, projectPath, { force: options.forceAssets });
+      await persistDefaultTool(projectPath, tool);
       printReport(tool, report);
 
       if (tool !== "claude-code") {
@@ -102,6 +103,12 @@ async function applyMemoryConfig(projectPath: string, options: InitOptions): Pro
 
   const repoId = config.memoryRepoId ? config.memoryRepoId : `derived (${repoIdForProject(projectPath)})`;
   console.log(`memory: mode=${config.memoryMode} endpoint=${config.memoryEndpoint} repo_id=${repoId}`);
+}
+
+async function persistDefaultTool(projectPath: string, tool: ToolName): Promise<void> {
+  const config = await readConfig(projectPath);
+  config.defaultTool = tool;
+  await writeText(vispPath(projectPath, "hyper", "config.json"), `${JSON.stringify(config, null, 2)}\n`);
 }
 
 function normalizeRepoId(value: string): string {
@@ -152,4 +159,3 @@ async function wireHooks(projectPath: string, withHooks: boolean): Promise<void>
     console.log("warning: visp hooks claude failed; run it manually.");
   }
 }
-

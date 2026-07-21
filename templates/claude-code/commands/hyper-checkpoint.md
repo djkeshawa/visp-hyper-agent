@@ -2,11 +2,11 @@
 description: Collect local checkpoint evidence for the active visp-hyper task.
 ---
 
-Run the following via Bash (pass a task id in $ARGUMENTS, or run it bare to
-checkpoint the active task):
+Run the following via Bash (pass `--task <id>` and any other checkpoint flags in
+$ARGUMENTS, or run it bare to checkpoint the active task):
 
 ```
-visp-hyper checkpoint --task $ARGUMENTS
+visp-hyper checkpoint $ARGUMENTS
 ```
 
 Report the verify/review outcome as local evidence.

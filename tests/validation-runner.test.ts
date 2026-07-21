@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -107,14 +107,52 @@ describe("ProjectValidationRunner", () => {
 
     it("AC002c: failing command returns the process exit code", async () => {
       const runner = new ProjectValidationRunner({
-        kitCommands: ["node -e process.exit(3)"]
+        kitCommands: ['node -e "process.exit(3)"']
       });
       const dir = await mkdtemp(join(tmpdir(), "visp-val-run-"));
 
-      const results = await runner.run(dir, ["node -e process.exit(3)"]);
+      const results = await runner.run(dir, ['node -e "process.exit(3)"']);
 
       expect(results).toHaveLength(1);
       expect(results[0]!.exitCode).toBe(3);
+    });
+
+    it("AC008: preserves quoted arguments without passing quote characters to the process", async () => {
+      const command = 'node -e "process.stdout.write(process.argv[1])" "hello world"';
+      const runner = new ProjectValidationRunner({ kitCommands: [command] });
+      const dir = await mkdtemp(join(tmpdir(), "visp-val-run-"));
+
+      const results = await runner.run(dir, [command]);
+
+      expect(results).toEqual([{ command, exitCode: 0, output: "hello world" }]);
+    });
+
+    it("preserves literal quotes and statement separators inside a no-space argument", async () => {
+      const command =
+        "node -e require('node:fs').writeFileSync('generated.txt','first');require('node:fs').appendFileSync('generated.txt','second')";
+      const runner = new ProjectValidationRunner({ kitCommands: [command] });
+      const dir = await mkdtemp(join(tmpdir(), "visp-val-run-"));
+
+      const results = await runner.run(dir, [command]);
+
+      expect(results[0]!.exitCode).toBe(0);
+      expect(await readFile(join(dir, "generated.txt"), "utf8")).toBe("firstsecond");
+    });
+
+    it.each([
+      "node --version; node --version",
+      "node --version && node --version",
+      "node --version | node --version",
+      "node --version > version.txt",
+      'node -e "$(echo unsafe)"'
+    ])("AC008: rejects shell syntax without executing it: %s", async (command) => {
+      const runner = new ProjectValidationRunner({ kitCommands: [command] });
+      const dir = await mkdtemp(join(tmpdir(), "visp-val-run-"));
+
+      const results = await runner.run(dir, [command]);
+
+      expect(results[0]!.exitCode).toBe(-1);
+      expect(results[0]!.output).toMatch(/unsafe validation command/u);
     });
 
     it("AC002d: a command whose binary cannot be spawned records exitCode null + spawnError", async () => {
