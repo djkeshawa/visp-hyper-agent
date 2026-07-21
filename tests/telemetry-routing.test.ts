@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,7 +14,11 @@ import {
   computeSuggestedTier,
   escalate
 } from "../src/routing/routing-engine.js";
-import type { RoutingState } from "../src/routing/routing-state.js";
+import {
+  readRoutingState,
+  recordRoutingDecision,
+  type RoutingState
+} from "../src/routing/routing-state.js";
 import {
   authoritativeContextPackFixture,
   authoritativeTaskGraphFixture,
@@ -29,13 +34,14 @@ const execFileAsync = promisify(execFile);
 const originalPath = process.env.PATH;
 
 const FEATURE_DIR = "001-pipeline";
+const FEATURE_FILE_CONTENT = "export const value = 1;\n";
 
 async function createProject(): Promise<string> {
   const projectPath = await mkdtemp(join(tmpdir(), "visp-telemetry-"));
   await mkdir(join(projectPath, "src"), { recursive: true });
   await writeFile(join(projectPath, "README.md"), "# Demo\n", "utf8");
   await writeFile(join(projectPath, "package.json"), "{\"name\":\"demo\"}\n", "utf8");
-  await writeFile(join(projectPath, "src", "feature.ts"), "export const value = 1;\n", "utf8");
+  await writeFile(join(projectPath, "src", "feature.ts"), FEATURE_FILE_CONTENT, "utf8");
   await execFileAsync("git", ["init"], { cwd: projectPath });
   await execFileAsync("git", ["add", "."], { cwd: projectPath });
   await execFileAsync(
@@ -51,14 +57,60 @@ async function writeTaskGraph(projectPath: string): Promise<void> {
   await mkdir(join(featureDir, "context"), { recursive: true });
   await mkdir(join(projectPath, ".visp"), { recursive: true });
   await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+  const taskGraph = JSON.stringify(authoritativeTaskGraphFixture());
+  await writeFile(join(featureDir, "task-graph.json"), taskGraph, "utf8");
   await writeFile(
-    join(featureDir, "task-graph.json"),
-    JSON.stringify(authoritativeTaskGraphFixture()),
+    join(featureDir, "context", "T001.context.json"),
+    JSON.stringify(
+      authoritativeContextPackFixture({
+        includedFiles: [
+          {
+            path: "src/feature.ts",
+            reason: "Authoritative task target.",
+            includeMode: "full",
+            hash: sha256(FEATURE_FILE_CONTENT),
+            language: "TypeScript",
+            sizeBytes: FEATURE_FILE_CONTENT.length,
+            tokenEstimate: 8,
+            summaryAvailable: true,
+            snippetIncluded: false,
+            summary: "Exports the feature fixture value."
+          }
+        ],
+        artifactProvenance: [
+          {
+            label: "task graph",
+            path: `.visp/features/${FEATURE_DIR}/task-graph.json`,
+            hash: sha256(taskGraph),
+            hashAlgorithm: "sha256"
+          }
+        ]
+      })
+    ),
+    "utf8"
+  );
+  await writeTaskPrompts(projectPath);
+}
+
+async function writeTaskPrompts(projectPath: string): Promise<void> {
+  const featurePrompt = `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`;
+  await mkdir(join(projectPath, ".visp", "prompts"), { recursive: true });
+  await writeFile(
+    join(projectPath, featurePrompt),
+    "# Strict Visp Task Prompt\n\n- Selected task ID: T001\n",
     "utf8"
   );
   await writeFile(
-    join(featureDir, "context", "T001.context.json"),
-    JSON.stringify(authoritativeContextPackFixture()),
+    join(projectPath, ".visp", "prompts", "current-task.prompt.md"),
+    [
+      "# Visp Task Implementation Prompt",
+      "",
+      "- Selected task ID: T001",
+      "",
+      "Feature-specific prompt:",
+      featurePrompt,
+      ""
+    ].join("\n"),
     "utf8"
   );
 }
@@ -78,6 +130,25 @@ function kit20IntegrationContract(projectPath: string): Record<string, unknown> 
     },
     activeTask: { id: "T001", title: "First task", status: "ready" },
     commands: {},
+    capabilities: {
+      governance: { failClosedGates: true, sourceEditsRequireImplementGate: true },
+      contextGrounding: {
+        taskScopedContextPacks: true,
+        artifactProvenance: true,
+        currentTaskPrompt: true,
+        orchestratorReadContract: true
+      },
+      evidence: { verification: true, review: true, reconciliation: true }
+    },
+    workflow: {
+      failClosedOn: ["policyValidate", "gateNext", "gateImplement"],
+      freshnessChecks: ["contextPack.artifactProvenance[]"],
+      implementationReadSet: [
+        ".visp/features/<feature>/context/<task-id>.context.json",
+        ".visp/prompts/current-task.prompt.md",
+        ".visp/policy.json"
+      ]
+    },
     artifacts: {
       kitSignals: [".visp/policy.json", ".visp/project.json"],
       projectStatus: ".visp/status.json",
@@ -88,8 +159,46 @@ function kit20IntegrationContract(projectPath: string): Record<string, unknown> 
       contextPack: ".visp/features/001-pipeline/context/T001.context.json",
       contextPrompt: ".visp/features/001-pipeline/context/T001.prompt.md"
     },
+    orchestrator: {
+      readContractVersion: "0.1",
+      requiredArtifacts: [
+        {
+          id: "context-pack",
+          path: `.visp/features/${FEATURE_DIR}/context/T001.context.json`,
+          role: "task context",
+          mimeType: "application/json",
+          requiredFor: ["implementation"],
+          freshness: "hash-pinned"
+        },
+        {
+          id: "context-prompt",
+          path: `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`,
+          role: "feature task prompt",
+          mimeType: "text/markdown",
+          requiredFor: ["implementation"],
+          freshness: "read-latest"
+        },
+        {
+          id: "current-task-prompt",
+          path: ".visp/prompts/current-task.prompt.md",
+          role: "current task prompt",
+          mimeType: "text/markdown",
+          requiredFor: ["implementation"],
+          freshness: "read-latest"
+        }
+      ],
+      freshnessPolicy: {
+        contextPackHashPinned: true,
+        provenanceArtifactsHashPinned: true,
+        staleContextBlocks: ["implementation", "checkpoint", "pr"]
+      }
+    },
     warnings: []
   };
+}
+
+function sha256(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 function kitStatusSpec(projectPath: string, extra: ShimSpec = {}): ShimSpec {
@@ -97,6 +206,7 @@ function kitStatusSpec(projectPath: string, extra: ShimSpec = {}): ShimSpec {
     status: {
       stdout: {
         success: true,
+        targetPath: projectPath,
         initialized: true,
         activeFeature: { id: "001", slug: "pipeline" },
         activeTask: { id: "T001", title: "First task", status: "ready" }
@@ -198,6 +308,43 @@ describe("telemetry store and budget round-trip", () => {
     expect(data.attempts[0]?.attempt).toBe(1);
     expect(data.attempts[1]?.attempt).toBe(2);
     expect(data.attempts[1]?.verifyPassed).toBe(false);
+  });
+
+  it("serializes concurrent telemetry and routing updates without losing records", async () => {
+    const projectPath = await createProject();
+    const count = 12;
+
+    const attempts = await Promise.all(
+      Array.from({ length: count }, (_, index) =>
+        appendAttempt(projectPath, {
+          taskId: "T001",
+          taskClass: "high",
+          tier: "implementer",
+          verifyPassed: index % 2 === 0,
+          reviewPassed: true,
+          sessionId: `vh_concurrent_${index}`
+        })
+      )
+    );
+    await Promise.all(
+      Array.from({ length: count }, (_, index) =>
+        recordRoutingDecision(projectPath, {
+          taskId: `T${String(index).padStart(3, "0")}`,
+          taskClass: "high",
+          tier: "implementer",
+          reason: "concurrent transaction test",
+          at: new Date(index).toISOString()
+        })
+      )
+    );
+
+    expect(attempts.map((attempt) => attempt.attempt).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: count }, (_, index) => index + 1)
+    );
+    expect((await readTelemetry(projectPath)).data.attempts).toHaveLength(count);
+    const { state: routing } = await readRoutingState(projectPath);
+    expect(routing.decisions).toHaveLength(count);
+    expect(new Set(routing.decisions.map((decision) => decision.taskId)).size).toBe(count);
   });
 
   it("AC001b: corrupt telemetry.json yields empty + warning and append still works", async () => {

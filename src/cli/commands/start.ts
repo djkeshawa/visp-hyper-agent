@@ -7,6 +7,7 @@ import { scanRelevantFiles } from "../../context/relevance-scanner.js";
 import { defaultConfig } from "../../core/defaults.js";
 import { vispPath, writeText } from "../../core/fs-utils.js";
 import { ProjectPathError, resolveProjectFile } from "../../core/project-path.js";
+import { withProjectLock } from "../../core/project-lock.js";
 import { createSession, initializeProject, readConfig } from "../../core/session-manager.js";
 import type { ContextFile, ContextManifest, ContextPackOptions, HyperConfig, SessionRecord, ToolProfile } from "../../core/types.js";
 import { buildHandoffProtocol, renderHandoff } from "../../handoff/handoff-protocol.js";
@@ -128,58 +129,67 @@ export async function executeStart(
     taskId: adoption?.taskId,
     files: contextFiles.map((file) => file.path)
   });
-  const session = await createSession({
-    projectPath,
-    goal,
-    tool,
-    relevantFiles: contextFiles.map((file) => file.path)
-  });
   const { registry } = await readSkillRegistry(projectPath, { blockedPaths: config.blockedPaths });
-  const handoff = renderHandoff(session, {
-    skills: registry.skills.map((skill) => ({ name: skill.name, whenToUse: skill.whenToUse }))
-  });
-  const protocol = buildHandoffProtocol(session);
-  const contextManifest = buildContextManifest({
-    session,
-    contextSource,
-    taskId: adoption?.taskId,
-    contextArtifact: adoption?.contextArtifact,
-    artifactProvenance: adoption?.artifactProvenance,
-    freshnessWarnings: adoption?.freshnessWarnings,
-    kitReadContract: adoption?.kitReadContract,
-    contextFiles,
-    validationCommands,
-    blockedPaths: config.blockedPaths,
-    failurePatterns,
-    nextCommand: adoption?.taskId ? `visp-hyper checkpoint --task ${adoption.taskId}` : "visp-hyper next"
-  });
 
-  await writeText(vispPath(projectPath, "hyper", "current", "session.md"), renderSession(session));
-  await writeText(
-    vispPath(projectPath, "hyper", "current", "context-pack.md"),
-    renderContextPack(contextFiles, contextKit, contextOptions)
-  );
-  await writeText(
-    vispPath(projectPath, "hyper", "current", "context-manifest.json"),
-    renderContextManifest(contextManifest)
-  );
-  await writeText(
-    vispPath(projectPath, "hyper", "current", "memory-pack.md"),
-    renderMemoryPack(memory, {
-      recalled: memoryFusion.recalled,
-      recalledWarnings: memoryFusion.warnings,
-      failurePatterns
-    })
-  );
-  await writeText(vispPath(projectPath, "hyper", "current", "quality-gates.md"), renderQualityGates(config.blockedPaths));
-  await writeText(vispPath(projectPath, "hyper", "current", "agent-instructions.md"), renderAgentInstructions(session));
-  await writeText(
-    vispPath(projectPath, "hyper", "current", "handoff.json"),
-    `${JSON.stringify({ ...protocol, session }, null, 2)}\n`
-  );
-  await writeText(join(projectPath, ".visp", "prompts", "visp-hyper-handoff.prompt.md"), `${handoff}\n`);
+  return withProjectLock(projectPath, async () => {
+    const session = await createSession({
+      projectPath,
+      goal,
+      tool,
+      relevantFiles: contextFiles.map((file) => file.path)
+    });
+    const handoff = renderHandoff(session, {
+      skills: registry.skills.map((skill) => ({ name: skill.name, whenToUse: skill.whenToUse }))
+    });
+    const protocol = buildHandoffProtocol(session);
+    const contextManifest = buildContextManifest({
+      session,
+      contextSource,
+      taskId: adoption?.taskId,
+      contextArtifact: adoption?.contextArtifact,
+      artifactProvenance: adoption?.artifactProvenance,
+      freshnessWarnings: adoption?.freshnessWarnings,
+      kitReadContract: adoption?.kitReadContract,
+      contextFiles,
+      validationCommands,
+      blockedPaths: config.blockedPaths,
+      failurePatterns,
+      nextCommand: adoption?.taskId ? `visp-hyper checkpoint --task ${adoption.taskId}` : "visp-hyper next"
+    });
 
-  return { session, handoff };
+    await writeText(vispPath(projectPath, "hyper", "current", "session.md"), renderSession(session));
+    await writeText(
+      vispPath(projectPath, "hyper", "current", "context-pack.md"),
+      renderContextPack(contextFiles, contextKit, contextOptions)
+    );
+    await writeText(
+      vispPath(projectPath, "hyper", "current", "context-manifest.json"),
+      renderContextManifest(contextManifest)
+    );
+    await writeText(
+      vispPath(projectPath, "hyper", "current", "memory-pack.md"),
+      renderMemoryPack(memory, {
+        recalled: memoryFusion.recalled,
+        recalledWarnings: memoryFusion.warnings,
+        failurePatterns
+      })
+    );
+    await writeText(
+      vispPath(projectPath, "hyper", "current", "quality-gates.md"),
+      renderQualityGates(config.blockedPaths)
+    );
+    await writeText(
+      vispPath(projectPath, "hyper", "current", "agent-instructions.md"),
+      renderAgentInstructions(session)
+    );
+    await writeText(
+      vispPath(projectPath, "hyper", "current", "handoff.json"),
+      `${JSON.stringify({ ...protocol, session }, null, 2)}\n`
+    );
+    await writeText(join(projectPath, ".visp", "prompts", "visp-hyper-handoff.prompt.md"), `${handoff}\n`);
+
+    return { session, handoff };
+  });
 }
 
 const maxContentLength = 12_000;

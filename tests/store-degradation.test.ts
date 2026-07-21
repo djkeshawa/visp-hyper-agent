@@ -1,10 +1,19 @@
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readConfig, readState } from "../src/core/session-manager.js";
 import { writeText } from "../src/core/fs-utils.js";
 import { defaultConfig } from "../src/core/defaults.js";
+import {
+  ProjectLockOwnershipError,
+  ProjectLockTimeoutError,
+  withProjectLock
+} from "../src/core/project-lock.js";
+
+const execFileAsync = promisify(execFile);
 
 async function hyperDir(projectPath: string): Promise<string> {
   const dir = join(projectPath, ".visp", "hyper");
@@ -110,3 +119,144 @@ describe("writeText is atomic", () => {
     expect(entries.filter((name) => name.includes(".tmp"))).toEqual([]);
   });
 });
+
+describe("project transactions", () => {
+  it("serializes concurrent work while allowing nested transactions", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-project-lock-"));
+    const events: string[] = [];
+    let releaseFirst = () => {};
+    let firstEntered = () => {};
+    const holdFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      firstEntered = resolve;
+    });
+
+    const first = withProjectLock(projectPath, async () => {
+      events.push("first:start");
+      await withProjectLock(projectPath, async () => {
+        events.push("first:nested");
+      });
+      firstEntered();
+      await holdFirst;
+      events.push("first:end");
+    });
+    await entered;
+
+    const second = withProjectLock(projectPath, async () => {
+      events.push("second");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(events).toEqual(["first:start", "first:nested"]);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(events).toEqual(["first:start", "first:nested", "first:end", "second"]);
+  });
+
+  it("releases its owner token when a transaction throws", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-project-lock-"));
+
+    await expect(
+      withProjectLock(projectPath, async () => {
+        throw new Error("transaction failed");
+      })
+    ).rejects.toThrow("transaction failed");
+
+    await expect(withProjectLock(projectPath, async () => "reacquired")).resolves.toBe("reacquired");
+  });
+
+  it("times out instead of deleting a live stale owner or running unlocked", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-project-lock-"));
+    const lockPath = await seedProjectLock(projectPath, "live-owner", process.pid);
+    let ran = false;
+
+    await expect(
+      withProjectLock(
+        projectPath,
+        async () => {
+          ran = true;
+        },
+        { acquireTimeoutMs: 40, retryDelayMs: 5, staleAfterMs: 1 }
+      )
+    ).rejects.toBeInstanceOf(ProjectLockTimeoutError);
+
+    expect(ran).toBe(false);
+    expect(JSON.parse(await readFile(join(lockPath, "owner.json"), "utf8")).token).toBe("live-owner");
+  });
+
+  it("recovers a stale lock only after its owner process has exited", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-project-lock-"));
+    const { stdout } = await execFileAsync(process.execPath, [
+      "-e",
+      "process.stdout.write(String(process.pid))"
+    ]);
+    await seedProjectLock(projectPath, "dead-owner", Number(stdout));
+
+    let ran = false;
+    await withProjectLock(
+      projectPath,
+      async () => {
+        ran = true;
+      },
+      { acquireTimeoutMs: 200, retryDelayMs: 5, staleAfterMs: 1 }
+    );
+
+    expect(ran).toBe(true);
+    await expect(readFile(join(projectPath, ".visp", "hyper", ".project-lock", "owner.json"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("recovers an old ownerless directory left during lock publication", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-project-lock-"));
+    const lockPath = join(await hyperDir(projectPath), ".project-lock");
+    await mkdir(lockPath);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockPath, old, old);
+
+    await expect(
+      withProjectLock(projectPath, async () => "recovered", {
+        acquireTimeoutMs: 200,
+        retryDelayMs: 5,
+        staleAfterMs: 1
+      })
+    ).resolves.toBe("recovered");
+  });
+
+  it("does not release a lock after its owner token changes", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-project-lock-"));
+    const ownerPath = join(projectPath, ".visp", "hyper", ".project-lock", "owner.json");
+
+    await expect(
+      withProjectLock(projectPath, async () => {
+        const replacement = ownerRecord("replacement-owner", process.pid, Date.now());
+        await writeFile(ownerPath, `${JSON.stringify(replacement)}\n`, "utf8");
+      })
+    ).rejects.toBeInstanceOf(ProjectLockOwnershipError);
+
+    expect(JSON.parse(await readFile(ownerPath, "utf8")).token).toBe("replacement-owner");
+  });
+});
+
+async function seedProjectLock(projectPath: string, token: string, pid: number): Promise<string> {
+  const lockPath = join(await hyperDir(projectPath), ".project-lock");
+  await mkdir(lockPath);
+  const acquiredAtMs = Date.now() - 60_000;
+  await writeFile(
+    join(lockPath, "owner.json"),
+    `${JSON.stringify(ownerRecord(token, pid, acquiredAtMs))}\n`,
+    "utf8"
+  );
+  return lockPath;
+}
+
+function ownerRecord(token: string, pid: number, acquiredAtMs: number) {
+  return {
+    version: 1,
+    token,
+    pid,
+    acquiredAt: new Date(acquiredAtMs).toISOString(),
+    acquiredAtMs
+  };
+}

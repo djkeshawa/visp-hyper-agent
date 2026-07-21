@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { contextPackPathIfExists } from "../src/cli/commands/shared.js";
+import { createSession, readState } from "../src/core/session-manager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -60,6 +61,25 @@ describe("session control commands", () => {
     expect(status).toContain("Last checkpoint: missing");
     expect(status).toContain("Last review: missing");
     expect(status).toContain("Memory: not remembered");
+  });
+
+  it("preserves every session created by concurrent transactions", async () => {
+    const projectPath = await createGitProject();
+    const created = await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        createSession({
+          projectPath,
+          goal: `concurrent goal ${index}`,
+          tool: "codex",
+          relevantFiles: ["src/feature.ts"]
+        })
+      )
+    );
+
+    const state = await readState(projectPath);
+    expect(Object.keys(state.sessions)).toHaveLength(created.length);
+    expect(new Set(Object.keys(state.sessions))).toEqual(new Set(created.map((session) => session.id)));
+    expect(created.map((session) => session.id)).toContain(state.activeSessionId);
   });
 
   it("appends checkpoint entries with diff stat and changed files", async () => {

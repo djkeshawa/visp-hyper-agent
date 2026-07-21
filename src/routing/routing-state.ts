@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
 import { parseJsonStore } from "../core/json-store.js";
-import { withStoreLock } from "../core/store-lock.js";
+import { withProjectLock } from "../core/project-lock.js";
 
 export const routingQuarantineSchema = z.object({
   taskClass: z.string(),
@@ -53,7 +53,9 @@ export async function readRoutingState(
 }
 
 export async function writeRoutingState(projectPath: string, state: RoutingState): Promise<void> {
-  await writeText(routingPath(projectPath), `${JSON.stringify(state, null, 2)}\n`);
+  await withProjectLock(projectPath, async () => {
+    await writeText(routingPath(projectPath), `${JSON.stringify(state, null, 2)}\n`);
+  });
 }
 
 /**
@@ -64,7 +66,7 @@ export async function updateRoutingState(
   projectPath: string,
   updater: (state: RoutingState) => RoutingState | Promise<RoutingState>
 ): Promise<RoutingState> {
-  return withStoreLock(projectPath, async () => {
+  return withProjectLock(projectPath, async () => {
     const { state } = await readRoutingState(projectPath);
     const next = await updater(state);
     await writeRoutingState(projectPath, next);

@@ -6,7 +6,7 @@ import { defaultConfig } from "./defaults.js";
 import { execFileResolved } from "./executable-resolver.js";
 import { ensureDir, readTextIfExists, vispPath, writeText } from "./fs-utils.js";
 import { parseJsonStore } from "./json-store.js";
-import { withStoreLock } from "./store-lock.js";
+import { withProjectLock } from "./project-lock.js";
 import { kitTaskSchema } from "../kit/kit-schemas.js";
 import type { GitBaseline, HyperConfig, HyperState, SessionRecord, ToolProfile } from "./types.js";
 
@@ -107,19 +107,21 @@ const stateSchema = z.object({
 });
 
 export async function initializeProject(projectPath: string, force = false): Promise<void> {
-  await ensureDir(vispPath(projectPath, "hyper", "current"));
-  await ensureDir(vispPath(projectPath, "memory", "session-history"));
+  await withProjectLock(projectPath, async () => {
+    await ensureDir(vispPath(projectPath, "hyper", "current"));
+    await ensureDir(vispPath(projectPath, "memory", "session-history"));
 
-  const configPath = vispPath(projectPath, "hyper", "config.json");
-  const statePath = vispPath(projectPath, "hyper", "state.json");
+    const configPath = vispPath(projectPath, "hyper", "config.json");
+    const statePath = vispPath(projectPath, "hyper", "state.json");
 
-  if (force || !(await readTextIfExists(configPath))) {
-    await writeText(configPath, `${JSON.stringify(defaultConfig, null, 2)}\n`);
-  }
+    if (force || !(await readTextIfExists(configPath))) {
+      await writeText(configPath, `${JSON.stringify(defaultConfig, null, 2)}\n`);
+    }
 
-  if (force || !(await readTextIfExists(statePath))) {
-    await writeText(statePath, `${JSON.stringify({ activeSessionId: null, sessions: {} }, null, 2)}\n`);
-  }
+    if (force || !(await readTextIfExists(statePath))) {
+      await writeText(statePath, `${JSON.stringify({ activeSessionId: null, sessions: {} }, null, 2)}\n`);
+    }
+  });
 }
 
 function emptyState(): HyperState {
@@ -183,7 +185,9 @@ export async function readState(projectPath: string): Promise<HyperState> {
 }
 
 export async function writeState(projectPath: string, state: HyperState): Promise<void> {
-  await writeText(vispPath(projectPath, "hyper", "state.json"), `${JSON.stringify(state, null, 2)}\n`);
+  await withProjectLock(projectPath, async () => {
+    await writeText(vispPath(projectPath, "hyper", "state.json"), `${JSON.stringify(state, null, 2)}\n`);
+  });
 }
 
 export async function createSession(input: {
@@ -196,7 +200,7 @@ export async function createSession(input: {
     currentBranchKey(input.projectPath),
     captureGitBaseline(input.projectPath)
   ]);
-  return withStoreLock(input.projectPath, async () => {
+  return withProjectLock(input.projectPath, async () => {
     const state = await readState(input.projectPath);
     const now = new Date().toISOString();
     const session: SessionRecord = {
@@ -225,7 +229,7 @@ export async function updateActiveSession(
   expectedSessionId?: string
 ): Promise<SessionRecord | null> {
   const branchKey = await currentBranchKey(projectPath);
-  return withStoreLock(projectPath, async () => {
+  return withProjectLock(projectPath, async () => {
     const state = await readState(projectPath);
     const sessionId = resolveActiveSessionId(state, branchKey);
     if (!sessionId || (expectedSessionId !== undefined && sessionId !== expectedSessionId)) {

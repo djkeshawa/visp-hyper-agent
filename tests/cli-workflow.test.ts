@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startCommand } from "../src/cli/commands/start.js";
+import { executeStart, startCommand } from "../src/cli/commands/start.js";
 import { runCli } from "../src/cli/index.js";
 import { toolOnlyPath } from "./helpers/tool-path.js";
 import { createVispShim, type ShimSpec } from "./helpers/visp-shim.js";
@@ -46,11 +46,12 @@ function workflowActionFixture(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function healthyKitSpec(extra: ShimSpec = {}): ShimSpec {
+function healthyKitSpec(projectPath: string, extra: ShimSpec = {}): ShimSpec {
   return {
     status: {
       stdout: {
         success: true,
+        targetPath: projectPath,
         initialized: true,
         activeFeature: { id: "001", slug: "strict-resume" },
         activeTask: { id: "T900", title: "Resume task", status: "ready" }
@@ -61,7 +62,7 @@ function healthyKitSpec(extra: ShimSpec = {}): ShimSpec {
   };
 }
 
-async function configureKit(projectPath: string, spec: ShimSpec = healthyKitSpec()): Promise<void> {
+async function configureKit(projectPath: string, spec: ShimSpec = healthyKitSpec(projectPath)): Promise<void> {
   await mkdir(join(projectPath, ".visp"), { recursive: true });
   await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
   const shim = await createVispShim(spec);
@@ -104,6 +105,34 @@ describe("CLI workflow", () => {
     expect(checkpoint).toContain("src/feature.ts");
     expect(review).toContain("No test changes detected for this diff.");
     expect(memory).toContain("Functional workflow covered.");
+  });
+
+  it("publishes current artifacts for the active concurrent session", async () => {
+    const projectPath = await createProject();
+    const starts = await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        executeStart(projectPath, `concurrent start ${index}`, {
+          tool: "codex",
+          authority: { mode: "local" }
+        })
+      )
+    );
+
+    const state = JSON.parse(
+      await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")
+    );
+    const handoff = JSON.parse(
+      await readFile(join(projectPath, ".visp", "hyper", "current", "handoff.json"), "utf8")
+    );
+    const sessionMarkdown = await readFile(
+      join(projectPath, ".visp", "hyper", "current", "session.md"),
+      "utf8"
+    );
+
+    expect(Object.keys(state.sessions)).toHaveLength(starts.length);
+    expect(handoff.session.id).toBe(state.activeSessionId);
+    expect(sessionMarkdown).toContain(`Session ${state.activeSessionId}`);
+    expect(sessionMarkdown).toContain(state.sessions[state.activeSessionId].goal);
   });
 
   it("resumes an active session with handoff and current diff context", async () => {
@@ -198,7 +227,7 @@ describe("CLI workflow", () => {
     vi.spyOn(console, "log").mockImplementation((message?: unknown) => logs.push(String(message)));
     await runCli(["node", "visp-hyper", "--project", projectPath, "start", "local stale goal"]);
     const action = workflowActionFixture();
-    await configureKit(projectPath, healthyKitSpec({ next: { stdout: action } }));
+    await configureKit(projectPath, healthyKitSpec(projectPath, { next: { stdout: action } }));
 
     logs.length = 0;
     await runCli(["node", "visp-hyper", "--project", projectPath, "resume"]);
@@ -217,7 +246,7 @@ describe("CLI workflow", () => {
     const logs: string[] = [];
     vi.spyOn(console, "log").mockImplementation((message?: unknown) => logs.push(String(message)));
     const action = workflowActionFixture();
-    await configureKit(projectPath, healthyKitSpec({ next: { stdout: action } }));
+    await configureKit(projectPath, healthyKitSpec(projectPath, { next: { stdout: action } }));
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "resume", "--json"]);
 
@@ -269,7 +298,7 @@ describe("CLI workflow", () => {
     const projectPath = await createProject();
     const logs: string[] = [];
     vi.spyOn(console, "log").mockImplementation((message?: unknown) => logs.push(String(message)));
-    await configureKit(projectPath, healthyKitSpec({ next }));
+    await configureKit(projectPath, healthyKitSpec(projectPath, { next }));
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "resume"]);
 
