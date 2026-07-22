@@ -91,7 +91,10 @@ function kit20IntegrationContract(projectPath: string): Record<string, unknown> 
     activeTask: { id: "T001", title: "First task", status: "ready" },
     commands: {},
     capabilities: {
-      contextGrounding: { artifactProvenance: true }
+      contextGrounding: {
+        artifactProvenance: true,
+        orchestratorReadContract: true
+      }
     },
     workflow: { freshnessChecks: ["contextPack.artifactProvenance[]"] },
     protocols: {
@@ -110,6 +113,32 @@ function kit20IntegrationContract(projectPath: string): Record<string, unknown> 
       taskGraph: ".visp/features/001-pipeline/task-graph.json",
       contextPack: ".visp/features/001-pipeline/context/T001.context.json",
       contextPrompt: ".visp/features/001-pipeline/context/T001.prompt.md"
+    },
+    orchestrator: {
+      readContractVersion: "0.1",
+      requiredArtifacts: [
+        {
+          id: "task-graph",
+          path: `.visp/features/${FEATURE_DIR}/task-graph.json`,
+          role: "task-graph",
+          mimeType: "application/json",
+          requiredFor: ["handoff", "implementation", "checkpoint"],
+          freshness: "hash-pinned"
+        },
+        {
+          id: "context-pack",
+          path: `.visp/features/${FEATURE_DIR}/context/T001.context.json`,
+          role: "context-pack",
+          mimeType: "application/json",
+          requiredFor: ["handoff", "implementation", "checkpoint"],
+          freshness: "hash-pinned"
+        }
+      ],
+      freshnessPolicy: {
+        contextPackHashPinned: true,
+        provenanceArtifactsHashPinned: true,
+        staleContextBlocks: ["implementation", "checkpoint", "pr"]
+      }
     },
     warnings: []
   };
@@ -146,7 +175,11 @@ async function canonicalRunAction(
   overrides: Record<string, unknown> = {}
 ): Promise<WorkflowActionV3Wire> {
   const contextPath = `.visp/features/${FEATURE_DIR}/context/T001.context.json`;
-  const context = await readFile(join(projectPath, contextPath), "utf8");
+  const taskGraphPath = `.visp/features/${FEATURE_DIR}/task-graph.json`;
+  const [context, taskGraph] = await Promise.all([
+    readFile(join(projectPath, contextPath), "utf8"),
+    readFile(join(projectPath, taskGraphPath), "utf8")
+  ]);
   const draft = {
     protocolVersion: "3.0" as const,
     canonicalVersion: "1.0" as const,
@@ -170,6 +203,13 @@ async function canonicalRunAction(
     goal: "Canonical telemetry task",
     baseCommit: unavailable("not_captured"),
     requiredReads: [
+      {
+        id: "task-graph",
+        role: "task_graph" as const,
+        path: taskGraphPath,
+        contentHash: `sha256:${createHash("sha256").update(taskGraph).digest("hex")}`,
+        freshness: "content_hash" as const
+      },
       {
         id: "task-context",
         role: "context_pack" as const,

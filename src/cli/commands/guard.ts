@@ -9,7 +9,11 @@ import {
 } from "../../governance/scope-guard.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
-import type { WorkflowActionV2 } from "../../kit/kit-schemas.js";
+import type { NormalizedWorkflowAction } from "../../kit/workflow-action-adapter.js";
+import {
+  renderHyperActionFrame,
+  toHyperActionEnvelope
+} from "../../kit/workflow-action-renderer.js";
 import { resolveProjectPath } from "./shared.js";
 
 type GuardOptions = { staged?: boolean; all?: boolean; base?: string };
@@ -37,35 +41,33 @@ export function guardCommand(): Command {
         return;
       }
 
-      const config = await readConfig(projectPath);
       let scope: GuardScope;
+      let actionFrame: string | undefined;
+      let actionVerdict: NormalizedWorkflowAction["verdict"] | undefined;
       if (kit.state === "healthy") {
         const bridge = new KitCommandBridge({ projectPath });
-        const diagnostic = await bridge.nextActionDiagnostic();
-        if (!diagnostic.ok) {
-          for (const warning of bridge.warnings) console.warn(`warning: ${warning}`);
-          stopInconclusive(diagnostic.reasonCode, diagnostic.reason);
+        const contractDiagnostic = await bridge.integrationContractDiagnostic();
+        printBridgeWarnings(bridge);
+        if (!contractDiagnostic.ok) {
+          stopInconclusive(contractDiagnostic.reasonCode, contractDiagnostic.reason);
           return;
         }
-        const action = diagnostic.value;
-        if (action.verdict !== "ready") {
-          stopInconclusive(
-            `workflow_action_${action.verdict}`,
-            action.findings.join("; ") || `Kit workflow action verdict is ${action.verdict}.`,
-            action.nextCommand
-          );
+
+        const actionDiagnostic = await bridge.nextCanonicalActionDiagnostic(
+          "auto",
+          contractDiagnostic.value
+        );
+        printBridgeWarnings(bridge);
+        if (!actionDiagnostic.ok) {
+          stopInconclusive(actionDiagnostic.reasonCode, actionDiagnostic.reason);
           return;
         }
-        if (!action.taskId) {
-          stopInconclusive(
-            "workflow_action_missing_task",
-            "Kit returned a ready workflow action without a task id.",
-            action.nextCommand
-          );
-          return;
-        }
-        scope = kitScope(action, config.blockedPaths);
+        const action = actionDiagnostic.value;
+        actionFrame = renderHyperActionFrame(toHyperActionEnvelope(action));
+        actionVerdict = action.verdict;
+        scope = kitScope(action);
       } else {
+        const config = await readConfig(projectPath);
         const localScope = await resolveScope(projectPath);
         scope = {
           authority: "local",
@@ -76,13 +78,11 @@ export function guardCommand(): Command {
       }
 
       const { files, warnings } = await collectChangedFiles(projectPath, mode);
-      if (scope.authority === "kit" && warnings.length > 0) {
-        stopInconclusive("changed_files_unavailable", warnings.join("; "));
-        return;
-      }
-      const violations = checkGuardScope(files, scope);
+      const inconclusive = scope.authority === "kit" && warnings.length > 0;
+      const violations = inconclusive ? [] : checkGuardScope(files, scope);
 
       const blocked = violations.length > 0;
+      const status = inconclusive ? "INCONCLUSIVE" : blocked ? "BLOCKED" : "PASSED";
       const lines: string[] = [
         "BEGIN_VISP_GUARD_RESULT",
         `scope: ${scope.taskId ?? "none"}`,
@@ -100,17 +100,27 @@ export function guardCommand(): Command {
           );
         }
       }
-      lines.push(`status: ${blocked ? "BLOCKED" : "PASSED"}`);
+      if (inconclusive) {
+        lines.push("reason_code: changed_files_unavailable");
+        lines.push(`reason: ${singleLine(warnings.join("; "))}`);
+      }
+      lines.push(`status: ${status}`);
       lines.push("END_VISP_GUARD_RESULT");
 
-      for (const warning of warnings) {
-        console.log(`warning: ${warning}`);
+      if (scope.authority === "local") {
+        for (const warning of warnings) {
+          console.log(`warning: ${warning}`);
+        }
       }
       console.log(lines.join("\n"));
+      if (actionFrame !== undefined) {
+        console.log("");
+        console.log(actionFrame);
+      }
 
-      // Degrade open: only REAL violations block. A broken git read (warnings)
-      // must not lock ordinary commits out.
-      if (blocked) {
+      // Kit-less behavior degrades open on Git uncertainty. Configured Kit is
+      // successful only when both the mechanical check and action are ready.
+      if (blocked || (scope.authority === "kit" && (inconclusive || actionVerdict !== "ready"))) {
         process.exitCode = 1;
       }
     });
@@ -120,6 +130,10 @@ function describeMode(mode: ChangedFilesMode): string {
   return mode.mode === "base" ? `base ${mode.baseRef}` : mode.mode;
 }
 
+function singleLine(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
 type GuardScope = {
   authority: "kit" | "local";
   taskId: string | null;
@@ -127,12 +141,12 @@ type GuardScope = {
   blockedPaths: string[];
 };
 
-function kitScope(action: WorkflowActionV2, configuredBlockedPaths: string[]): GuardScope {
+function kitScope(action: NormalizedWorkflowAction): GuardScope {
   return {
     authority: "kit",
-    taskId: action.taskId,
-    allowedFiles: action.writablePaths,
-    blockedPaths: [...new Set([...configuredBlockedPaths, ...action.forbiddenPaths])]
+    taskId: action.task?.id ?? null,
+    allowedFiles: [...action.scope.writablePaths],
+    blockedPaths: [...action.scope.forbiddenPaths]
   };
 }
 
@@ -154,7 +168,11 @@ function checkGuardScope(files: string[], scope: GuardScope): ScopeViolation[] {
   ];
 }
 
-function stopInconclusive(reasonCode: string, reason: string, nextAllowedCommand?: string): void {
+function stopInconclusive(
+  reasonCode: string,
+  reason: string,
+  nextAllowedCommand?: string
+): void {
   console.log(
     renderKitAuthorityStop({
       status: "INCONCLUSIVE",
@@ -164,6 +182,13 @@ function stopInconclusive(reasonCode: string, reason: string, nextAllowedCommand
     })
   );
   process.exitCode = 1;
+}
+
+function printBridgeWarnings(bridge: KitCommandBridge): void {
+  for (const warning of bridge.warnings) {
+    console.warn(`warning: ${warning}`);
+  }
+  bridge.warnings.length = 0;
 }
 
 /**

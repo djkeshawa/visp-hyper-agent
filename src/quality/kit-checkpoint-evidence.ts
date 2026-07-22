@@ -11,7 +11,7 @@ export type KitCheckpointEvidence = {
   verifyVerdict: KitCheckpointStageVerdict;
   reviewVerdict: KitCheckpointStageVerdict;
   reconcileVerdict: KitCheckpointStageVerdict;
-  verdict: Exclude<EvidenceVerdict, "passed">;
+  verdict: EvidenceVerdict;
   assuranceLevel: "advisory";
   evidenceSource: "kit";
   reasonCode: string;
@@ -57,10 +57,9 @@ export function unavailableKitCheckpointEvidence(input: {
 /**
  * Aggregate Kit-produced checkpoint facts for presentation only.
  *
- * This function deliberately cannot return `passed` or `kit_strict`. Current
- * Kit 2.0 verify/review/reconcile summaries do not contain an authoritative
- * post-checkpoint transition, so even three passing summaries leave Hyper
- * inconclusive and unable to mutate strict workflow state.
+ * A coherent all-pass aggregate is advisory evidence only. It does not carry
+ * an authoritative post-checkpoint transition and cannot grant `kit_strict`
+ * assurance or mutate workflow state.
  */
 export function aggregateKitCheckpointEvidence(input: {
   verify: KitVerifySummary | null;
@@ -126,10 +125,9 @@ export function aggregateKitCheckpointEvidence(input: {
   }
 
   return result(stages, {
-    verdict: "inconclusive",
-    reasonCode: "kit_post_checkpoint_transition_unavailable",
-    reason:
-      "Kit checkpoint summaries passed, but the current contract exposes no authoritative post-checkpoint transition.",
+    verdict: "passed",
+    reasonCode: "kit_checkpoint_passed",
+    reason: "Kit verify, review, and reconcile reported passing checkpoint evidence.",
     findings: stages.flatMap((stage) => stage.findings)
   });
 }

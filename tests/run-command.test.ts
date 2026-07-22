@@ -32,6 +32,10 @@ const unavailable = (reasonCode = "not_in_source_artifact") => ({
   reasonCode
 });
 const available = <T>(value: T) => ({ state: "available" as const, value });
+const notApplicable = (
+  reasonCode: "no_active_task" | "stage_does_not_require_value" =
+    "stage_does_not_require_value"
+) => ({ state: "not_applicable" as const, reasonCode });
 
 async function createProject(options: { withSpaces?: boolean } = {}): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "visp-run-"));
@@ -160,6 +164,24 @@ function integrationContractFixture(contractVersion = "2.0", protocols?: unknown
     },
     orchestrator: {
       readContractVersion: "0.1",
+      requiredArtifacts: [
+        {
+          id: "task-graph",
+          path: `.visp/features/${FEATURE_DIR}/task-graph.json`,
+          role: "task-graph",
+          mimeType: "application/json",
+          requiredFor: ["handoff", "implementation", "checkpoint"],
+          freshness: "hash-pinned"
+        },
+        {
+          id: "context-pack",
+          path: `.visp/features/${FEATURE_DIR}/context/T001.context.json`,
+          role: "context-pack",
+          mimeType: "application/json",
+          requiredFor: ["handoff", "implementation", "checkpoint"],
+          freshness: "hash-pinned"
+        }
+      ],
       freshnessPolicy: {
         contextPackHashPinned: true,
         provenanceArtifactsHashPinned: true,
@@ -243,6 +265,16 @@ function advertisedIntegrationContractFixture() {
       supported: ["2.0", "3.0"],
       default: "2.0",
       schemaHashes: { "2.0": V2_HASH, "3.0": V3_HASH }
+    }
+  });
+}
+
+function advertisedV2IntegrationContractFixture() {
+  return integrationContractFixture("2.0", {
+    workflowAction: {
+      supported: ["2.0"],
+      default: "2.0",
+      schemaHashes: { "2.0": V2_HASH }
     }
   });
 }
@@ -364,6 +396,36 @@ async function expectHyperAbsent(projectPath: string): Promise<void> {
   });
 }
 
+type HyperTreeEntry =
+  | { path: string; kind: "directory" }
+  | { path: string; kind: "file"; bytes: string };
+
+async function snapshotHyperTree(projectPath: string): Promise<HyperTreeEntry[]> {
+  const root = join(projectPath, ".visp", "hyper");
+  const snapshot: HyperTreeEntry[] = [];
+
+  async function walk(directory: string, prefix: string): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        snapshot.push({ path, kind: "directory" });
+        await walk(absolutePath, path);
+      } else {
+        snapshot.push({
+          path,
+          kind: "file",
+          bytes: (await readFile(absolutePath)).toString("base64")
+        });
+      }
+    }
+  }
+
+  await walk(root, "");
+  return snapshot;
+}
+
 function expectNoLocalFallthrough(output: string): void {
   expect.soft(output).not.toContain("BEGIN_VISP_AGENT_HANDOFF");
   expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
@@ -389,6 +451,75 @@ async function createStrictSession(projectPath: string, options: TaskGraphOption
   const shim = await createVispShim(await eligibleStrictRunSpec(projectPath));
   prependToPath(dirname(shim.binary));
   await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
+}
+
+async function configuredCheckpointSpec(
+  projectPath: string,
+  checkpoint: ShimSpec = {},
+  actionOverrides: Record<string, unknown> = {}
+): Promise<ShimSpec> {
+  const action = await workflowActionV3ForProject(projectPath, actionOverrides);
+  const contract = advertisedIntegrationContractFixture() as any;
+  contract.activeTask = action.task
+    ? { id: action.task.id, title: action.task.title, status: action.task.status }
+    : null;
+  return kitStatusSpec({
+    integration: { stdout: contract },
+    next: {
+      stdout: action,
+      ...(action.verdict === "ready" ? {} : { exitCode: 1 })
+    },
+    ...checkpoint
+  });
+}
+
+function expectConfiguredCheckpointHasNoLocalSemantics(output: string): void {
+  expect.soft(output).not.toContain("assurance_level: kit_strict");
+  expect.soft(output).not.toContain("instruction:");
+  expect.soft(output).not.toContain("BEGIN_VISP_ADAPTATION");
+  expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+  expect.soft(output).not.toContain("BEGIN_VISP_MODEL_ROUTING");
+  expect.soft(output).not.toContain("BEGIN_VISP_WORKFLOW_DIRECTIVE");
+  expect.soft(output).not.toContain("next_task:");
+  expect.soft(output).not.toContain("pipeline_complete:");
+}
+
+type RenderedCheckpointAction = {
+  authority: string;
+  action: {
+    source: { protocolVersion: string; selectionMode: string };
+    verdict: string;
+    wire?: unknown;
+  };
+};
+
+function readRenderedCheckpointAction(output: string): RenderedCheckpointAction {
+  const lines = output.split("\n");
+  const begin = lines.indexOf("BEGIN_VISP_HYPER_ACTION_V1");
+  const end = lines.indexOf("END_VISP_HYPER_ACTION_V1");
+  expect.soft(begin).toBeGreaterThanOrEqual(0);
+  expect.soft(end).toBe(begin + 2);
+  if (begin < 0 || end !== begin + 2) {
+    throw new Error("Expected one single-line VISP_HYPER_ACTION_V1 frame.");
+  }
+  return JSON.parse(lines[begin + 1]) as RenderedCheckpointAction;
+}
+
+function nonReadyActionOverrides(verdict: "blocked" | "inconclusive") {
+  return {
+    verdict,
+    findings: [
+      {
+        code: `TEST_${verdict.toUpperCase()}`,
+        source: "workflow",
+        severity: "error",
+        effect: verdict === "blocked" ? "blocks" : "uncertain",
+        message: `The next action is ${verdict}.`,
+        recommendation: "Follow the authoritative action finding.",
+        evidence: ["fixture"]
+      }
+    ]
+  };
 }
 
 function activePipeline(state: any): any {
@@ -1715,6 +1846,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       }),
       "utf8"
     );
+    const hyperBefore = await snapshotHyperTree(projectPath);
+    const argvBefore = (await readArgvLog(shim.argvLogPath)).length;
 
     logs = [];
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
@@ -1724,11 +1857,23 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect(output).toContain("status: FAILED");
     expect(output).toContain("context provenance changed since handoff");
     expect(output).toContain("task-graph");
+    expect.soft(output).toContain(
+      "END_VISP_CHECKPOINT_RESULT\n\nBEGIN_VISP_HYPER_ACTION_V1"
+    );
+    expectConfiguredCheckpointHasNoLocalSemantics(output);
+    expect.soft(process.exitCode).toBe(1);
+    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
 
     const pipeline = activePipeline(await readState(projectPath));
     expect(pipeline.currentTaskId).toBe("T001");
     const argv = await readArgvLog(shim.argvLogPath);
-    expect(argv.some((args) => args[0] === "reconcile")).toBe(false);
+    expect.soft(argv.slice(argvBefore)).toEqual([
+      ["status", "--json"],
+      ["verify", "--task", "T001", "--json"],
+      ["review", "--task", "T001", "--json"],
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.0", "--json"]
+    ]);
   });
 
   it("checkpoint uses canonical required-read provenance when the context pack omits provenance", async () => {
@@ -2095,6 +2240,22 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(argv.some((args) => args[0] === "next")).toBe(true);
   });
 
+  it("configured checkpoint without --task preserves the existing snapshot behavior", async () => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toBe("Checkpoint written to .visp/hyper/current/checkpoints.md");
+    expect.soft(output).not.toContain("BEGIN_VISP_CHECKPOINT_RESULT");
+    expect.soft(output).not.toContain("BEGIN_VISP_HYPER_ACTION_V1");
+    expect.soft(
+      await readFile(join(projectPath, ".visp", "hyper", "current", "checkpoints.md"), "utf8")
+    ).toContain("# Checkpoints");
+  });
+
   it("FAIL_CLOSED: checkpoint fails when the adopted Kit context artifact changed after handoff", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
@@ -2120,6 +2281,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       }),
       "utf8"
     );
+    const hyperBefore = await snapshotHyperTree(projectPath);
+    const argvBefore = (await readArgvLog(shim.argvLogPath)).length;
 
     logs = [];
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
@@ -2128,17 +2291,29 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect(output).toContain("context_freshness: stale");
     expect(output).toContain("status: FAILED");
     expect(output).toContain("context artifact changed since handoff");
+    expect.soft(output.match(/BEGIN_VISP_CHECKPOINT_RESULT/gu)).toHaveLength(1);
+    expect.soft(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+    expect.soft(output).toContain(
+      "END_VISP_CHECKPOINT_RESULT\n\nBEGIN_VISP_HYPER_ACTION_V1"
+    );
+    expectConfiguredCheckpointHasNoLocalSemantics(output);
+    expect.soft(process.exitCode).toBe(1);
+    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
 
-    const pipeline = activePipeline(await readState(projectPath));
-    expect(pipeline.currentTaskId).toBe("T001");
-    const argv = await readArgvLog(shim.argvLogPath);
-    expect(argv.some((args) => args[0] === "reconcile")).toBe(false);
+    expect.soft((await readArgvLog(shim.argvLogPath)).slice(argvBefore)).toEqual([
+      ["status", "--json"],
+      ["verify", "--task", "T001", "--json"],
+      ["review", "--task", "T001", "--json"],
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.0", "--json"]
+    ]);
   });
 
   it("FAIL_CLOSED: configured-unhealthy checkpoint never invokes local evidence or mutates strict state", async () => {
     const projectPath = await createProject();
     await createStrictSession(projectPath, { validationCommands: ["visp evidence-probe"] });
     const pipelineBefore = activePipeline(await readState(projectPath));
+    const hyperBefore = await snapshotHyperTree(projectPath);
 
     const unhealthyShim = await createVispShim({
       status: {
@@ -2164,6 +2339,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(output).not.toContain("instruction:");
     expect.soft(output).not.toContain("BEGIN_VISP_ADAPTATION");
     expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect.soft(process.exitCode).toBe(1);
 
     const argv = await readArgvLog(unhealthyShim.argvLogPath);
     expect.soft(argv).toContainEqual(["status", "--json"]);
@@ -2183,28 +2359,426 @@ describe("run command and pipeline-aware next/checkpoint", () => {
           step.action === "checkpoint-failed"
       )
     ).toBe(false);
+    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
+  });
+
+  it("FAIL_CLOSED: configured checkpoint without a session renders evidence then action without creating Hyper state", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+    const checkpointShim = await createVispShim(await configuredCheckpointSpec(projectPath));
+    prependToPath(dirname(checkpointShim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("verify: NOT_RUN");
+    expect.soft(output).toContain("review: NOT_RUN");
+    expect.soft(output).toContain("reconcile: NOT_RUN");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: strict_session_unavailable");
+    expect.soft(output.match(/BEGIN_VISP_CHECKPOINT_RESULT/gu)).toHaveLength(1);
+    expect.soft(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+    expect.soft(output).toContain(
+      "END_VISP_CHECKPOINT_RESULT\n\nBEGIN_VISP_HYPER_ACTION_V1"
+    );
+    expect.soft(output.indexOf("BEGIN_VISP_CHECKPOINT_RESULT")).toBeLessThan(
+      output.indexOf("BEGIN_VISP_HYPER_ACTION_V1")
+    );
+    expectConfiguredCheckpointHasNoLocalSemantics(output);
+    expect.soft(process.exitCode).toBe(1);
+    await expectHyperAbsent(projectPath);
+    expect.soft(await readArgvLog(checkpointShim.argvLogPath)).toEqual([
+      ["status", "--json"],
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.0", "--json"]
+    ]);
   });
 
   it.each([
-    { label: "one-task completion", singleTask: true },
-    { label: "two-task advancement", singleTask: false }
-  ])("FAIL_CLOSED: successful summaries do not authorize $label without post-checkpoint state", async ({ singleTask }) => {
+    {
+      label: "a missing context manifest",
+      mutate: async (_projectPath: string, manifestPath: string) => rm(manifestPath)
+    },
+    {
+      label: "a mismatched task",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.taskId = "T999";
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "a mismatched session ID",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.sessionId = "vh_20990101_forged";
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "a mismatched goal",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.goal = "A different strict goal";
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "a missing context artifact",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        delete manifest.contextArtifact;
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "an invalid context artifact",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.contextArtifact.hash = "not-a-sha256";
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "missing Kit provenance",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        delete manifest.artifactProvenance;
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "missing task-graph provenance required for checkpoint",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.artifactProvenance = manifest.artifactProvenance.filter(
+          (artifact: any) => artifact.path !== `.visp/features/${FEATURE_DIR}/task-graph.json`
+        );
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "a task graph deleted from both read-contract and provenance bindings",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        const taskGraphPath = `.visp/features/${FEATURE_DIR}/task-graph.json`;
+        manifest.artifactProvenance = manifest.artifactProvenance.filter(
+          (artifact: any) => artifact.path !== taskGraphPath
+        );
+        manifest.kitReadContract.requiredArtifacts =
+          manifest.kitReadContract.requiredArtifacts.filter(
+            (artifact: any) => artifact.path !== taskGraphPath
+          );
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "a weakened Kit freshness policy",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.kitReadContract.freshnessPolicy.provenanceArtifactsHashPinned = false;
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "an unsupported stored Kit read-contract version",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.kitReadContract.readContractVersion = "9.9";
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "an unsafe checkpoint artifact path",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.kitReadContract.requiredArtifacts[0].path = "../outside.json";
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "a non-canonical checkpoint artifact path",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.kitReadContract.requiredArtifacts[0].path =
+          `.visp//features/${FEATURE_DIR}/task-graph.json`;
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "duplicate Kit provenance paths",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.artifactProvenance.push({ ...manifest.artifactProvenance[0] });
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "duplicate checkpoint-required paths",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        manifest.kitReadContract.requiredArtifacts.push({
+          ...manifest.kitReadContract.requiredArtifacts[0]
+        });
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "a missing Kit read contract",
+      mutate: async (_projectPath: string, manifestPath: string) => {
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        delete manifest.kitReadContract;
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      }
+    },
+    {
+      label: "session state copied from another project",
+      mutate: async (projectPath: string) => {
+        const statePath = join(projectPath, ".visp", "hyper", "state.json");
+        const state = JSON.parse(await readFile(statePath, "utf8"));
+        state.sessions[state.activeSessionId].projectPath = `${projectPath}-other`;
+        await writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+      }
+    }
+  ])("FAIL_CLOSED: configured checkpoint rejects $label before Kit evidence but still renders a fresh action", async ({ mutate }) => {
     const projectPath = await createProject();
-    await createStrictSession(projectPath, { singleTask });
+    await createStrictSession(projectPath);
+    await mutate(
+      projectPath,
+      join(projectPath, ".visp", "hyper", "current", "context-manifest.json")
+    );
+    const hyperBefore = await snapshotHyperTree(projectPath);
 
+    const checkpointShim = await createVispShim(await configuredCheckpointSpec(projectPath));
+    prependToPath(dirname(checkpointShim.binary));
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("verify: NOT_RUN");
+    expect.soft(output).toContain("review: NOT_RUN");
+    expect.soft(output).toContain("reconcile: NOT_RUN");
+    expect.soft(output).toContain("status: INCONCLUSIVE");
+    expect.soft(output).toContain("reason_code: strict_session_binding_unavailable");
+    expect.soft(output.match(/BEGIN_VISP_CHECKPOINT_RESULT/gu)).toHaveLength(1);
+    expect.soft(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+    expect.soft(output).toContain(
+      "END_VISP_CHECKPOINT_RESULT\n\nBEGIN_VISP_HYPER_ACTION_V1"
+    );
+    expect.soft(output.indexOf("BEGIN_VISP_CHECKPOINT_RESULT")).toBeLessThan(
+      output.indexOf("BEGIN_VISP_HYPER_ACTION_V1")
+    );
+    expectConfiguredCheckpointHasNoLocalSemantics(output);
+    expect.soft(process.exitCode).toBe(1);
+    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
+    expect.soft(await readArgvLog(checkpointShim.argvLogPath)).toEqual([
+      ["status", "--json"],
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.0", "--json"]
+    ]);
+  });
+
+  it.each([
+    {
+      label: "a different ready task",
+      actionVerdict: "ready",
+      actionOverrides: {
+        task: {
+          id: "T002",
+          title: "Second task",
+          status: "ready",
+          dependsOn: ["T001"],
+          parallelizable: false
+        },
+        goal: "Implement the second task"
+      },
+      expectedAction: '"id":"T002"'
+    },
+    {
+      label: "a taskless ready stage",
+      actionVerdict: "ready",
+      actionOverrides: {
+        phase: "pr",
+        task: null,
+        taskClass: notApplicable("no_active_task"),
+        risk: {
+          level: notApplicable("no_active_task"),
+          factors: notApplicable("no_active_task")
+        },
+        goal: "Prepare the pull request",
+        scope: {
+          writablePaths: ["src/feature.ts"],
+          expectedPaths: notApplicable(),
+          forbiddenPaths: [],
+          operationLimits: notApplicable()
+        },
+        claims: notApplicable(),
+        validationOracles: [],
+        validationCommands: [],
+        requiredEvidence: notApplicable(),
+        nextCommand: "visp pr"
+      },
+      expectedAction: '"task":null'
+    },
+    {
+      label: "a blocked action",
+      actionVerdict: "blocked",
+      actionOverrides: {
+        verdict: "blocked",
+        findings: [
+          {
+            code: "TEST_BLOCKED",
+            source: "workflow",
+            severity: "error",
+            effect: "blocks",
+            message: "The next action is blocked.",
+            recommendation: "Resolve the authoritative finding.",
+            evidence: ["fixture"]
+          }
+        ]
+      },
+      expectedAction: '"verdict":"blocked"'
+    },
+    {
+      label: "an inconclusive action",
+      actionVerdict: "inconclusive",
+      actionOverrides: {
+        verdict: "inconclusive",
+        findings: [
+          {
+            code: "TEST_INCONCLUSIVE",
+            source: "workflow",
+            severity: "error",
+            effect: "uncertain",
+            message: "The next action is inconclusive.",
+            recommendation: "Restore authoritative state.",
+            evidence: ["fixture"]
+          }
+        ]
+      },
+      expectedAction: '"verdict":"inconclusive"'
+    }
+  ])("configured checkpoint keeps PASSED evidence independent from $label", async ({
+    label,
+    actionOverrides,
+    actionVerdict,
+    expectedAction
+  }) => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+    const hyperBefore = await snapshotHyperTree(projectPath);
+
+    const checkpointShim = await createVispShim(
+      await configuredCheckpointSpec(projectPath, {
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        reconcile: { stdout: { success: true } }
+      }, actionOverrides)
+    );
+    prependToPath(dirname(checkpointShim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: PASSED");
+    expect.soft(output).toContain("reason_code: kit_checkpoint_passed");
+    expect.soft(output).toContain(expectedAction);
+    expect.soft(output).toContain(`"verdict":"${actionVerdict}"`);
+    expect.soft(output.match(/BEGIN_VISP_CHECKPOINT_RESULT/gu)).toHaveLength(1);
+    expect.soft(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+    expect.soft(output).toContain(
+      "END_VISP_CHECKPOINT_RESULT\n\nBEGIN_VISP_HYPER_ACTION_V1"
+    );
+    expect.soft(output.indexOf("BEGIN_VISP_CHECKPOINT_RESULT")).toBeLessThan(
+      output.indexOf("BEGIN_VISP_HYPER_ACTION_V1")
+    );
+    const renderedAction = readRenderedCheckpointAction(output);
+    expect.soft(renderedAction.authority).toBe("kit");
+    expect.soft(renderedAction.action.source).toMatchObject({
+      protocolVersion: "3.0",
+      selectionMode: "advertised"
+    });
+    if (label === "a taskless ready stage") {
+      expect.soft(renderedAction.action as Record<string, unknown>).toMatchObject({
+        phase: { state: "available", value: "pr" },
+        task: null,
+        taskClass: { state: "not_applicable", reasonCode: "no_active_task" },
+        risk: {
+          level: { state: "not_applicable", reasonCode: "no_active_task" },
+          factors: { state: "not_applicable", reasonCode: "no_active_task" }
+        },
+        goal: "Prepare the pull request",
+        scope: {
+          writablePaths: ["src/feature.ts"],
+          expectedPaths: {
+            state: "not_applicable",
+            reasonCode: "stage_does_not_require_value"
+          },
+          forbiddenPaths: [],
+          operationLimits: {
+            state: "not_applicable",
+            reasonCode: "stage_does_not_require_value"
+          }
+        },
+        claims: {
+          state: "not_applicable",
+          reasonCode: "stage_does_not_require_value"
+        },
+        validationOracles: [],
+        validationCommands: [],
+        requiredEvidence: {
+          state: "not_applicable",
+          reasonCode: "stage_does_not_require_value"
+        },
+        nextCommand: "visp pr",
+        verdict: "ready"
+      });
+    }
+    expect.soft(renderedAction.action).not.toHaveProperty("wire");
+    expectConfiguredCheckpointHasNoLocalSemantics(output);
+    expect.soft(process.exitCode).toBeFalsy();
+    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
+
+    expect.soft(await readArgvLog(checkpointShim.argvLogPath)).toEqual([
+      ["status", "--json"],
+      ["verify", "--task", "T001", "--json"],
+      ["review", "--task", "T001", "--json"],
+      ["reconcile", "--task", "T001", "--update-traceability", "--json"],
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.0", "--json"]
+    ]);
+  });
+
+  it.each([
+    {
+      label: "advertised v2",
+      contract: advertisedV2IntegrationContractFixture(),
+      selectionMode: "advertised",
+      nextArgv: ["next", "--format", "json", "--protocol", "2.0", "--json"]
+    },
+    {
+      label: "selector-less legacy v2",
+      contract: integrationContractFixture(),
+      selectionMode: "legacy_v2",
+      nextArgv: ["next", "--format", "json", "--json"]
+    }
+  ])("configured checkpoint renders fresh $label action provenance", async ({
+    contract,
+    selectionMode,
+    nextArgv
+  }) => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+    const hyperBefore = await snapshotHyperTree(projectPath);
     const checkpointShim = await createVispShim(
       kitStatusSpec({
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } },
         reconcile: { stdout: { success: true } },
-        next: {
-          stdout: {
-            success: true,
-            nextCommand: "visp pr",
-            state: "ready",
-            allowed: true
-          }
-        }
+        integration: { stdout: contract },
+        next: { stdout: workflowActionFixture() }
       })
     );
     prependToPath(dirname(checkpointShim.binary));
@@ -2213,20 +2787,126 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
 
     const output = logs.join("\n");
-    expect.soft(output).toMatch(/status: (?:BLOCKED|INCONCLUSIVE)/u);
-    expect.soft(output).toContain("reason_code: kit_post_checkpoint_transition_unavailable");
-    expect.soft(output).not.toContain("status: PASSED");
-    expect.soft(output).not.toContain("assurance_level: kit_strict");
-    expect.soft(output).not.toContain("instruction:");
-    expect.soft(output).not.toContain("BEGIN_VISP_ADAPTATION");
-    expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
-    expect.soft(output).not.toContain("next_task:");
-    expect.soft(output).not.toContain("pipeline_complete: true");
+    expect.soft(output).toContain("status: PASSED");
+    expect.soft(output.match(/BEGIN_VISP_CHECKPOINT_RESULT/gu)).toHaveLength(1);
+    expect.soft(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+    expect.soft(output).toContain(
+      "END_VISP_CHECKPOINT_RESULT\n\nBEGIN_VISP_HYPER_ACTION_V1"
+    );
+    const renderedAction = readRenderedCheckpointAction(output);
+    expect.soft(renderedAction.authority).toBe("kit");
+    expect.soft(renderedAction.action.source).toMatchObject({
+      protocolVersion: "2.0",
+      selectionMode
+    });
+    expect.soft(renderedAction.action).not.toHaveProperty("wire");
+    expectConfiguredCheckpointHasNoLocalSemantics(output);
+    expect.soft(process.exitCode).toBeFalsy();
+    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
+    expect.soft(await readArgvLog(checkpointShim.argvLogPath)).toEqual([
+      ["status", "--json"],
+      ["verify", "--task", "T001", "--json"],
+      ["review", "--task", "T001", "--json"],
+      ["reconcile", "--task", "T001", "--update-traceability", "--json"],
+      ["integration", "contract", "--json"],
+      nextArgv
+    ]);
+  });
 
-    const pipeline = activePipeline(await readState(projectPath));
-    expect.soft(pipeline.currentTaskId).toBe("T001");
-    expect.soft(pipeline.completed).not.toContain("T001");
-    expect.soft(pipeline.injectedTasks ?? []).toEqual([]);
+  it.each(
+    (["FAILED", "INCONCLUSIVE"] as const).flatMap((evidenceStatus) =>
+      (["blocked", "inconclusive"] as const).map((actionVerdict) => ({
+        evidenceStatus,
+        actionVerdict
+      }))
+    )
+  )(
+    "configured checkpoint keeps $evidenceStatus evidence independent from $actionVerdict action",
+    async ({ evidenceStatus, actionVerdict }) => {
+      const projectPath = await createProject();
+      await createStrictSession(projectPath);
+      const hyperBefore = await snapshotHyperTree(projectPath);
+      const checkpoint: ShimSpec =
+        evidenceStatus === "FAILED"
+          ? {
+              verify: { stdout: { success: false, errors: ["verification failed"] } },
+              review: { stdout: { success: true } }
+            }
+          : {
+              verify: { stdout: "malformed verify result" },
+              review: { stdout: { success: true } }
+            };
+      const checkpointShim = await createVispShim(
+        await configuredCheckpointSpec(
+          projectPath,
+          checkpoint,
+          nonReadyActionOverrides(actionVerdict)
+        )
+      );
+      prependToPath(dirname(checkpointShim.binary));
+
+      logs = [];
+      await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+      const output = logs.join("\n");
+      expect.soft(output).toContain(`status: ${evidenceStatus}`);
+      expect.soft(output.match(/BEGIN_VISP_CHECKPOINT_RESULT/gu)).toHaveLength(1);
+      expect.soft(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+      expect.soft(output).not.toContain("BEGIN_VISP_KIT_AUTHORITY_RESULT");
+      expect.soft(output).toContain(
+        "END_VISP_CHECKPOINT_RESULT\n\nBEGIN_VISP_HYPER_ACTION_V1"
+      );
+      const renderedAction = readRenderedCheckpointAction(output);
+      expect.soft(renderedAction.action.source).toMatchObject({
+        protocolVersion: "3.0",
+        selectionMode: "advertised"
+      });
+      expect.soft(renderedAction.action.verdict).toBe(actionVerdict);
+      expectConfiguredCheckpointHasNoLocalSemantics(output);
+      expect.soft(process.exitCode).toBe(1);
+      expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
+      expect.soft(await readArgvLog(checkpointShim.argvLogPath)).toEqual([
+        ["status", "--json"],
+        ["verify", "--task", "T001", "--json"],
+        ["review", "--task", "T001", "--json"],
+        ["integration", "contract", "--json"],
+        ["next", "--format", "json", "--protocol", "3.0", "--json"]
+      ]);
+    }
+  );
+
+  it("FAIL_CLOSED: post-checkpoint action acquisition failure preserves PASSED evidence and appends an authority stop", async () => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+    const hyperBefore = await snapshotHyperTree(projectPath);
+    const checkpointShim = await createVispShim(
+      await configuredCheckpointSpec(projectPath, {
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        reconcile: { stdout: { success: true } },
+        next: { stdout: "malformed post-checkpoint action" }
+      })
+    );
+    prependToPath(dirname(checkpointShim.binary));
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
+
+    const output = logs.join("\n");
+    expect.soft(output).toContain("status: PASSED");
+    expect.soft(output).toContain("reason_code: kit_checkpoint_passed");
+    expect.soft(output.match(/BEGIN_VISP_CHECKPOINT_RESULT/gu)).toHaveLength(1);
+    expect.soft(output).not.toContain("BEGIN_VISP_HYPER_ACTION_V1");
+    expect.soft(output.match(/BEGIN_VISP_KIT_AUTHORITY_RESULT/gu)).toHaveLength(1);
+    expect.soft(output).toContain(
+      "END_VISP_CHECKPOINT_RESULT\n\nBEGIN_VISP_KIT_AUTHORITY_RESULT"
+    );
+    expect.soft(output.indexOf("BEGIN_VISP_CHECKPOINT_RESULT")).toBeLessThan(
+      output.indexOf("BEGIN_VISP_KIT_AUTHORITY_RESULT")
+    );
+    expectConfiguredCheckpointHasNoLocalSemantics(output);
+    expect.soft(process.exitCode).toBe(1);
+    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
   });
 
   it("FAIL_CLOSED: repeated failed Kit checkpoints never inject Hyper remediation or strict assurance", async () => {
@@ -2234,7 +2914,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     await createStrictSession(projectPath);
 
     const failShim = await createVispShim(
-      kitStatusSpec({
+      await configuredCheckpointSpec(projectPath, {
         verify: { stdout: { success: false, errors: ["verification failed"] } },
         review: { stdout: { success: true } }
       })
@@ -2253,6 +2933,11 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
     expect.soft(output).not.toContain("next_task:");
     expect.soft(output).not.toContain("pipeline_complete: true");
+    expect.soft(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+    expect.soft(output.indexOf("BEGIN_VISP_CHECKPOINT_RESULT")).toBeLessThan(
+      output.indexOf("BEGIN_VISP_HYPER_ACTION_V1")
+    );
+    expect.soft(process.exitCode).toBe(1);
 
     const pipeline = activePipeline(await readState(projectPath));
     expect.soft(pipeline.currentTaskId).toBe("T001");
@@ -2268,7 +2953,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     await createStrictSession(projectPath);
 
     const shim = await createVispShim(
-      kitStatusSpec({
+      await configuredCheckpointSpec(projectPath, {
         verify: {
           stdout: { success: true, errors: ["verification process was interrupted"] }
         },
@@ -2289,6 +2974,11 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(output).not.toContain("instruction:");
     expect.soft(output).not.toContain("next_task:");
     expect.soft(output).not.toContain("pipeline_complete: true");
+    expect.soft(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+    expect.soft(output.indexOf("BEGIN_VISP_CHECKPOINT_RESULT")).toBeLessThan(
+      output.indexOf("BEGIN_VISP_HYPER_ACTION_V1")
+    );
+    expect.soft(process.exitCode).toBe(1);
 
     const argv = await readArgvLog(shim.argvLogPath);
     expect.soft(argv.some((args) => args[0] === "reconcile")).toBe(false);
@@ -2320,8 +3010,11 @@ describe("run command and pipeline-aware next/checkpoint", () => {
   ])("FAIL_CLOSED: failed $stage evidence never grants strict assurance or Hyper remediation", async ({ stage, checkpoint }) => {
     const projectPath = await createProject();
     await createStrictSession(projectPath);
+    const hyperBefore = await snapshotHyperTree(projectPath);
 
-    const shim = await createVispShim(kitStatusSpec(checkpoint as ShimSpec));
+    const shim = await createVispShim(
+      await configuredCheckpointSpec(projectPath, checkpoint as ShimSpec)
+    );
     prependToPath(dirname(shim.binary));
 
     logs = [];
@@ -2335,6 +3028,15 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
     expect.soft(output).not.toContain("next_task:");
     expect.soft(output).not.toContain("pipeline_complete: true");
+    expect.soft(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+    expect.soft(output).toContain(
+      "END_VISP_CHECKPOINT_RESULT\n\nBEGIN_VISP_HYPER_ACTION_V1"
+    );
+    expect.soft(output.indexOf("BEGIN_VISP_CHECKPOINT_RESULT")).toBeLessThan(
+      output.indexOf("BEGIN_VISP_HYPER_ACTION_V1")
+    );
+    expect.soft(process.exitCode).toBe(1);
+    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
 
     const pipeline = activePipeline(await readState(projectPath));
     expect.soft(pipeline.currentTaskId).toBe("T001");
@@ -2371,8 +3073,11 @@ describe("run command and pipeline-aware next/checkpoint", () => {
   ])("FAIL_CLOSED: inconclusive $stage evidence never grants strict assurance or advancement", async ({ stage, checkpoint }) => {
     const projectPath = await createProject();
     await createStrictSession(projectPath);
+    const hyperBefore = await snapshotHyperTree(projectPath);
 
-    const shim = await createVispShim(kitStatusSpec(checkpoint as ShimSpec));
+    const shim = await createVispShim(
+      await configuredCheckpointSpec(projectPath, checkpoint as ShimSpec)
+    );
     prependToPath(dirname(shim.binary));
 
     logs = [];
@@ -2386,6 +3091,15 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(output).not.toContain("BEGIN_VISP_TASK_ACTION");
     expect.soft(output).not.toContain("next_task:");
     expect.soft(output).not.toContain("pipeline_complete: true");
+    expect.soft(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+    expect.soft(output).toContain(
+      "END_VISP_CHECKPOINT_RESULT\n\nBEGIN_VISP_HYPER_ACTION_V1"
+    );
+    expect.soft(output.indexOf("BEGIN_VISP_CHECKPOINT_RESULT")).toBeLessThan(
+      output.indexOf("BEGIN_VISP_HYPER_ACTION_V1")
+    );
+    expect.soft(process.exitCode).toBe(1);
+    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
 
     const pipeline = activePipeline(await readState(projectPath));
     expect.soft(pipeline.currentTaskId).toBe("T001");

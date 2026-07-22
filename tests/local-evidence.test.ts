@@ -16,6 +16,63 @@ const originalPath = process.env.PATH;
 
 const FEATURE_DIR = "001-pipeline";
 
+function checkpointIntegrationContract() {
+  return {
+    success: true,
+    contractVersion: "2.0",
+    kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.1" },
+    targetPath: "/repo",
+    initialized: true,
+    activeFeature: {
+      id: "001",
+      slug: "pipeline",
+      key: FEATURE_DIR,
+      path: `.visp/features/${FEATURE_DIR}`
+    },
+    activeTask: { id: "T001", title: "First task", status: "ready" },
+    commands: {},
+    capabilities: {
+      governance: { failClosedGates: true },
+      contextGrounding: {
+        taskScopedContextPacks: true,
+        artifactProvenance: true,
+        orchestratorReadContract: true
+      },
+      evidence: { verification: true, review: true, reconciliation: true }
+    },
+    workflow: { freshnessChecks: ["contextPack.artifactProvenance[]"] },
+    artifacts: {
+      kitSignals: [".visp/policy.json", ".visp/project.json"],
+      projectStatus: ".visp/status.json",
+      projectProfile: ".visp/project.json",
+      featureRoot: ".visp/features",
+      featureDir: `.visp/features/${FEATURE_DIR}`,
+      taskGraph: `.visp/features/${FEATURE_DIR}/task-graph.json`,
+      contextPack: `.visp/features/${FEATURE_DIR}/context/T001.context.json`,
+      contextPrompt: `.visp/features/${FEATURE_DIR}/context/T001.prompt.md`
+    },
+    warnings: []
+  };
+}
+
+function checkpointAction() {
+  return {
+    protocolVersion: "2.0",
+    phase: "implement",
+    taskId: "T001",
+    goal: "Implement the first task",
+    requiredReads: [],
+    writablePaths: ["src/feature.ts"],
+    forbiddenPaths: [],
+    acceptanceOracles: [],
+    validationCommands: ["pnpm typecheck"],
+    assuranceLevel: "kit_strict",
+    verdict: "ready",
+    findings: [],
+    nextCommand: "visp implement"
+  };
+}
+
 async function gitInit(projectPath: string): Promise<void> {
   await execFileAsync("git", ["init", "-b", "main"], { cwd: projectPath });
   await execFileAsync("git", ["add", "."], { cwd: projectPath });
@@ -215,6 +272,7 @@ describe("checkpoint --task local evidence integration", () => {
 
   afterEach(() => {
     process.env.PATH = originalPath;
+    process.exitCode = undefined;
     vi.restoreAllMocks();
   });
 
@@ -352,7 +410,7 @@ describe("checkpoint --task local evidence integration", () => {
     expect(memoryPack).toContain("verify failed: node -e process.exit(2) (exit 2)");
   });
 
-  it("kit-present parity: Kit summaries remain advisory without an authoritative transition", async () => {
+  it("kit-present parity: a stale local session cannot become a strict checkpoint binding", async () => {
     const projectPath = await createRepo();
     process.env.PATH = await gitNodeOnlyPath();
     await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement T001", "--tool", "codex"]);
@@ -371,6 +429,8 @@ describe("checkpoint --task local evidence integration", () => {
           activeTask: { id: "T001", title: "First task", status: "ready" }
         }
       },
+      integration: { stdout: checkpointIntegrationContract() },
+      next: { stdout: checkpointAction() },
       verify: { stdout: { success: true } },
       review: { stdout: { success: true } },
       reconcile: { stdout: { success: true } }
@@ -381,18 +441,20 @@ describe("checkpoint --task local evidence integration", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
     const output = logs.join("\n");
     expect(output).toContain("evidence_source: kit");
-    expect(output).toContain("verify: PASSED");
-    expect(output).toContain("review: PASSED");
-    expect(output).toContain("reconcile: PASSED");
+    expect(output).toContain("verify: NOT_RUN");
+    expect(output).toContain("review: NOT_RUN");
+    expect(output).toContain("reconcile: NOT_RUN");
     expect(output).toContain("assurance_level: advisory");
     expect(output).toContain("status: INCONCLUSIVE");
-    expect(output).toContain("reason_code: kit_post_checkpoint_transition_unavailable");
+    expect(output).toContain("reason_code: strict_session_binding_unavailable");
+    expect(output).toContain("BEGIN_VISP_HYPER_ACTION_V1");
     expect(output).not.toContain("assurance_level: kit_strict");
     expect(output).not.toContain("next_task:");
     expect(output).not.toContain("pipeline_complete:");
     expect(output).not.toContain("instruction:");
     expect(output).not.toContain("BEGIN_VISP_ADAPTATION");
     expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect(process.exitCode).toBe(1);
 
     const pipeline = await readPipeline(projectPath);
     expect(pipeline.currentTaskId).toBe("T001");
