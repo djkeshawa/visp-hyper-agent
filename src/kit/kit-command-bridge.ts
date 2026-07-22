@@ -8,10 +8,7 @@ import {
   type KitAvailability,
   type KitStatusProbeOutcome
 } from "./kit-availability.js";
-import {
-  unsupportedIntegrationContractWarning,
-  unsupportedWorkflowActionWarning
-} from "./kit-contract-compat.js";
+import { unsupportedIntegrationContractWarning } from "./kit-contract-compat.js";
 import {
   normalizeWorkflowAction,
   type NormalizedWorkflowAction,
@@ -37,7 +34,6 @@ import {
   kitReviewSummarySchema,
   kitStatusSchema,
   kitVerifySummarySchema,
-  workflowActionV2Schema,
   type KitBudgetResult,
   type KitContextPack,
   type KitGateResult,
@@ -47,8 +43,7 @@ import {
   type KitReconcileSummary,
   type KitReviewSummary,
   type KitStatus,
-  type KitVerifySummary,
-  type WorkflowActionV2
+  type KitVerifySummary
 } from "./kit-schemas.js";
 
 export type { KitAvailability } from "./kit-availability.js";
@@ -343,43 +338,6 @@ export class KitCommandBridge {
 
   async next(): Promise<KitNext | null> {
     return this.invoke(["next"], kitNextSchema);
-  }
-
-  async nextAction(): Promise<WorkflowActionV2 | null> {
-    const result = await this.nextActionDiagnostic();
-    return result.ok ? result.value : null;
-  }
-
-  async nextActionDiagnostic(): Promise<KitBridgeDiagnostic<WorkflowActionV2>> {
-    const args = ["next", "--format", "json"];
-    const result = await this.run(args);
-    if (!result) {
-      return diagnosticFailure(
-        "strict_next_unavailable",
-        this.warnings[this.warnings.length - 1] ?? "Kit strict next action is unavailable."
-      );
-    }
-    const payload = parseUnknownJson(result.stdout);
-    const unsupported = unsupportedWorkflowActionWarning(payload);
-    if (unsupported) {
-      this.warnings.push(unsupported);
-      return diagnosticFailure("unsupported_workflow_action", unsupported);
-    }
-    const action = payload === undefined ? null : parseData(payload, workflowActionV2Schema);
-    if (!action) {
-      const reason = `visp ${args.join(" ")} output could not be parsed against the expected schema.`;
-      this.warnings.push(reason);
-      return diagnosticFailure("strict_next_unavailable", reason);
-    }
-    // Kit intentionally exits non-zero for authoritative blocked/inconclusive
-    // actions. A non-zero process must never authorize a ready action, though:
-    // process failure and permission cannot be reconciled safely.
-    if (result.exitCode !== 0 && action.verdict === "ready") {
-      const reason = `visp ${args.join(" ")} exited with code ${result.exitCode} while reporting verdict=ready.`;
-      this.warnings.push(reason);
-      return diagnosticFailure("strict_next_unavailable", reason);
-    }
-    return { ok: true, value: action };
   }
 
   async workflowActionProtocolDiagnostic(

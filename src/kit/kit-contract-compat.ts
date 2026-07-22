@@ -2,7 +2,6 @@ import type { KitIntegrationContract } from "./kit-schemas.js";
 
 const PROVENANCE_FRESHNESS_CONTRACT = "2.0";
 export const SUPPORTED_KIT_INTEGRATION_CONTRACT_VERSION = "2.0";
-export const SUPPORTED_WORKFLOW_ACTION_VERSION = "2.0";
 
 export function unsupportedIntegrationContractWarning(payload: unknown): string | undefined {
   const version = stringProperty(payload, "contractVersion");
@@ -10,14 +9,6 @@ export function unsupportedIntegrationContractWarning(payload: unknown): string 
     return undefined;
   }
   return `Unsupported Kit integration contract version ${version}; expected ${SUPPORTED_KIT_INTEGRATION_CONTRACT_VERSION}.`;
-}
-
-export function unsupportedWorkflowActionWarning(payload: unknown): string | undefined {
-  const version = stringProperty(payload, "protocolVersion");
-  if (version === undefined || version === SUPPORTED_WORKFLOW_ACTION_VERSION) {
-    return undefined;
-  }
-  return `Unsupported Kit workflow action protocol version ${version}; expected ${SUPPORTED_WORKFLOW_ACTION_VERSION}.`;
 }
 
 export function provenanceFreshnessContractWarning(

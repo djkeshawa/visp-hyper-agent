@@ -331,6 +331,20 @@ describe("detectVisp", () => {
 });
 
 describe("KitCommandBridge", () => {
+  it("P1_07C2: removes obsolete tolerant WorkflowAction v2 consumer symbols", async () => {
+    const [bridgeSource, schemaSource, compatibilitySource] = await Promise.all([
+      readFile(join(process.cwd(), "src", "kit", "kit-command-bridge.ts"), "utf8"),
+      readFile(join(process.cwd(), "src", "kit", "kit-schemas.ts"), "utf8"),
+      readFile(join(process.cwd(), "src", "kit", "kit-contract-compat.ts"), "utf8")
+    ]);
+
+    expect(bridgeSource).not.toMatch(/\bnextAction(?:Diagnostic)?\s*\(/u);
+    expect(schemaSource).not.toContain("export const workflowActionV2Schema");
+    expect(schemaSource).not.toContain("export type WorkflowActionV2 =");
+    expect(compatibilitySource).not.toContain("SUPPORTED_WORKFLOW_ACTION_VERSION");
+    expect(compatibilitySource).not.toContain("unsupportedWorkflowActionWarning");
+  });
+
   it("POLICY_EXACT: preserves live nested validation errors and Kit nextCommand", async () => {
     const policy = policyValidateFixture({
       success: false,
@@ -741,57 +755,47 @@ describe("KitCommandBridge", () => {
     }
   );
 
-  it("AUDIT: preserves a valid blocked WorkflowAction 2.0 from a nonzero Kit exit", async () => {
-    const action = {
-      protocolVersion: "2.0",
-      phase: "implement",
+  it("AUDIT: preserves a negotiated blocked WorkflowAction 2.0 from a nonzero Kit exit", async () => {
+    const action = bridgeWorkflowActionV2({
       taskId: null,
       goal: "Project scan cache is missing or incomplete.",
-      requiredReads: [],
       writablePaths: [],
-      forbiddenPaths: [],
-      acceptanceOracles: [],
       validationCommands: [],
-      assuranceLevel: "kit_strict",
       verdict: "blocked",
       findings: ["VSP001: Project scan is required."],
       nextCommand: "visp scan"
-    };
+    });
     const shim = await createVispShim({
+      integration: { stdout: integrationContractFixture() },
       next: { stdout: action, exitCode: 1 }
     });
     const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
 
-    const result = await bridge.nextActionDiagnostic();
+    const result = await bridge.nextCanonicalActionDiagnostic("2.0");
 
-    expect(result).toEqual({ ok: true, value: action });
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        source: { protocolVersion: "2.0", selectionMode: "legacy_v2" },
+        task: null,
+        verdict: "blocked",
+        nextCommand: "visp scan"
+      }
+    });
     expect(bridge.warnings).toEqual([]);
   });
 
-  it("FAIL_CLOSED: rejects a ready WorkflowAction 2.0 from a nonzero Kit exit", async () => {
-    const action = {
-      protocolVersion: "2.0",
-      phase: "implement",
-      taskId: "T001",
-      goal: "Implement the current task.",
-      requiredReads: [],
-      writablePaths: ["src/feature.ts"],
-      forbiddenPaths: [],
-      acceptanceOracles: [],
-      validationCommands: ["pnpm test"],
-      assuranceLevel: "kit_strict",
-      verdict: "ready",
-      findings: [],
-      nextCommand: "visp implement"
-    };
+  it("FAIL_CLOSED: rejects a negotiated ready WorkflowAction 2.0 from a nonzero Kit exit", async () => {
+    const action = bridgeWorkflowActionV2();
     const shim = await createVispShim({
+      integration: { stdout: integrationContractFixture() },
       next: { stdout: action, exitCode: 1 }
     });
     const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
 
-    const result = await bridge.nextActionDiagnostic();
+    const result = await bridge.nextCanonicalActionDiagnostic("2.0");
 
-    expect(result).toMatchObject({ ok: false, reasonCode: "strict_next_unavailable" });
+    expect(result).toMatchObject({ ok: false, reasonCode: "workflow_action_contradiction" });
     expect(bridge.warnings).toEqual(
       expect.arrayContaining([expect.stringMatching(/exited with code 1.*verdict=ready/i)])
     );

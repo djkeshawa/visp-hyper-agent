@@ -389,23 +389,6 @@ export const kitNextSchema = z.object({
 });
 export type KitNext = z.infer<typeof kitNextSchema>;
 
-export const workflowActionV2Schema = z.object({
-  protocolVersion: z.literal("2.0"),
-  phase: z.enum(["clarify", "specify", "plan", "task", "implement", "verify"]),
-  taskId: z.string().nullable(),
-  goal: z.string(),
-  requiredReads: z.array(z.object({ path: z.string(), role: z.string(), sha256: z.string() })),
-  writablePaths: z.array(z.string()),
-  forbiddenPaths: z.array(z.string()),
-  acceptanceOracles: z.array(z.object({ id: z.string(), expectedBehavior: z.string(), validation: z.string() })),
-  validationCommands: z.array(z.string()),
-  assuranceLevel: z.enum(["kit_strict", "local_checked", "advisory"]),
-  verdict: z.enum(["ready", "blocked", "inconclusive"]),
-  findings: z.array(z.string()),
-  nextCommand: z.string()
-});
-export type WorkflowActionV2 = z.infer<typeof workflowActionV2Schema>;
-
 const kitIntegrationContractFeatureSchema = z.object({
   id: z.string(),
   slug: z.string(),

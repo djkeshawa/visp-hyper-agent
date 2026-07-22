@@ -61,10 +61,10 @@ describe.skipIf(!RUN_LIVE)("real visp binary contract", () => {
     expect(bridge.warnings).toEqual([]);
   });
 
-  it("consumes the live WorkflowActionV2 contract", async () => {
+  it("consumes live Kit v2 through the explicit negotiated canonical API", async () => {
     const bridge = new KitCommandBridge({ projectPath: REPO_ROOT, binary: LOCAL_BINARY ?? undefined });
-    const action = await bridge.nextAction();
-    expect(action?.protocolVersion).toBe("2.0");
+    const action = await bridge.nextCanonicalAction("2.0");
+    expect(action?.source.protocolVersion).toBe("2.0");
     expect(["ready", "blocked", "inconclusive"]).toContain(action?.verdict);
     expect(Array.isArray(action?.requiredReads)).toBe(true);
     expect(bridge.warnings).toEqual([]);

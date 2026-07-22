@@ -404,40 +404,23 @@ describe("handleMessage tools surface (AC003)", () => {
       }
     );
 
-    it.each([
-      [
-        "workflow action",
-        [
-          "BEGIN_VISP_WORKFLOW_ACTION_V2",
-          JSON.stringify({ protocolVersion: "2.0", verdict: "INCONCLUSIVE", nextCommand: "visp status" }),
-          "END_VISP_WORKFLOW_ACTION_V2"
-        ].join("\n"),
-        "VISP_WORKFLOW_ACTION_V2"
-      ],
-      [
-        "checkpoint validation",
-        [
-          "BEGIN_VISP_CHECKPOINT_RESULT",
-          "verdict: INCONCLUSIVE",
-          "reason: authoritative validation is unavailable",
-          "END_VISP_CHECKPOINT_RESULT"
-        ].join("\n"),
-        "VISP_CHECKPOINT_RESULT"
-      ]
-    ])(
-      "AC002: maps a status-less inconclusive %s frame to INCONCLUSIVE",
-      async (_kind, text, frameName) => {
-        const response = await callStructuredTool(text, false, 22);
+    it("AC002: maps a status-less inconclusive checkpoint frame to INCONCLUSIVE", async () => {
+      const text = [
+        "BEGIN_VISP_CHECKPOINT_RESULT",
+        "verdict: INCONCLUSIVE",
+        "reason: authoritative validation is unavailable",
+        "END_VISP_CHECKPOINT_RESULT"
+      ].join("\n");
+      const response = await callStructuredTool(text, false, 22);
 
-        expect.soft(response.result.isError).toBe(false);
-        expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
-        expect.soft(response.result.structuredContent.text).toBe(text);
-        expect.soft(response.result.structuredContent.frames).toEqual([
-          { name: frameName, boundary: "begin" },
-          { name: frameName, boundary: "end" }
-        ]);
-      }
-    );
+      expect.soft(response.result.isError).toBe(false);
+      expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+      expect.soft(response.result.structuredContent.text).toBe(text);
+      expect.soft(response.result.structuredContent.frames).toEqual([
+        { name: "VISP_CHECKPOINT_RESULT", boundary: "begin" },
+        { name: "VISP_CHECKPOINT_RESULT", boundary: "end" }
+      ]);
+    });
 
     it("AC003: maps unknown status-less successful output to INCONCLUSIVE", async () => {
       const text = "captured output with no Visp domain signal";
@@ -497,23 +480,218 @@ describe("handleMessage tools surface (AC003)", () => {
       });
     });
 
-    it("AC005: maps a ready WorkflowAction V2 frame to OK", async () => {
-      const text = [
-        "BEGIN_VISP_WORKFLOW_ACTION_V2",
-        JSON.stringify({ protocolVersion: "2.0", verdict: "ready", nextCommand: "visp context T001" }),
-        "END_VISP_WORKFLOW_ACTION_V2"
-      ].join("\n");
-      const response = await callStructuredTool(text, false, 27);
+    it.each(["ready", "blocked", "inconclusive"] as const)(
+      "P1_07C2: a successful deprecated WorkflowAction V2 %s frame is marker-only INCONCLUSIVE",
+      async (verdict) => {
+        const text = [
+          "BEGIN_VISP_WORKFLOW_ACTION_V2",
+          JSON.stringify({ protocolVersion: "2.0", verdict, nextCommand: "visp context T001" }),
+          "END_VISP_WORKFLOW_ACTION_V2"
+        ].join("\n");
+        const response = await callStructuredTool(text, false, 27);
 
-      expect.soft(response.result.isError).toBe(false);
-      expect.soft(response.result.structuredContent.status).toBe("OK");
-      expect.soft(response.result.content).toEqual([{ type: "text", text }]);
-      expect.soft(response.result.structuredContent.text).toBe(text);
-      expect.soft(response.result.structuredContent.frames).toEqual([
-        { name: "VISP_WORKFLOW_ACTION_V2", boundary: "begin" },
-        { name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }
-      ]);
-    });
+        expect.soft(response.result.isError).toBe(false);
+        expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+        expect.soft(response.result.content).toEqual([{ type: "text", text }]);
+        expect.soft(response.result.structuredContent.text).toBe(text);
+        expect.soft(response.result.structuredContent.frames).toEqual([
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "begin" },
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }
+        ]);
+      }
+    );
+
+    it.each(["ready", "blocked", "inconclusive"] as const)(
+      "P1_07C2: a failed deprecated WorkflowAction V2 %s frame preserves transport ERROR",
+      async (verdict) => {
+        const text = [
+          "BEGIN_VISP_WORKFLOW_ACTION_V2",
+          JSON.stringify({ protocolVersion: "2.0", verdict }),
+          "END_VISP_WORKFLOW_ACTION_V2"
+        ].join("\n");
+        const response = await callStructuredTool(text, true, 75);
+
+        expect.soft(response.result.isError).toBe(true);
+        expect.soft(response.result.structuredContent.status).toBe("ERROR");
+        expect.soft(response.result.structuredContent.frames).toEqual([
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "begin" },
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }
+        ]);
+      }
+    );
+
+    it.each([
+      [false, "INCONCLUSIVE"],
+      [true, "ERROR"]
+    ] as const)(
+      "P1_07C2: deprecated frame bodies do not turn status text into authority (isError=%s)",
+      async (isError, expectedStatus) => {
+        const text = [
+          "BEGIN_VISP_WORKFLOW_ACTION_V2",
+          "status: OK",
+          "END_VISP_WORKFLOW_ACTION_V2"
+        ].join("\n");
+        const response = await callStructuredTool(text, isError, 76);
+
+        expect.soft(response.result.structuredContent.status).toBe(expectedStatus);
+      }
+    );
+
+    it.each([
+      {
+        name: "trailing content around a status-like body",
+        text: [
+          "BEGIN_VISP_WORKFLOW_ACTION_V2 trailing",
+          "status: OK",
+          "END_VISP_WORKFLOW_ACTION_V2 trailing"
+        ].join("\n"),
+        frames: [
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "begin" },
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }
+        ]
+      },
+      {
+        name: "punctuated delimiters around a status-like body",
+        text: [
+          "BEGIN_VISP_WORKFLOW_ACTION_V2:",
+          "status: OK",
+          "END_VISP_WORKFLOW_ACTION_V2!"
+        ].join("\n"),
+        frames: [
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "begin" },
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }
+        ]
+      },
+      {
+        name: "an unmatched begin delimiter",
+        text: ["BEGIN_VISP_WORKFLOW_ACTION_V2 trailing", "status: OK"].join("\n"),
+        frames: [{ name: "VISP_WORKFLOW_ACTION_V2", boundary: "begin" }]
+      },
+      {
+        name: "an unmatched end delimiter",
+        text: ["status: OK", "END_VISP_WORKFLOW_ACTION_V2 trailing"].join("\n"),
+        frames: [{ name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }]
+      },
+      {
+        name: "a canonical action nested in malformed deprecated delimiters",
+        text: [
+          "BEGIN_VISP_WORKFLOW_ACTION_V2 trailing",
+          hyperActionFrame("ready"),
+          "END_VISP_WORKFLOW_ACTION_V2 trailing"
+        ].join("\n"),
+        frames: [
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "begin" },
+          { name: "VISP_HYPER_ACTION_V1", boundary: "begin" },
+          { name: "VISP_HYPER_ACTION_V1", boundary: "end" },
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }
+        ]
+      },
+      {
+        name: "a malformed deprecated delimiter mixed with a canonical action",
+        text: [hyperActionFrame("ready"), "END_VISP_WORKFLOW_ACTION_V2 trailing"].join("\n"),
+        frames: [
+          { name: "VISP_HYPER_ACTION_V1", boundary: "begin" },
+          { name: "VISP_HYPER_ACTION_V1", boundary: "end" },
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }
+        ]
+      },
+      {
+        name: "canonical markers nested in exact deprecated delimiters",
+        text: [
+          "BEGIN_VISP_WORKFLOW_ACTION_V2",
+          hyperActionFrame("ready"),
+          "END_VISP_WORKFLOW_ACTION_V2"
+        ].join("\n"),
+        frames: [
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "begin" },
+          { name: "VISP_HYPER_ACTION_V1", boundary: "begin" },
+          { name: "VISP_HYPER_ACTION_V1", boundary: "end" },
+          { name: "VISP_WORKFLOW_ACTION_V2", boundary: "end" }
+        ]
+      }
+    ])(
+      "P1_07C2: $name fails closed for both transport outcomes",
+      async ({ text, frames }) => {
+        for (const [index, isError] of [false, true].entries()) {
+          const response = await callStructuredTool(text, isError, 77 + index);
+
+          expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+          expect.soft(response.result.structuredContent.frames).toEqual(frames);
+        }
+      }
+    );
+
+    it.each([
+      {
+        name: "contiguous prefixes around both deprecated tokens",
+        text: [
+          "xBEGIN_VISP_WORKFLOW_ACTION_V2",
+          "status: OK",
+          "xEND_VISP_WORKFLOW_ACTION_V2"
+        ].join("\n")
+      },
+      {
+        name: "contiguous suffixes around both deprecated tokens",
+        text: [
+          "BEGIN_VISP_WORKFLOW_ACTION_V2x",
+          "status: BLOCKED",
+          "END_VISP_WORKFLOW_ACTION_V2x"
+        ].join("\n")
+      },
+      {
+        name: "underscore prefixes and suffixes around deprecated tokens",
+        text: [
+          "prefix_BEGIN_VISP_WORKFLOW_ACTION_V2_suffix",
+          "status: OK",
+          "prefix_END_VISP_WORKFLOW_ACTION_V2_suffix"
+        ].join("\n")
+      },
+      {
+        name: "same-line concatenated deprecated begin and end tokens",
+        text: [
+          "BEGIN_VISP_WORKFLOW_ACTION_V2END_VISP_WORKFLOW_ACTION_V2",
+          "status: OK"
+        ].join("\n")
+      },
+      {
+        name: "canonical ready content inside prefixed deprecated tokens",
+        text: [
+          "xBEGIN_VISP_WORKFLOW_ACTION_V2",
+          hyperActionFrame("ready"),
+          "xEND_VISP_WORKFLOW_ACTION_V2"
+        ].join("\n")
+      },
+      {
+        name: "canonical ready content followed by a suffixed deprecated token",
+        text: [hyperActionFrame("ready"), "xEND_VISP_WORKFLOW_ACTION_V2x"].join("\n")
+      }
+    ])(
+      "P1_07C2: $name is contradictory for both transport outcomes",
+      async ({ text }) => {
+        for (const [index, isError] of [false, true].entries()) {
+          const response = await callStructuredTool(text, isError, 79 + index);
+
+          expect.soft(response.result.structuredContent.status).toBe("INCONCLUSIVE");
+        }
+      }
+    );
+
+    it.each([
+      [false, "OK"],
+      [true, "INCONCLUSIVE"]
+    ] as const)(
+      "P1_07C2: an incomplete near-token remains unrelated (isError=%s)",
+      async (isError, expectedStatus) => {
+        const text = [
+          "xBEGIN_VISP_WORKFLOW_ACTION_V",
+          "status: OK",
+          "xEND_VISP_WORKFLOW_ACTION_V"
+        ].join("\n");
+        const response = await callStructuredTool(text, isError, 81);
+
+        expect.soft(response.result.structuredContent.status).toBe(expectedStatus);
+      }
+    );
 
     it.each([
       ["ready", "OK"],

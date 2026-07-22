@@ -32,15 +32,46 @@ const OUTPUT_STATUSES = new Set<OutputStatus>([
 
 const FRAME_MARKER =
   /^(BEGIN|END)_(VISP_POLICY_BLOCKED|VISP_PIPELINE_BLOCKED|VISP_HYPER_ACTION_V1|VISP_WORKFLOW_ACTION_V2|VISP_CHECKPOINT_RESULT|VISP_HYPER_REPORT)$/u;
+const DEPRECATED_WORKFLOW_ACTION_MARKER =
+  /(BEGIN|END)_VISP_WORKFLOW_ACTION_V2/u;
+
+type DeprecatedWorkflowActionMarker = {
+  boundary: "BEGIN" | "END";
+  exact: boolean;
+};
 
 function isOutputStatus(value: string): value is OutputStatus {
   return OUTPUT_STATUSES.has(value as OutputStatus);
 }
 
+function matchDeprecatedWorkflowActionMarker(
+  line: string
+): DeprecatedWorkflowActionMarker | null {
+  const trimmed = line.trim();
+  const match = trimmed.match(DEPRECATED_WORKFLOW_ACTION_MARKER);
+  const boundary = match?.[1];
+  if (boundary !== "BEGIN" && boundary !== "END") {
+    return null;
+  }
+  return {
+    boundary,
+    exact: trimmed === `${boundary}_VISP_WORKFLOW_ACTION_V2`
+  };
+}
+
 function collectExplicitStatuses(lines: string[], signals: Set<OutputStatus>): boolean {
   let malformed = false;
+  let insideDeprecatedWorkflowAction = false;
 
   for (const line of lines) {
+    const deprecatedMarker = matchDeprecatedWorkflowActionMarker(line);
+    if (deprecatedMarker) {
+      insideDeprecatedWorkflowAction = deprecatedMarker.boundary === "BEGIN";
+      continue;
+    }
+    if (insideDeprecatedWorkflowAction) {
+      continue;
+    }
     if (!/^\s*status\s*:/iu.test(line)) {
       continue;
     }
@@ -57,20 +88,33 @@ function collectExplicitStatuses(lines: string[], signals: Set<OutputStatus>): b
   return malformed;
 }
 
-function scanRecognizedFrames(lines: string[]): { frames: RecognizedFrame[]; malformed: boolean } {
+function scanRecognizedFrames(lines: string[]): {
+  frames: RecognizedFrame[];
+  malformed: boolean;
+  deprecatedWorkflowActionMarkerFound: boolean;
+} {
   const frames: RecognizedFrame[] = [];
   let active: RecognizedFrame | null = null;
   let malformed = false;
+  let deprecatedWorkflowActionMarkerFound = false;
 
   for (const line of lines) {
-    const marker = line.trim().match(FRAME_MARKER);
-    if (!marker) {
+    const trimmed = line.trim();
+    const deprecatedMarker = matchDeprecatedWorkflowActionMarker(line);
+    const marker = trimmed.match(FRAME_MARKER);
+    if (!deprecatedMarker && !marker) {
       active?.body.push(line);
       continue;
     }
 
-    const boundary = marker[1];
-    const name = marker[2] as RecognizedFrameName;
+    const boundary = deprecatedMarker?.boundary ?? marker?.[1];
+    const name = deprecatedMarker
+      ? "VISP_WORKFLOW_ACTION_V2"
+      : (marker?.[2] as RecognizedFrameName);
+    if (deprecatedMarker) {
+      deprecatedWorkflowActionMarkerFound = true;
+      malformed ||= !deprecatedMarker.exact;
+    }
     if (boundary === "BEGIN") {
       if (active) {
         malformed = true;
@@ -88,28 +132,11 @@ function scanRecognizedFrames(lines: string[]): { frames: RecognizedFrame[]; mal
     active = null;
   }
 
-  return { frames, malformed: malformed || active !== null };
-}
-
-function collectLegacyWorkflowAction(
-  frame: RecognizedFrame,
-  signals: Set<OutputStatus>
-): boolean {
-  try {
-    const value: unknown = JSON.parse(frame.body.join("\n").trim());
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return true;
-    }
-
-    const action = value as Record<string, unknown>;
-    if (action.protocolVersion !== "2.0" || typeof action.verdict !== "string") {
-      return true;
-    }
-
-    return collectActionVerdict(action.verdict, signals);
-  } catch {
-    return true;
-  }
+  return {
+    frames,
+    malformed: malformed || active !== null,
+    deprecatedWorkflowActionMarkerFound
+  };
 }
 
 function collectHyperAction(
@@ -218,10 +245,12 @@ export function deriveOutputStatus(text: string, isError: boolean): OutputStatus
   const lines = text.split(/\r?\n/u);
   const commandSignals = new Set<OutputStatus>();
   const actionSignals = new Set<OutputStatus>();
-  let actionFrameCount = 0;
+  let canonicalActionFrameCount = 0;
+  let deprecatedWorkflowActionFrameFound = false;
   let malformed = collectExplicitStatuses(lines, commandSignals);
   const scanned = scanRecognizedFrames(lines);
   malformed ||= scanned.malformed;
+  deprecatedWorkflowActionFrameFound ||= scanned.deprecatedWorkflowActionMarkerFound;
 
   for (const frame of scanned.frames) {
     switch (frame.name) {
@@ -230,12 +259,11 @@ export function deriveOutputStatus(text: string, isError: boolean): OutputStatus
         commandSignals.add("BLOCKED");
         break;
       case "VISP_HYPER_ACTION_V1":
-        actionFrameCount += 1;
+        canonicalActionFrameCount += 1;
         malformed ||= collectHyperAction(frame, actionSignals);
         break;
       case "VISP_WORKFLOW_ACTION_V2":
-        actionFrameCount += 1;
-        malformed ||= collectLegacyWorkflowAction(frame, actionSignals);
+        deprecatedWorkflowActionFrameFound = true;
         break;
       case "VISP_CHECKPOINT_RESULT":
         malformed ||= collectCheckpointVerdicts(frame, commandSignals);
@@ -246,9 +274,12 @@ export function deriveOutputStatus(text: string, isError: boolean): OutputStatus
     }
   }
 
-  if (actionFrameCount === 0) {
+  if (canonicalActionFrameCount === 0) {
     malformed ||= collectStandaloneHyperAction(text, actionSignals);
-  } else if (actionFrameCount > 1) {
+  } else if (canonicalActionFrameCount > 1) {
+    malformed = true;
+  }
+  if (deprecatedWorkflowActionFrameFound && canonicalActionFrameCount > 0) {
     malformed = true;
   }
 
@@ -259,6 +290,13 @@ export function deriveOutputStatus(text: string, isError: boolean): OutputStatus
   const commandStatus =
     commandSignals.size === 1 ? [...commandSignals][0] : undefined;
   const actionStatus = actionSignals.size === 1 ? [...actionSignals][0] : undefined;
+  if (
+    deprecatedWorkflowActionFrameFound &&
+    commandStatus === undefined &&
+    actionStatus === undefined
+  ) {
+    return isError ? "ERROR" : "INCONCLUSIVE";
+  }
   if (commandStatus !== undefined) {
     if (isError && (commandStatus === "OK" || commandStatus === "PASSED")) {
       return "INCONCLUSIVE";

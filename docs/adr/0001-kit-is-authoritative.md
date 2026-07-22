@@ -179,3 +179,28 @@ immutable Kit response. Guard and checkpoint results remain separate from the
 action verdict. Removal of the obsolete tolerant v2 bridge/schema and legacy
 Hyper presentation reader remains blocked for the separately authorized
 P1-07C2 unit.
+
+## P1-07C2 addendum: legacy consumer consolidation
+
+Authorized under workspace decision D-053, P1-07C2 removes the obsolete
+selector-less `nextAction` bridge APIs, their tolerant WorkflowAction v2
+schema, and the temporary reader that derived action verdicts from
+`VISP_WORKFLOW_ACTION_V2` presentation-frame bodies. Every configured strict
+surface now consumes only the negotiated canonical API and strict local wire
+validators established by P1-06.
+
+The deprecated presentation marker remains detectable for fail-closed
+migration behavior, but its body is opaque and supplies no action verdict. A
+successful legacy-only frame is inconclusive, a failed legacy-only transport
+without supported domain evidence remains an error, and legacy plus canonical
+action frames are contradictory and inconclusive. The generic MCP marker
+inventory may continue reporting the marker name without becoming an authority
+reader.
+
+This consolidation does not remove WorkflowAction v2 wire support. Advertised
+exact v2 requests retain the trusted schema hash and `--protocol 2.0` command;
+an exact integration contract `2.0` without protocol advertisement retains the
+selector-less `legacy_v2` command; and v3 negotiation, the frozen
+`VISP_HYPER_ACTION_V1` envelope, exact Kit verdicts and `nextCommand`, and
+genuine Kit-less behavior remain unchanged. Compatibility claims remain
+limited to exact packed pairs whose evidence has run.
