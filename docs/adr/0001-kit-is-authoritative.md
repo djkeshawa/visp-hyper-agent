@@ -161,3 +161,21 @@ strict public-contract mirror. P1-07 must consolidate that duplication when it
 migrates `run`, `next`, `resume`, checkpoint, `guard`, and MCP rendering. Doctor
 may exercise and report the negotiated path as diagnostics; it does not turn
 that result into an independent permission decision.
+
+## P1-07C1 addendum: canonical-action MCP resource
+
+Accepted under workspace decision D-051, P1-07C1 exposes the current normalized
+Kit action as the computed `visp-hyper://current/canonical-action` MCP resource.
+Each read performs fresh Kit detection, validates one integration contract, and
+uses that exact contract to acquire the canonical action. A coherent Kit action
+is wrapped only with the frozen public Hyper envelope; genuine Kit absence and
+configured or contract-level failures use distinct unavailable or inconclusive
+resource states without a local fallback, cache, timestamp, or state mutation.
+
+The resource is a presentation adapter, not another authority or operation
+result. Its full public action is required to agree with `run`, `next`,
+`resume`, `guard`, and checkpoint when all six surfaces consume the same
+immutable Kit response. Guard and checkpoint results remain separate from the
+action verdict. Removal of the obsolete tolerant v2 bridge/schema and legacy
+Hyper presentation reader remains blocked for the separately authorized
+P1-07C2 unit.

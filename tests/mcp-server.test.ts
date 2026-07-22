@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -15,11 +15,30 @@ import {
   type McpContext
 } from "../src/mcp/mcp-server.js";
 import { createMcpBridge, createToolContext } from "../src/mcp/tool-bridge.js";
+import {
+  CANONICAL_ACTION_RESOURCE_URI,
+  canonicalKitSpec,
+  createCanonicalProject,
+  healthyStatusFixture,
+  integrationContractFixture,
+  snapshotProject,
+  tasklessWorkflowActionV3Fixture,
+  workflowActionV2Fixture,
+  workflowActionV3Fixture
+} from "./helpers/canonical-action-fixture.js";
+import { toolOnlyPath } from "./helpers/tool-path.js";
+import { createVispShim } from "./helpers/visp-shim.js";
 
 const execFileAsync = promisify(execFile);
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const distIndex = join(packageRoot, "dist", "index.js");
+const originalPath = process.env.PATH;
+
+afterEach(() => {
+  process.env.PATH = originalPath;
+  process.exitCode = undefined;
+});
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -741,7 +760,373 @@ describe("handleMessage tools surface (AC003)", () => {
   });
 });
 
+function prependVispShim(binary: string): void {
+  process.env.PATH = `${dirname(binary)}${delimiter}${originalPath ?? ""}`;
+}
+
+async function readCanonicalActionResource(projectPath: string, id = 1) {
+  const response = (await handleMessage(createToolContext(projectPath), {
+    jsonrpc: "2.0",
+    id,
+    method: "resources/read",
+    params: { uri: CANONICAL_ACTION_RESOURCE_URI }
+  })) as { result: { contents: Array<{ uri: string; mimeType: string; text: string }> } };
+  const content = response.result.contents[0]!;
+  return { content, body: JSON.parse(content.text) as Record<string, unknown> };
+}
+
 describe("handleMessage resources and prompts surface", () => {
+  it("advertises one exact computed canonical-action resource and hashes it into the stable surface manifest", async () => {
+    const projectPath = await createCanonicalProject();
+    const action = workflowActionV3Fixture();
+    const shim = await createVispShim(canonicalKitSpec({ action }));
+    prependVispShim(shim.binary);
+    const before = await snapshotProject(projectPath);
+    const ctx = createToolContext(projectPath);
+
+    const listed = (await handleMessage(ctx, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "resources/list"
+    })) as { result: { resources: Array<Record<string, unknown>> } };
+    const canonical = listed.result.resources.filter(
+      (resource) => resource.uri === CANONICAL_ACTION_RESOURCE_URI
+    );
+    expect(canonical).toHaveLength(1);
+    expect(canonical[0]).toMatchObject({
+      uri: CANONICAL_ACTION_RESOURCE_URI,
+      name: "canonical-action.json",
+      title: "Current Canonical Action",
+      mimeType: "application/json",
+      annotations: { audience: ["user", "assistant"], priority: 1 }
+    });
+
+    const first = await readCanonicalActionResource(projectPath, 2);
+    const second = await readCanonicalActionResource(projectPath, 3);
+    expect(first.content).toMatchObject({
+      uri: CANONICAL_ACTION_RESOURCE_URI,
+      mimeType: "application/json"
+    });
+    expect(first.content.text.endsWith("\n")).toBe(true);
+    expect(first.content.text).toBe(`${JSON.stringify(first.body, null, 2)}\n`);
+    expect(first.content.text).toBe(second.content.text);
+    expect(first.body).toEqual({
+      resourceVersion: "1.0",
+      availability: "available",
+      envelope: expect.objectContaining({
+        frameVersion: "1.0",
+        authority: "kit",
+        action: expect.objectContaining({ verdict: "ready" })
+      })
+    });
+    expect(Object.keys(first.body)).toEqual(["resourceVersion", "availability", "envelope"]);
+    expect((first.body.envelope as { action: Record<string, unknown> }).action).not.toHaveProperty("wire");
+    expect(
+      (await readFile(shim.argvLogPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+    ).toEqual([
+      ["status", "--json"],
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.0", "--json"],
+      ["status", "--json"],
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.0", "--json"]
+    ]);
+
+    const manifestReads = await Promise.all([4, 5].map(async (id) => {
+      const response = (await handleMessage(ctx, {
+        jsonrpc: "2.0",
+        id,
+        method: "resources/read",
+        params: { uri: "visp-hyper://meta/surface-manifest" }
+      })) as { result: { contents: Array<{ text: string }> } };
+      return JSON.parse(response.result.contents[0]!.text) as {
+        surfaceHash: string;
+        resources: Array<Record<string, unknown>>;
+      };
+    }));
+    expect(manifestReads[0].surfaceHash).toBe(manifestReads[1].surfaceHash);
+    expect(
+      manifestReads[0].resources.filter((resource) => resource.uri === CANONICAL_ACTION_RESOURCE_URI)
+    ).toEqual([
+      expect.objectContaining({
+        uri: CANONICAL_ACTION_RESOURCE_URI,
+        name: "canonical-action.json",
+        title: "Current Canonical Action",
+        mimeType: "application/json",
+        annotations: { audience: ["user", "assistant"], priority: 1 },
+        computed: true
+      })
+    ]);
+    expect(await snapshotProject(projectPath)).toEqual(before);
+  });
+
+  it.each([
+    ["ready", false],
+    ["blocked", false],
+    ["inconclusive", false],
+    ["ready", true],
+    ["blocked", true],
+    ["inconclusive", true]
+  ] as const)("keeps coherent %s taskless=%s actions available", async (verdict, taskless) => {
+    const projectPath = await createCanonicalProject();
+    const action = taskless
+      ? tasklessWorkflowActionV3Fixture(verdict)
+      : workflowActionV3Fixture({
+          verdict,
+          findings: verdict === "ready" ? [] : [{
+            code: `VISP.TEST.${verdict.toUpperCase()}`,
+            source: "workflow",
+            severity: verdict === "blocked" ? "error" : "warning",
+            effect: verdict === "blocked" ? "blocks" : "uncertain",
+            message: `${verdict} fixture.`,
+            recommendation: "Follow the exact Kit command.",
+            evidence: []
+          }]
+        });
+    const activeTask = taskless ? null : undefined;
+    const shim = await createVispShim(canonicalKitSpec({
+      action,
+      actionExitCode: verdict === "ready" ? 0 : 1,
+      status: healthyStatusFixture(activeTask),
+      contract: integrationContractFixture({ activeTask })
+    }));
+    prependVispShim(shim.binary);
+
+    const { body } = await readCanonicalActionResource(projectPath);
+    expect(body).toMatchObject({
+      resourceVersion: "1.0",
+      availability: "available",
+      envelope: {
+        frameVersion: "1.0",
+        authority: "kit",
+        action: { verdict, task: taskless ? null : expect.objectContaining({ id: "T001" }) }
+      }
+    });
+    expect(body).not.toHaveProperty("reasonCode");
+  });
+
+  it.each([
+    {
+      label: "advertised v2",
+      contract: integrationContractFixture({ protocols: ["2.0"] }),
+      selectionMode: "advertised"
+    },
+    {
+      label: "selector-less legacy v2",
+      contract: integrationContractFixture({ protocols: null }),
+      selectionMode: "legacy_v2"
+    }
+  ])("exposes honest $label normalization without private wire", async ({ contract, selectionMode }) => {
+    const projectPath = await createCanonicalProject();
+    const shim = await createVispShim(canonicalKitSpec({
+      action: workflowActionV2Fixture({
+        writablePaths: ["src\\feature.ts", "src\\path with spaces.ts"]
+      }),
+      contract
+    }));
+    prependVispShim(shim.binary);
+
+    const { body } = await readCanonicalActionResource(projectPath);
+    expect(body).toMatchObject({
+      availability: "available",
+      envelope: {
+        action: {
+          source: { protocolVersion: "2.0", selectionMode },
+          sourceCanonicalVersion: { state: "unavailable", reasonCode: "not_in_protocol" },
+          actionId: { state: "unavailable", reasonCode: "not_in_protocol" },
+          scope: { writablePaths: ["src/feature.ts", "src/path with spaces.ts"] }
+        }
+      }
+    });
+    expect((body.envelope as { action: object }).action).not.toHaveProperty("wire");
+  });
+
+  it("returns the closed unavailable union for genuine Kit absence without writes or local enrichment", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-canonical-kitless-"));
+    await writeFile(join(projectPath, "README.md"), "# Kit-less\n", "utf8");
+    const before = await snapshotProject(projectPath);
+
+    const first = await readCanonicalActionResource(projectPath, 1);
+    const second = await readCanonicalActionResource(projectPath, 2);
+    expect(first.body).toEqual({
+      resourceVersion: "1.0",
+      availability: "unavailable",
+      authority: "none",
+      reasonCode: "no_kit_signals",
+      reason: expect.any(String)
+    });
+    expect(Object.keys(first.body)).toEqual([
+      "resourceVersion",
+      "availability",
+      "authority",
+      "reasonCode",
+      "reason"
+    ]);
+    expect(first.content.text).toBe(second.content.text);
+    expect(first.content.text).not.toContain("kit_strict");
+    expect(first.body).not.toHaveProperty("envelope");
+    expect(await snapshotProject(projectPath)).toEqual(before);
+  });
+
+  it("returns configured-unhealthy as Kit-authority inconclusive without writes", async () => {
+    const projectPath = await createCanonicalProject();
+    const before = await snapshotProject(projectPath);
+    process.env.PATH = await toolOnlyPath(["git"]);
+
+    const { body } = await readCanonicalActionResource(projectPath);
+    expect(body).toEqual({
+      resourceVersion: "1.0",
+      availability: "inconclusive",
+      authority: "kit",
+      reasonCode: "binary_not_found",
+      reason: expect.any(String)
+    });
+    expect(body).not.toHaveProperty("envelope");
+    expect(await snapshotProject(projectPath)).toEqual(before);
+  });
+
+  it.each([
+    {
+      label: "future-only advertisement",
+      contract: integrationContractFixture({
+        overrides: {
+          protocols: {
+            workflowAction: {
+              supported: ["4.0"],
+              default: "4.0",
+              schemaHashes: { "4.0": `sha256:${"a".repeat(64)}` }
+            }
+          }
+        }
+      }),
+      action: workflowActionV3Fixture(),
+      expectedReason: "workflow_action_no_mutual_protocol"
+    },
+    {
+      label: "malformed advertisement",
+      contract: integrationContractFixture({
+        overrides: {
+          protocols: {
+            workflowAction: {
+              supported: ["2.0"],
+              default: "3.0",
+              schemaHashes: { "2.0": `sha256:${"a".repeat(64)}` }
+            }
+          }
+        }
+      }),
+      action: workflowActionV3Fixture(),
+      expectedReason: "workflow_action_advertisement_invalid"
+    },
+    {
+      label: "malformed integration contract",
+      contract: "not-json",
+      action: workflowActionV3Fixture(),
+      expectedReason: "integration_contract_unavailable"
+    },
+    {
+      label: "selected hash mismatch",
+      contract: integrationContractFixture({
+        overrides: {
+          protocols: {
+            workflowAction: {
+              supported: ["3.0"],
+              default: "3.0",
+              schemaHashes: { "3.0": `sha256:${"0".repeat(64)}` }
+            }
+          }
+        }
+      }),
+      action: workflowActionV3Fixture(),
+      expectedReason: "workflow_action_schema_hash_mismatch"
+    },
+    {
+      label: "wrong selected protocol",
+      contract: integrationContractFixture({ protocols: ["3.0"] }),
+      action: workflowActionV2Fixture(),
+      expectedReason: "workflow_action_protocol_mismatch"
+    },
+    {
+      label: "malformed action JSON",
+      contract: integrationContractFixture(),
+      action: "not-json",
+      expectedReason: "workflow_action_schema_invalid"
+    },
+    {
+      label: "extra action field",
+      contract: integrationContractFixture(),
+      action: { ...workflowActionV3Fixture(), unexpected: true },
+      expectedReason: "workflow_action_schema_invalid"
+    },
+    {
+      label: "missing action field",
+      contract: integrationContractFixture(),
+      action: (() => {
+        const { nextCommand: _nextCommand, ...missing } = workflowActionV3Fixture();
+        return missing;
+      })(),
+      expectedReason: "workflow_action_schema_invalid"
+    },
+    {
+      label: "invalid v3 identity",
+      contract: integrationContractFixture(),
+      action: { ...workflowActionV3Fixture(), actionId: `sha256:${"0".repeat(64)}` },
+      expectedReason: "workflow_action_identity_invalid"
+    },
+    {
+      label: "semantic contradiction",
+      contract: integrationContractFixture(),
+      action: workflowActionV3Fixture({
+        requiredReads: [
+          {
+            id: "duplicate",
+            role: "policy",
+            path: ".visp/policy.json",
+            contentHash: `sha256:${"1".repeat(64)}`,
+            freshness: "content_hash"
+          },
+          {
+            id: "duplicate",
+            role: "context_pack",
+            path: ".visp/context.json",
+            contentHash: `sha256:${"2".repeat(64)}`,
+            freshness: "content_hash"
+          }
+        ]
+      }),
+      expectedReason: "workflow_action_semantics_invalid"
+    },
+    {
+      label: "ready action from nonzero process",
+      contract: integrationContractFixture(),
+      action: workflowActionV3Fixture(),
+      actionExitCode: 1,
+      expectedReason: "workflow_action_contradiction"
+    }
+  ])("fails closed for $label with a stable diagnostic and no envelope", async ({
+    contract,
+    action,
+    actionExitCode,
+    expectedReason
+  }) => {
+    const projectPath = await createCanonicalProject();
+    const shim = await createVispShim(canonicalKitSpec({ action, contract, actionExitCode }));
+    prependVispShim(shim.binary);
+
+    const { body, content } = await readCanonicalActionResource(projectPath);
+    expect(body).toEqual({
+      resourceVersion: "1.0",
+      availability: "inconclusive",
+      authority: "kit",
+      reasonCode: expectedReason,
+      reason: expect.any(String)
+    });
+    expect(String(body.reason)).not.toMatch(/[\r\n]/u);
+    expect(body).not.toHaveProperty("envelope");
+  });
   it("resources/list and resources/read expose generated Visp Hyper artifacts", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-resources-"));
     await initializeProject(projectPath);
@@ -921,7 +1306,7 @@ describe("handleMessage resources and prompts surface", () => {
           version: "0.1",
           sessionId: "vh_test",
           kitReadContract: {
-            contractVersion: "1.3",
+            contractVersion: "2.0",
             readContractVersion: "0.1",
             requiredArtifacts: [
               {
@@ -958,7 +1343,7 @@ describe("handleMessage resources and prompts surface", () => {
     expect(contract).toMatchObject({
       version: "0.1",
       status: "available",
-      contractVersion: "1.3",
+      contractVersion: "2.0",
       readContractVersion: "0.1",
       freshnessPolicy: {
         contextPackHashPinned: true,

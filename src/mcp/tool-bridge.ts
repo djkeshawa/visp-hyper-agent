@@ -4,6 +4,11 @@ import type { McpBridge } from "../core/types.js";
 import { packageVersion } from "../core/package-version.js";
 import { readTextIfExists, vispPath } from "../core/fs-utils.js";
 import { checkContextFreshness } from "../context/context-freshness.js";
+import { detectVisp, KitCommandBridge } from "../kit/kit-command-bridge.js";
+import {
+  toHyperActionEnvelope,
+  type HyperActionEnvelopeV1
+} from "../kit/workflow-action-renderer.js";
 import type {
   McpContext,
   McpPromptDef,
@@ -288,6 +293,27 @@ type ResourceSpec = McpResourceDef & {
   priority?: number;
 };
 
+type CanonicalActionResourceV1 =
+  | {
+      resourceVersion: "1.0";
+      availability: "available";
+      envelope: HyperActionEnvelopeV1;
+    }
+  | {
+      resourceVersion: "1.0";
+      availability: "unavailable";
+      authority: "none";
+      reasonCode: "no_kit_signals";
+      reason: string;
+    }
+  | {
+      resourceVersion: "1.0";
+      availability: "inconclusive";
+      authority: "kit";
+      reasonCode: string;
+      reason: string;
+    };
+
 const RESOURCE_SPECS: ResourceSpec[] = [
   {
     uri: "visp-hyper://current/session",
@@ -423,6 +449,17 @@ const KIT_READ_CONTRACT_RESOURCE: McpResourceDef = {
   }
 };
 
+const CANONICAL_ACTION_RESOURCE: McpResourceDef = {
+  uri: "visp-hyper://current/canonical-action",
+  name: "canonical-action.json",
+  title: "Current Canonical Action",
+  mimeType: "application/json",
+  annotations: {
+    audience: ["user", "assistant"],
+    priority: 1
+  }
+};
+
 const PROMPTS: McpPromptDef[] = [
   {
     name: "hyper_resume",
@@ -526,7 +563,8 @@ async function resourceDefs(projectPath: string): Promise<McpResourceDef[]> {
   const defs: McpResourceDef[] = [
     SURFACE_MANIFEST_RESOURCE,
     CONTEXT_FRESHNESS_RESOURCE,
-    KIT_READ_CONTRACT_RESOURCE
+    KIT_READ_CONTRACT_RESOURCE,
+    CANONICAL_ACTION_RESOURCE
   ];
   for (const spec of RESOURCE_SPECS) {
     const content = await readTextIfExists(vispPath(projectPath, ...spec.path));
@@ -566,6 +604,15 @@ async function readResource(projectPath: string, uri: string): Promise<McpResour
 
   if (uri === KIT_READ_CONTRACT_RESOURCE.uri) {
     return readKitReadContractResource(projectPath, uri);
+  }
+
+  if (uri === CANONICAL_ACTION_RESOURCE.uri) {
+    const body = await readCanonicalActionResource(projectPath);
+    return {
+      uri,
+      mimeType: CANONICAL_ACTION_RESOURCE.mimeType,
+      text: `${JSON.stringify(body, null, 2)}\n`
+    };
   }
 
   const spec = RESOURCE_SPECS.find((candidate) => candidate.uri === uri);
@@ -629,6 +676,10 @@ function buildSurfaceManifest(): object {
         ...KIT_READ_CONTRACT_RESOURCE,
         computed: true
       },
+      {
+        ...CANONICAL_ACTION_RESOURCE,
+        computed: true
+      },
       ...RESOURCE_SPECS.map((resource) => ({
         uri: resource.uri,
         name: resource.name,
@@ -662,6 +713,67 @@ function buildSurfaceManifest(): object {
     surfaceHash: hashStable(surface),
     ...surface
   };
+}
+
+async function readCanonicalActionResource(
+  projectPath: string
+): Promise<CanonicalActionResourceV1> {
+  const availability = await detectVisp(projectPath);
+  if (availability.state === "absent") {
+    return {
+      resourceVersion: "1.0",
+      availability: "unavailable",
+      authority: "none",
+      reasonCode: "no_kit_signals",
+      reason: singleLineReason(availability.reason)
+    };
+  }
+  if (availability.state === "configured-unhealthy") {
+    return inconclusiveCanonicalAction(availability.reasonCode, availability.reason);
+  }
+
+  const bridge = new KitCommandBridge({ projectPath });
+  const contractDiagnostic = await bridge.integrationContractDiagnostic();
+  if (!contractDiagnostic.ok) {
+    return inconclusiveCanonicalAction(
+      contractDiagnostic.reasonCode,
+      contractDiagnostic.reason
+    );
+  }
+
+  const actionDiagnostic = await bridge.nextCanonicalActionDiagnostic(
+    "auto",
+    contractDiagnostic.value
+  );
+  if (!actionDiagnostic.ok) {
+    return inconclusiveCanonicalAction(
+      actionDiagnostic.reasonCode,
+      actionDiagnostic.reason
+    );
+  }
+
+  return {
+    resourceVersion: "1.0",
+    availability: "available",
+    envelope: toHyperActionEnvelope(actionDiagnostic.value)
+  };
+}
+
+function inconclusiveCanonicalAction(
+  reasonCode: string,
+  reason: string
+): CanonicalActionResourceV1 {
+  return {
+    resourceVersion: "1.0",
+    availability: "inconclusive",
+    authority: "kit",
+    reasonCode,
+    reason: singleLineReason(reason)
+  };
+}
+
+function singleLineReason(reason: string): string {
+  return reason.replace(/[\r\n]+/gu, " ").trim();
 }
 
 async function readKitReadContractResource(projectPath: string, uri: string): Promise<McpResourceContent> {
