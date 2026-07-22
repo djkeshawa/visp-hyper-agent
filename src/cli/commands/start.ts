@@ -1,11 +1,24 @@
 import { readFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { Command, Option } from "commander";
 import { buildContextManifest, renderContextManifest } from "../../context/context-manifest.js";
 import { scanRelevantFiles } from "../../context/relevance-scanner.js";
+import { defaultConfig } from "../../core/defaults.js";
 import { vispPath, writeText } from "../../core/fs-utils.js";
-import { createSession, initializeProject, readConfig } from "../../core/session-manager.js";
-import type { ContextFile, ContextManifest, ContextPackOptions, HyperConfig, SessionRecord, ToolProfile } from "../../core/types.js";
+import {
+  createSession,
+  initializeProject,
+  readConfig,
+  updateActiveSession
+} from "../../core/session-manager.js";
+import type {
+  ContextFile,
+  ContextManifest,
+  ContextPackOptions,
+  HyperConfig,
+  SessionRecord,
+  ToolProfile
+} from "../../core/types.js";
 import { buildHandoffProtocol, renderHandoff } from "../../handoff/handoff-protocol.js";
 import { isBlockedPath } from "../../governance/blocked-files.js";
 import {
@@ -15,6 +28,7 @@ import {
 import { renderKitAuthorityStop, type KitAvailability } from "../../kit/kit-availability.js";
 import { readKitArtifacts } from "../../kit/kit-reader.js";
 import type { KitContextPack, KitIntegrationContract } from "../../kit/kit-schemas.js";
+import type { NormalizedWorkflowAction } from "../../kit/workflow-action-adapter.js";
 import { readMemoryPack } from "../../memory/file-memory-provider.js";
 import { readRelevantFailurePatterns } from "../../memory/failure-patterns.js";
 import { LlmMemoryProvider } from "../../memory/llm-memory-provider.js";
@@ -99,10 +113,10 @@ export async function executeStart(
   goal: string,
   options: StartOptions
 ): Promise<StartResult> {
-  await initializeProject(projectPath);
-  const config = await readConfig(projectPath);
-  const tool = options.tool ?? config.defaultTool;
   const adoption = options.authority.mode === "kit" ? options.authority.adoption : undefined;
+  await initializeProject(projectPath);
+  const config = adoption?.config ?? (await readConfig(projectPath));
+  const tool = options.tool ?? config.defaultTool;
   const kit = await readKitArtifacts(projectPath);
   const memory = await readMemoryPack(projectPath);
   const memoryFusion = await fuseRecalledMemory(projectPath, config, goal);
@@ -124,12 +138,23 @@ export async function executeStart(
     taskId: adoption?.taskId,
     files: contextFiles.map((file) => file.path)
   });
-  const session = await createSession({
+  const createdSession = await createSession({
     projectPath,
     goal,
     tool,
     relevantFiles: contextFiles.map((file) => file.path)
   });
+  const session = adoption
+    ? (await updateActiveSession(projectPath, (current) => ({
+        ...current,
+        pipeline: {
+          taskIds: [adoption.taskId],
+          currentTaskId: adoption.taskId,
+          completed: [],
+          stepHistory: []
+        }
+      }))) ?? createdSession
+    : createdSession;
   const { registry } = await readSkillRegistry(projectPath);
   const handoff = renderHandoff(session, {
     skills: registry.skills.map((skill) => ({ name: skill.name, whenToUse: skill.whenToUse }))
@@ -147,7 +172,7 @@ export async function executeStart(
     validationCommands,
     blockedPaths: config.blockedPaths,
     failurePatterns,
-    nextCommand: adoption?.taskId ? `visp-hyper checkpoint --task ${adoption.taskId}` : "visp-hyper next"
+    nextCommand: adoption?.nextCommand ?? "visp-hyper next"
   });
 
   await writeText(vispPath(projectPath, "hyper", "current", "session.md"), renderSession(session));
@@ -228,6 +253,7 @@ function looksLikeInstructionInjection(content: string): boolean {
 }
 
 export type KitAdoption = {
+  config: HyperConfig;
   files: ContextFile[];
   source: string;
   taskId: string;
@@ -246,71 +272,150 @@ export type KitAdoption = {
   kitReadContract?: ContextManifest["kitReadContract"];
   freshnessWarnings: string[];
   validationCommands: string[];
+  nextCommand: string;
   warnings: string[];
 };
 
+export type StrictKitAdoptionDiagnostic =
+  | { ok: true; value: KitAdoption }
+  | {
+      ok: false;
+      reasonCode:
+        | "hyper_config_unavailable"
+        | "strict_session_task_mismatch"
+        | "context_pack_required_read_missing"
+        | "context_pack_path_mismatch"
+        | "context_pack_hash_mismatch"
+        | "context_pack_task_mismatch"
+        | "context_pack_validation_commands_mismatch"
+        | "context_pack_selected_file_blocked"
+        | "context_pack_selected_file_invalid"
+        | "context_pack_selected_file_unavailable";
+      reason: string;
+    };
+
 /**
  * Convert an already validated, contract-pinned Kit context artifact into the
- * exact adoption object used by `executeStart`. This deliberately performs no
- * Kit probe and exposes an empty/fully-blocked pack before the implement gate.
+ * exact adoption object used by `executeStart`. This path is read-only: a
+ * failed admission check must not initialize Hyper or create session state.
  */
 export async function prepareStrictKitAdoption(
   projectPath: string,
   input: {
-    taskId: string;
+    action: NormalizedWorkflowAction;
     artifact: KitContextPackArtifact;
     contract: KitIntegrationContract;
   }
-): Promise<KitAdoption | undefined> {
-  const config = await readConfig(projectPath);
+): Promise<StrictKitAdoptionDiagnostic> {
+  const configDiagnostic = await readStrictConfigSnapshot(projectPath);
+  if (!configDiagnostic.ok) {
+    return configDiagnostic;
+  }
   return buildKitAdoption({
     projectPath,
-    config,
-    taskId: input.taskId,
+    config: configDiagnostic.value,
+    action: input.action,
     artifact: input.artifact,
-    contract: input.contract,
-    authorityWarnings: []
+    contract: input.contract
   });
 }
 
 async function buildKitAdoption(input: {
   projectPath: string;
   config: HyperConfig;
-  taskId: string;
+  action: NormalizedWorkflowAction;
   artifact: KitContextPackArtifact;
-  contract: KitIntegrationContract | null;
-  authorityWarnings: string[];
-}): Promise<KitAdoption | undefined> {
-  const { projectPath, config, taskId, artifact, contract } = input;
-
-  const files = await contextFilesFromPack(artifact.pack, projectPath, config.blockedPaths);
-  if (files.length === 0) {
-    return undefined;
+  contract: KitIntegrationContract;
+}): Promise<StrictKitAdoptionDiagnostic> {
+  const { projectPath, config, action, artifact, contract } = input;
+  const taskId = action.task?.id;
+  if (!taskId || contract.activeTask?.id !== taskId) {
+    return adoptionFailure(
+      "strict_session_task_mismatch",
+      "The canonical action and integration contract do not identify the same active task."
+    );
   }
 
-  const artifactProvenance = (artifact.pack.artifactProvenance ?? []).map((entry) => ({
-    ...entry,
+  const contextReads = action.requiredReads.filter((read) => read.role === "context_pack");
+  if (contextReads.length !== 1) {
+    return adoptionFailure(
+      "context_pack_required_read_missing",
+      `The canonical action must contain exactly one context_pack required read; found ${contextReads.length}.`
+    );
+  }
+  const contextRead = contextReads[0]!;
+  const artifactPath = normalizeArtifactPath(projectPath, artifact.path);
+  if (artifactPath === undefined || artifactPath !== contextRead.path) {
+    return adoptionFailure(
+      "context_pack_path_mismatch",
+      `The loaded context pack path does not match the canonical required read ${contextRead.path}.`
+    );
+  }
+  if (`sha256:${artifact.sha256}` !== contextRead.contentHash) {
+    return adoptionFailure(
+      "context_pack_hash_mismatch",
+      "The loaded context pack hash does not match the canonical required read."
+    );
+  }
+  const selectedTask = artifact.pack.selectedTask;
+  const actionTaskStatus =
+    action.task?.status.state === "available" ? action.task.status.value : undefined;
+  if (
+    artifact.pack.taskId !== taskId ||
+    !isRecord(selectedTask) ||
+    selectedTask.id !== taskId ||
+    actionTaskStatus === undefined ||
+    selectedTask.status !== actionTaskStatus
+  ) {
+    return adoptionFailure(
+      "context_pack_task_mismatch",
+      `The context pack and its selected task must match canonical task ${taskId} and its status.`
+    );
+  }
+  const packCommands = artifact.pack.validationCommands ?? [];
+  if (!sameStrings(packCommands, action.validationCommands)) {
+    return adoptionFailure(
+      "context_pack_validation_commands_mismatch",
+      "The context pack validation commands do not exactly match the canonical action."
+    );
+  }
+
+  const filesDiagnostic = await contextFilesFromPack(
+    artifact.pack,
+    projectPath,
+    config.blockedPaths
+  );
+  if (!filesDiagnostic.ok) {
+    return filesDiagnostic;
+  }
+
+  const artifactProvenance = action.requiredReads.map((read) => ({
+    label: read.id.state === "available" ? read.id.value : read.role,
+    path: read.path,
+    hash: read.contentHash.slice("sha256:".length),
+    hashAlgorithm: "sha256" as const,
     source: "visp-kit" as const
   }));
-  const freshnessWarnings =
-    artifactProvenance.length === 0
-      ? [missingProvenanceWarning(taskId)]
-      : [];
 
   return {
-    files,
-    source: `visp-kit context pack (${taskId})`,
-    taskId,
-    contextArtifact: {
-      path: normalizeRelative(projectPath, artifact.path),
-      hash: artifact.sha256,
-      hashAlgorithm: "sha256"
-    },
-    artifactProvenance,
-    kitReadContract: readContractFromKit(contract, taskId),
-    freshnessWarnings,
-    validationCommands: artifact.pack.validationCommands ?? [],
-    warnings: [...input.authorityWarnings, ...freshnessWarnings]
+    ok: true,
+    value: {
+      config,
+      files: filesDiagnostic.value,
+      source: `visp-kit context pack (${taskId})`,
+      taskId,
+      contextArtifact: {
+        path: artifactPath,
+        hash: artifact.sha256,
+        hashAlgorithm: "sha256"
+      },
+      artifactProvenance,
+      kitReadContract: readContractFromKit(contract, taskId),
+      freshnessWarnings: [],
+      validationCommands: [...action.validationCommands],
+      nextCommand: action.nextCommand,
+      warnings: []
+    }
   };
 }
 
@@ -360,27 +465,172 @@ async function contextFilesFromPack(
   pack: KitContextPack,
   projectPath: string,
   blockedPaths: string[]
-): Promise<ContextFile[]> {
+): Promise<{ ok: true; value: ContextFile[] } | StrictKitAdoptionFailure> {
   const entries = pack.includedFiles ?? pack.files ?? [];
+  if (entries.length === 0) {
+    return adoptionFailure(
+      "context_pack_selected_file_unavailable",
+      "The canonical context pack contains no selected files."
+    );
+  }
   const files: ContextFile[] = [];
   for (const entry of entries) {
-    if (isBlockedPath(entry.path, blockedPaths)) {
-      continue;
+    const path = normalizeProjectRelativePath(entry.path);
+    if (path === undefined) {
+      return adoptionFailure(
+        "context_pack_selected_file_invalid",
+        `The context pack selected an unsafe project path: ${entry.path}.`
+      );
+    }
+    if (isBlockedPath(path, blockedPaths)) {
+      return adoptionFailure(
+        "context_pack_selected_file_blocked",
+        `The context pack selected a blocked path: ${path}.`
+      );
     }
     const provided = entry.content ?? entry.snippet;
-    const content = provided ?? (await readPackFile(join(projectPath, entry.path)));
+    const content = provided ?? (await readPackFile(join(projectPath, path)));
+    if (content === undefined && entry.includeMode !== "new-file") {
+      return adoptionFailure(
+        "context_pack_selected_file_unavailable",
+        `The context pack selected ${path}, but its content could not be read.`
+      );
+    }
     files.push({
-      path: entry.path,
+      path,
       reason: entry.reason ?? "visp-kit context pack",
       content,
       ...(entry.hash ? { sourceHash: entry.hash, sourceHashAlgorithm: "sha256" as const, sourceHashSource: "visp-kit" as const } : {})
     });
   }
-  return files;
+  return { ok: true, value: files };
 }
 
-function normalizeRelative(projectPath: string, path: string): string {
-  return relative(projectPath, path).replace(/\\/g, "/");
+type StrictKitAdoptionFailure = Extract<StrictKitAdoptionDiagnostic, { ok: false }>;
+
+function adoptionFailure(
+  reasonCode: StrictKitAdoptionFailure["reasonCode"],
+  reason: string
+): StrictKitAdoptionFailure {
+  return { ok: false, reasonCode, reason };
+}
+
+async function readStrictConfigSnapshot(
+  projectPath: string
+): Promise<{ ok: true; value: HyperConfig } | StrictKitAdoptionFailure> {
+  let raw: string;
+  try {
+    raw = await readFile(vispPath(projectPath, "hyper", "config.json"), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { ok: true, value: cloneConfig(defaultConfig) };
+    }
+    return adoptionFailure(
+      "hyper_config_unavailable",
+      "The existing Hyper configuration could not be read without modifying the project."
+    );
+  }
+
+  let candidate: unknown;
+  try {
+    candidate = JSON.parse(raw) as unknown;
+  } catch {
+    return adoptionFailure(
+      "hyper_config_unavailable",
+      "The existing Hyper configuration is not valid JSON."
+    );
+  }
+  const config = parseStrictConfig(candidate);
+  return config
+    ? { ok: true, value: config }
+    : adoptionFailure(
+        "hyper_config_unavailable",
+        "The existing Hyper configuration does not match the supported schema."
+      );
+}
+
+function parseStrictConfig(value: unknown): HyperConfig | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const tools: readonly ToolProfile[] = [
+    "generic",
+    "codex",
+    "claude-code",
+    "copilot",
+    "opencode"
+  ];
+  if (
+    typeof value.defaultTool !== "string" ||
+    !tools.includes(value.defaultTool as ToolProfile) ||
+    typeof value.tokenBudget !== "number" ||
+    !Number.isInteger(value.tokenBudget) ||
+    value.tokenBudget <= 0 ||
+    (value.memoryMode !== "file" && value.memoryMode !== "llm-memory") ||
+    value.contextMode !== "deterministic" ||
+    (value.memoryEndpoint !== undefined && typeof value.memoryEndpoint !== "string") ||
+    (value.memoryRepoId !== undefined && typeof value.memoryRepoId !== "string") ||
+    (value.blockedPaths !== undefined && !isStringArray(value.blockedPaths)) ||
+    (value.skillMode !== undefined && value.skillMode !== "auto" && value.skillMode !== "review") ||
+    (value.validationCommands !== undefined && !isStringArray(value.validationCommands))
+  ) {
+    return undefined;
+  }
+  return {
+    defaultTool: value.defaultTool as ToolProfile,
+    tokenBudget: value.tokenBudget,
+    memoryMode: value.memoryMode,
+    memoryEndpoint: value.memoryEndpoint ?? defaultConfig.memoryEndpoint,
+    ...(value.memoryRepoId === undefined ? {} : { memoryRepoId: value.memoryRepoId }),
+    contextMode: "deterministic",
+    blockedPaths: [...(value.blockedPaths ?? defaultConfig.blockedPaths)],
+    skillMode: value.skillMode ?? defaultConfig.skillMode,
+    ...(value.validationCommands === undefined
+      ? {}
+      : { validationCommands: [...value.validationCommands] })
+  };
+}
+
+function cloneConfig(config: HyperConfig): HyperConfig {
+  return {
+    ...config,
+    blockedPaths: [...config.blockedPaths],
+    ...(config.validationCommands
+      ? { validationCommands: [...config.validationCommands] }
+      : {})
+  };
+}
+
+function normalizeArtifactPath(projectPath: string, path: string): string | undefined {
+  return normalizeProjectRelativePath(
+    isAbsolute(path) ? relative(projectPath, path) : path
+  );
+}
+
+function normalizeProjectRelativePath(path: string): string | undefined {
+  const normalized = path.replaceAll("\\", "/");
+  if (
+    normalized.length === 0 ||
+    normalized.includes("\0") ||
+    normalized.startsWith("/") ||
+    /^[A-Za-z]:\//u.test(normalized) ||
+    normalized.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..")
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function readPackFile(path: string): Promise<string | undefined> {
@@ -390,8 +640,4 @@ async function readPackFile(path: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
-}
-
-function missingProvenanceWarning(taskId: string): string {
-  return `Kit context pack for ${taskId} has no artifactProvenance; checkpoint can pin only the context-pack file, not the spec/task/plan/policy artifacts that grounded the handoff. Regenerate the context pack with a Visp Kit that emits artifact provenance.`;
 }

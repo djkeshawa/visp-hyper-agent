@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -57,6 +57,7 @@ describe("direct start Kit authority boundary", () => {
 
     expect(logs.join("\n")).toContain("reason_code: direct_start_requires_kitless_project");
     await expect(readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")).rejects.toThrow();
+    await expect(stat(join(projectPath, ".visp", "hyper"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(process.exitCode).toBe(1);
   });
 
@@ -70,6 +71,7 @@ describe("direct start Kit authority boundary", () => {
     expect(logs.join("\n")).toContain("status: INCONCLUSIVE");
     expect(logs.join("\n")).toContain("reason_code: binary_not_found");
     await expect(readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")).rejects.toThrow();
+    await expect(stat(join(projectPath, ".visp", "hyper"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(process.exitCode).toBe(1);
   });
 
@@ -79,11 +81,43 @@ describe("direct start Kit authority boundary", () => {
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "start", "implement feature"]);
 
-    expect(logs.join("\n")).toContain("BEGIN_VISP_AGENT_HANDOFF");
+    const output = logs.join("\n");
+    expect(output.match(/BEGIN_VISP_AGENT_HANDOFF/gu)).toHaveLength(1);
+    expect(output.match(/END_VISP_AGENT_HANDOFF/gu)).toHaveLength(1);
+    expect(output).not.toContain("BEGIN_VISP_HYPER_ACTION_V1");
+    expect(output).not.toContain("BEGIN_VISP_MODEL_ROUTING");
+    expect(output).not.toContain("BEGIN_VISP_TASK_ACTION");
+    expect(output).not.toContain("BEGIN_VISP_WORKFLOW_DIRECTIVE");
     const manifest = JSON.parse(
       await readFile(join(projectPath, ".visp", "hyper", "current", "context-manifest.json"), "utf8")
     );
-    expect(manifest.contextSource).toBe("visp-hyper relevance scanner");
+    expect(manifest).toMatchObject({
+      goal: "implement feature",
+      contextSource: "visp-hyper relevance scanner",
+      validationCommands: [],
+      nextCommand: "visp-hyper next"
+    });
+    expect(manifest.taskId).toBeUndefined();
+    expect(manifest.contextArtifact).toBeUndefined();
+    expect(manifest.artifactProvenance).toBeUndefined();
+    const state = JSON.parse(
+      await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")
+    );
+    expect(Object.keys(state.sessions)).toHaveLength(1);
+    expect(state.sessions[state.activeSessionId]).toMatchObject({
+      goal: "implement feature",
+      phase: "implementation"
+    });
+    expect(state.sessions[state.activeSessionId].pipeline).toBeUndefined();
+    expect((await readdir(join(projectPath, ".visp", "hyper", "current"))).sort()).toEqual([
+      "agent-instructions.md",
+      "context-manifest.json",
+      "context-pack.md",
+      "handoff.json",
+      "memory-pack.md",
+      "quality-gates.md",
+      "session.md"
+    ]);
     expect(process.exitCode).toBeFalsy();
   });
 });

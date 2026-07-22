@@ -1,30 +1,28 @@
 import { Command, Option } from "commander";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { readState, updateActiveSession } from "../../core/session-manager.js";
+import { readState } from "../../core/session-manager.js";
 import type { ToolProfile } from "../../core/types.js";
 import {
   kitAuthoritativeTaskGraphSchema,
   type KitAuthoritativeTaskGraph,
   type KitGateResult,
   type KitIntegrationContract,
-  type KitStatus,
-  type KitTask
+  type KitStatus
 } from "../../kit/kit-schemas.js";
 import { provenanceFreshnessContractWarning } from "../../kit/kit-contract-compat.js";
 import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
+import type { NormalizedWorkflowAction } from "../../kit/workflow-action-adapter.js";
 import {
-  buildActionBlock,
-  currentTask,
-  initialPipelineState,
-  readySet
-} from "../../pipeline/pipeline-engine.js";
+  renderHyperActionFrame,
+  toHyperActionEnvelope
+} from "../../kit/workflow-action-renderer.js";
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { executeStart, prepareStrictKitAdoption } from "./start.js";
-import { contextPackPathIfExists, printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
+import { printWarnings, resolveProjectPath } from "./shared.js";
 
 export function runCommand(): Command {
   return new Command("run")
@@ -50,7 +48,7 @@ export function runCommand(): Command {
       }
 
       if (kit.state === "configured-unhealthy") {
-        console.log(
+        failStrictRun(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
             reasonCode: kit.reasonCode,
@@ -66,7 +64,7 @@ export function runCommand(): Command {
       const contractDiagnostic = await bridge.integrationContractDiagnostic();
       printWarnings(bridge.warnings);
       if (!contractDiagnostic.ok) {
-        console.log(
+        failStrictRun(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
             reasonCode: contractDiagnostic.reasonCode,
@@ -80,24 +78,66 @@ export function runCommand(): Command {
         console.log(`warning: ${contractWarning}`);
       }
 
-      const policy = await bridge.policyValidate();
+      const actionDiagnostic = await bridge.nextCanonicalActionDiagnostic(
+        "auto",
+        contractDiagnostic.value
+      );
       printWarnings(bridge.warnings);
-      if (!policy) {
-        console.log(
+      if (!actionDiagnostic.ok) {
+        failStrictRun(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
-            reasonCode: "policy_unavailable",
-            reason: "Kit policy validation was unavailable or malformed."
+            reasonCode: actionDiagnostic.reasonCode,
+            reason: actionDiagnostic.reason
           })
         );
         return;
       }
+      const action = actionDiagnostic.value;
+      if (action.verdict !== "ready") {
+        console.log(renderHyperActionFrame(toHyperActionEnvelope(action)));
+        process.exitCode = 1;
+        return;
+      }
+      if (
+        action.source.protocolVersion !== "3.0" ||
+        action.phase.state !== "available" ||
+        action.phase.value !== "implement" ||
+        action.task === null
+      ) {
+        failStrictRun(
+          renderKitAuthorityStop({
+            status: "INCONCLUSIVE",
+            reasonCode: "strict_session_adoption_unavailable",
+            reason:
+              "Strict session adoption requires a ready WorkflowAction 3.0 with an explicitly available implement phase and task."
+          }),
+          action
+        );
+        return;
+      }
+      const taskId = action.task.id;
+
+      const policy = await bridge.policyValidate();
+      printWarnings(bridge.warnings);
+      if (!policy) {
+        failStrictRun(
+          renderKitAuthorityStop({
+            status: "INCONCLUSIVE",
+            reasonCode: "policy_unavailable",
+            reason: "Kit policy validation was unavailable or malformed."
+          }),
+          action
+        );
+        return;
+      }
       if (!policy.success || policy.validation.errors.length > 0) {
-        console.log(
+        failStrictRun(
           renderPolicyBlocked({
             errors: policy.validation.errors,
             nextCommand: policy.nextCommand
-          })
+          }),
+          action
         );
         return;
       }
@@ -105,22 +145,35 @@ export function runCommand(): Command {
       const gateState = await bridge.gate("next");
       printWarnings(bridge.warnings);
       if (!gateState) {
-        console.log(
+        failStrictRun(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
             reasonCode: "gate_next_unavailable",
             reason: "Kit gate-next evaluation was unavailable or malformed."
-          })
+          }),
+          action
         );
         return;
       }
       if (gateState.allowed === false) {
-        console.log(
+        failStrictRun(
           renderAuthoritativeGateBlocked({
             stage: "gate_next",
             reasonCode: "gate_next_blocked",
             gate: gateState
-          })
+          }),
+          action
+        );
+        return;
+      }
+      if (gateState.taskId !== taskId) {
+        failStrictRun(
+          renderKitAuthorityStop({
+            status: "INCONCLUSIVE",
+            reasonCode: "gate_next_task_mismatch",
+            reason: `Kit gate-next evaluated task ${gateState.taskId ?? "none"}; expected canonical task ${taskId}.`
+          }),
+          action
         );
         return;
       }
@@ -133,114 +186,151 @@ export function runCommand(): Command {
       );
 
       if (!graph) {
-        console.log(
+        failStrictRun(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
             reasonCode: "task_graph_unavailable",
             reason: "The configured Kit task graph was unavailable or malformed."
-          })
+          }),
+          action
         );
         return;
       }
 
-      const pipeline = initialPipelineState(graph);
-      const task = currentTask(graph, pipeline);
+      const graphTask = graph.tasks.find((candidate) => candidate.id === taskId);
       const contractTaskId = contractDiagnostic.value.activeTask?.id;
       const statusTaskId = kit.status.activeTask?.id;
-      if (!task || !contractTaskId || !statusTaskId || task.id !== contractTaskId || task.id !== statusTaskId) {
-        console.log(
+      const actionTaskStatus =
+        action.task.status.state === "available" ? action.task.status.value : undefined;
+      if (
+        !graphTask ||
+        !contractTaskId ||
+        !statusTaskId ||
+        taskId !== contractTaskId ||
+        taskId !== statusTaskId ||
+        actionTaskStatus === undefined ||
+        graphTask.status !== actionTaskStatus ||
+        contractDiagnostic.value.activeTask?.status !== actionTaskStatus ||
+        kit.status.activeTask?.status !== actionTaskStatus
+      ) {
+        failStrictRun(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
             reasonCode: "task_unavailable",
-            reason: "Kit status, integration contract, and task graph did not identify the same executable current task."
-          })
+            reason:
+              "The canonical action, Kit status, integration contract, and task graph did not identify the same task and status."
+          }),
+          action
         );
         return;
       }
 
       const contextArtifact = await bridge.readAuthoritativeContextPackArtifact(
-        task.id,
+        taskId,
         contractDiagnostic.value
       );
       printWarnings(bridge.warnings);
       if (!contextArtifact) {
-        console.log(
+        failStrictRun(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
             reasonCode: "context_pack_unavailable",
-            reason: `Kit context pack for ${task.id} was unavailable or malformed.`
-          })
+            reason: `Kit context pack for ${taskId} was unavailable or malformed.`
+          }),
+          action
         );
         return;
       }
 
-      const strictKitAdoption = await prepareStrictKitAdoption(projectPath, {
-        taskId: task.id,
+      const adoptionDiagnostic = await prepareStrictKitAdoption(projectPath, {
+        action,
         artifact: contextArtifact,
         contract: contractDiagnostic.value
       });
-      if (!strictKitAdoption) {
-        console.log(
+      if (!adoptionDiagnostic.ok) {
+        failStrictRun(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
-            reasonCode: "context_pack_unavailable",
-            reason: `Kit context pack for ${task.id} yielded no usable, policy-allowed files.`
-          })
+            reasonCode: adoptionDiagnostic.reasonCode,
+            reason: adoptionDiagnostic.reason
+          }),
+          action
         );
         return;
       }
+      const strictKitAdoption = adoptionDiagnostic.value;
 
-      const implementGate = await bridge.gateImplement(task.id);
+      const implementGate = await bridge.gateImplement(taskId);
       printWarnings(bridge.warnings);
 
       if (!implementGate) {
-        console.log(
+        failStrictRun(
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
             reasonCode: "gate_implement_unavailable",
             reason: "Kit gate-implement evaluation was unavailable or malformed."
-          })
+          }),
+          action
         );
         return;
       }
       if (implementGate.allowed === false) {
-        console.log(
+        failStrictRun(
           renderAuthoritativeGateBlocked({
             stage: "gate_implement",
             reasonCode: "gate_implement_blocked",
-            task: task.id,
+            task: taskId,
             gate: implementGate
-          })
+          }),
+          action
+        );
+        return;
+      }
+      if (implementGate.taskId !== taskId) {
+        failStrictRun(
+          renderKitAuthorityStop({
+            status: "INCONCLUSIVE",
+            reasonCode: "gate_implement_task_mismatch",
+            reason: `Kit gate-implement evaluated task ${implementGate.taskId ?? "none"}; expected canonical task ${taskId}.`
+          }),
+          action
         );
         return;
       }
 
       // Create durable Hyper session state only after every required strict
       // precondition has produced a valid authoritative result.
-      const { session, handoff } = await executeStart(projectPath, goal, {
+      const { handoff } = await executeStart(projectPath, action.goal, {
         ...options,
         authority: { mode: "kit", adoption: strictKitAdoption }
       });
-      await updateActiveSession(projectPath, (current) => ({ ...current, pipeline }));
-
-      const contextPackPath = await contextPackPathIfExists(projectPath, task.id);
-      const concurrentWith = readySet(graph, task.id, pipeline.completed);
 
       console.log(handoff);
       console.log("");
-      console.log(buildActionBlock(task, { contextPackPath, sessionId: session.id, concurrentWith }));
-      await printAndRecordRouting(projectPath, task);
-      printWorkflowDirectiveIfAny(graph, pipeline, session.tool, session.id);
+      console.log(renderHyperActionFrame(toHyperActionEnvelope(action)));
+      await printAndRecordRouting(projectPath, action);
     });
 }
 
 /**
- * Compute the advisory model-routing suggestion for `task`, print it after the
+ * Compute the advisory model-routing suggestion for `action`, print it after the
  * action block, and persist the decision. Best-effort: a routing failure must
  * never break the run command, so errors are swallowed.
  */
-async function printAndRecordRouting(projectPath: string, task: KitTask): Promise<void> {
+async function printAndRecordRouting(
+  projectPath: string,
+  action: NormalizedWorkflowAction
+): Promise<void> {
   try {
+    if (action.task === null) {
+      return;
+    }
+    const task = {
+      id: action.task.id,
+      ...(action.risk.level.state === "available"
+        ? { riskLevel: action.risk.level.value }
+        : {})
+    };
     const [{ data: telemetry }, { state: routingState }, hyperState] = await Promise.all([
       readTelemetry(projectPath),
       readRoutingState(projectPath),
@@ -264,6 +354,15 @@ async function printAndRecordRouting(projectPath: string, task: KitTask): Promis
   } catch {
     // Advisory only; never fail the run because routing could not be computed.
   }
+}
+
+function failStrictRun(output: string, action?: NormalizedWorkflowAction): void {
+  console.log(output);
+  if (action) {
+    console.log("");
+    console.log(renderHyperActionFrame(toHyperActionEnvelope(action)));
+  }
+  process.exitCode = 1;
 }
 
 function deriveFeatureDirName(status: KitStatus): string | undefined {

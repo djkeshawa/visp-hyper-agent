@@ -1,10 +1,13 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
+import { createWorkflowActionV3Id } from "../src/kit/workflow-action-adapter.js";
+import type { WorkflowActionV3Wire } from "../src/kit/workflow-action-protocol.js";
 import { appendAttempt, readTelemetry } from "../src/telemetry/telemetry-store.js";
 import type { TelemetryAttempt } from "../src/telemetry/telemetry-store.js";
 import {
@@ -29,6 +32,15 @@ const execFileAsync = promisify(execFile);
 const originalPath = process.env.PATH;
 
 const FEATURE_DIR = "001-pipeline";
+const V2_HASH =
+  "sha256:c63b279b1ce89f047b2be696a47e845a57adda7f8437892e211e3a4cfad39ed6";
+const V3_HASH =
+  "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7";
+const unavailable = (reasonCode = "not_in_source_artifact") => ({
+  state: "unavailable" as const,
+  reasonCode
+});
+const available = <T>(value: T) => ({ state: "available" as const, value });
 
 async function createProject(): Promise<string> {
   const projectPath = await mkdtemp(join(tmpdir(), "visp-telemetry-"));
@@ -78,6 +90,17 @@ function kit20IntegrationContract(projectPath: string): Record<string, unknown> 
     },
     activeTask: { id: "T001", title: "First task", status: "ready" },
     commands: {},
+    capabilities: {
+      contextGrounding: { artifactProvenance: true }
+    },
+    workflow: { freshnessChecks: ["contextPack.artifactProvenance[]"] },
+    protocols: {
+      workflowAction: {
+        supported: ["2.0", "3.0"],
+        default: "2.0",
+        schemaHashes: { "2.0": V2_HASH, "3.0": V3_HASH }
+      }
+    },
     artifacts: {
       kitSignals: [".visp/policy.json", ".visp/project.json"],
       projectStatus: ".visp/status.json",
@@ -116,6 +139,74 @@ function allowedRunGates(projectPath: string): ShimSpec {
       stdout: gateResultFixture({ targetPath: projectPath, stage: "implement" })
     }
   };
+}
+
+async function canonicalRunAction(
+  projectPath: string,
+  overrides: Record<string, unknown> = {}
+): Promise<WorkflowActionV3Wire> {
+  const contextPath = `.visp/features/${FEATURE_DIR}/context/T001.context.json`;
+  const context = await readFile(join(projectPath, contextPath), "utf8");
+  const draft = {
+    protocolVersion: "3.0" as const,
+    canonicalVersion: "1.0" as const,
+    actionId: `sha256:${"0".repeat(64)}`,
+    phase: "implement" as const,
+    feature: { id: "001", slug: "pipeline" },
+    task: {
+      id: "T001",
+      title: "First task",
+      status: "ready" as const,
+      dependsOn: [],
+      parallelizable: false
+    },
+    taskClass: unavailable(),
+    risk: { level: available("medium" as const), factors: unavailable() },
+    assurance: {
+      level: "kit_strict" as const,
+      profile: unavailable(),
+      workflowStrictness: available("strict" as const)
+    },
+    goal: "Canonical telemetry task",
+    baseCommit: unavailable("not_captured"),
+    requiredReads: [
+      {
+        id: "task-context",
+        role: "context_pack" as const,
+        path: contextPath,
+        contentHash: `sha256:${createHash("sha256").update(context).digest("hex")}`,
+        freshness: "content_hash" as const
+      }
+    ],
+    scope: {
+      writablePaths: ["src/feature.ts"],
+      expectedPaths: unavailable(),
+      forbiddenPaths: [],
+      operationLimits: unavailable()
+    },
+    claims: unavailable(),
+    validationOracles: [],
+    validationCommands: ["pnpm typecheck", "pnpm test"],
+    requiredEvidence: unavailable(),
+    policy: { status: available("valid" as const), appliedOverrides: available([]) },
+    findings: [],
+    verdict: "ready" as const,
+    nextCommand: "visp implement --task T001",
+    ...overrides
+  };
+  return {
+    ...draft,
+    actionId: createWorkflowActionV3Id(draft)
+  } as WorkflowActionV3Wire;
+}
+
+async function strictRunSpec(projectPath: string, extra: ShimSpec = {}): Promise<ShimSpec> {
+  return kitStatusSpec(projectPath, {
+    policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+    ...allowedRunGates(projectPath),
+    next: { stdout: await canonicalRunAction(projectPath) },
+    ...extra
+  });
 }
 
 function prependToPath(dir: string): void {
@@ -164,6 +255,7 @@ describe("telemetry store and budget round-trip", () => {
 
   afterEach(() => {
     process.env.PATH = originalPath;
+    process.exitCode = undefined;
     vi.restoreAllMocks();
   });
 
@@ -247,10 +339,7 @@ describe("telemetry store and budget round-trip", () => {
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
-      kitStatusSpec(projectPath, {
-        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
-        ...allowedRunGates(projectPath),
-        next: { stdout: { success: true, nextCommand: "visp implement" } },
+      await strictRunSpec(projectPath, {
         budget: { stdout: { success: true } }
       })
     );
@@ -295,13 +384,7 @@ describe("telemetry store and budget round-trip", () => {
     await writeTaskGraph(projectPath);
 
     // First run a pipeline-aware session with a shim so the session has a task id...
-    const shim = await createVispShim(
-      kitStatusSpec(projectPath, {
-        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
-        ...allowedRunGates(projectPath),
-        next: { stdout: { success: true, nextCommand: "visp implement" } }
-      })
-    );
+    const shim = await createVispShim(await strictRunSpec(projectPath));
     prependToPath(dirname(shim.binary));
     await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
     await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
@@ -478,6 +561,7 @@ describe("routing CLI integration", () => {
 
   afterEach(() => {
     process.env.PATH = originalPath;
+    process.exitCode = undefined;
     vi.restoreAllMocks();
   });
 
@@ -490,12 +574,9 @@ describe("routing CLI integration", () => {
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
-      kitStatusSpec(projectPath, {
-        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
-        ...allowedRunGates(projectPath),
+      await strictRunSpec(projectPath, {
         verify: { stdout: { success: true } },
-        review: { stdout: { success: true } },
-        next: { stdout: { success: true, nextCommand: "visp implement" } }
+        review: { stdout: { success: true } }
       })
     );
     prependToPath(dirname(shim.binary));
@@ -507,8 +588,58 @@ describe("routing CLI integration", () => {
     const output = logs.join("\n");
     expect(output).toContain("BEGIN_VISP_MODEL_ROUTING");
     expect(output).toContain("suggested_tier:");
-    // T001 is high risk → strongest tier with no evidence.
+    // The graph is high risk, but strict routing binds to the medium-risk action.
     expect(output).toContain(`suggested_tier: ${STRONGEST_TIER}`);
+    expect((await readRoutingFile(projectPath)).decisions.at(-1)).toMatchObject({
+      taskId: "T001",
+      taskClass: "medium"
+    });
+  });
+
+  it("AC005a: unavailable canonical risk routes as unknown without graph substitution", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+    const action = await canonicalRunAction(projectPath, {
+      risk: { level: unavailable(), factors: unavailable() }
+    });
+    const shim = await createVispShim(
+      await strictRunSpec(projectPath, { next: { stdout: action } })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "raw goal"]);
+
+    expect(logs.join("\n")).toContain("BEGIN_VISP_MODEL_ROUTING");
+    expect((await readRoutingFile(projectPath)).decisions.at(-1)).toMatchObject({
+      taskId: "T001",
+      taskClass: "unknown"
+    });
+  });
+
+  it("AC005a: advisory routing failure cannot invalidate an authoritative session", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+    const routingPath = join(projectPath, ".visp", "hyper", "routing.json");
+    await mkdir(routingPath, { recursive: true });
+    const shim = await createVispShim(await strictRunSpec(projectPath));
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "run", "raw goal"]);
+
+    const output = logs.join("\n");
+    expect(output).toContain("BEGIN_VISP_AGENT_HANDOFF");
+    expect(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
+    expect(output).not.toContain("BEGIN_VISP_MODEL_ROUTING");
+    expect(process.exitCode).toBeFalsy();
+    const state = JSON.parse(
+      await readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")
+    );
+    expect(Object.keys(state.sessions)).toHaveLength(1);
+    expect(state.sessions[state.activeSessionId]).toMatchObject({
+      goal: "Canonical telemetry task",
+      pipeline: { taskIds: ["T001"], currentTaskId: "T001" }
+    });
+    expect((await stat(routingPath)).isDirectory()).toBe(true);
   });
 
   it("AC005b: configured Kit failure preserves Hyper routing; a local failure quarantines its class", async () => {
@@ -516,12 +647,9 @@ describe("routing CLI integration", () => {
     await writeTaskGraph(projectPath);
 
     const shim = await createVispShim(
-      kitStatusSpec(projectPath, {
-        policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
-        ...allowedRunGates(projectPath),
+      await strictRunSpec(projectPath, {
         verify: { stdout: { success: false } },
-        review: { stdout: { success: true } },
-        next: { stdout: { success: true, nextCommand: "visp implement" } }
+        review: { stdout: { success: true } }
       })
     );
     prependToPath(dirname(shim.binary));
