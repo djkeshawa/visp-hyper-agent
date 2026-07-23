@@ -58,7 +58,7 @@ visp-hyper remember --summary "Implemented offline note sync"
 | `visp-hyper remember [--summary <s>] [--decision <d>...] [--follow-up <f>...] [--used-skill <name>...] [--input-tokens <n>] [--output-tokens <n>] [--model <m>]` | Records session learnings: always writes `.visp/memory/session-history/`; additionally writes to llm-memory (session record, decisions, follow-ups) when enabled, records token usage in telemetry and forwards it to `visp budget`, harvests pending skill proposals, and tracks skill usage. It does not complete a Kit task. |
 | `visp-hyper report [--json]` | The cost/accuracy evidence view: first-attempt verify+review pass rates per model tier and per task class, token totals, active routing quarantines, recent routing decisions, and skill usage with prune flags. |
 | `visp-hyper status` | Session metadata, generated files, context freshness, checkpoint/review state, and memory status. |
-| `visp-hyper doctor [--json]` | Read-only compatibility check for the Hyper + Visp Kit chain: Hyper state, active context freshness, Kit artifacts, `visp --json` parsing, Kit contract capabilities including provenance freshness and orchestrator read contracts, policy validation, next gate, active task context pack, git scope hook, and MCP surface manifest hash. |
+| `visp-hyper doctor [--json]` | Read-only compatibility check for the Hyper + Visp Kit chain: detected Kit version, integration-contract version, selected WorkflowAction protocol and schema verification, canonical verdict, active context freshness, policy, next gate, context pack, git scope hook, and MCP surface manifest hash. |
 
 ## MCP Server
 
