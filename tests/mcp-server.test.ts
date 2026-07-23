@@ -978,6 +978,9 @@ describe("handleMessage resources and prompts surface", () => {
       mimeType: "application/json",
       annotations: { audience: ["user", "assistant"], priority: 1 }
     });
+    expect(await readFile(join(packageRoot, "README.md"), "utf8")).toContain(
+      `- \`${CANONICAL_ACTION_RESOURCE_URI}\``
+    );
 
     const first = await readCanonicalActionResource(projectPath, 2);
     const second = await readCanonicalActionResource(projectPath, 3);
