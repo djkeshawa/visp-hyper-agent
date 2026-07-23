@@ -87,7 +87,7 @@ const taskSchema = z
     parallelizable: z.boolean()
   })
   .strict();
-const taskClassSchema = z.enum([
+export const taskClassValues = [
   "localized_bug",
   "bounded_feature",
   "cross_file_change",
@@ -96,24 +96,37 @@ const taskClassSchema = z.enum([
   "migration",
   "security",
   "documentation"
-]);
-const riskFactorSchema = z
+] as const;
+export const taskClassSchema = z.enum(taskClassValues);
+
+export const riskLevelValues = ["low", "medium", "high"] as const;
+export const riskLevelSchema = z.enum(riskLevelValues);
+
+export const riskFactorCodeValues = [
+  "authentication",
+  "authorization",
+  "cryptography",
+  "public_api",
+  "schema",
+  "dependency",
+  "concurrency",
+  "permissions",
+  "deployment",
+  "data_migration"
+] as const;
+export const riskFactorCodeSchema = z.enum(riskFactorCodeValues);
+export const riskFactorSchema = z
   .object({
     version: z.literal("1.0"),
-    code: z.enum([
-      "authentication",
-      "authorization",
-      "cryptography",
-      "public_api",
-      "schema",
-      "dependency",
-      "concurrency",
-      "permissions",
-      "deployment",
-      "data_migration"
-    ])
+    code: riskFactorCodeSchema
   })
   .strict();
+export const riskFactorsSchema = z.array(riskFactorSchema);
+
+export type TaskClass = z.infer<typeof taskClassSchema>;
+export type RiskLevel = z.infer<typeof riskLevelSchema>;
+export type RiskFactorCode = z.infer<typeof riskFactorCodeSchema>;
+export type RiskFactor = z.infer<typeof riskFactorSchema>;
 const hashedReadSchema = z
   .object({
     id: idSchema,
@@ -210,8 +223,8 @@ export const workflowActionV3StrictSchema = z
     taskClass: declaredValueSchema(taskClassSchema),
     risk: z
       .object({
-        level: declaredValueSchema(z.enum(["low", "medium", "high"])),
-        factors: declaredValueSchema(z.array(riskFactorSchema))
+        level: declaredValueSchema(riskLevelSchema),
+        factors: declaredValueSchema(riskFactorsSchema)
       })
       .strict(),
     assurance: z

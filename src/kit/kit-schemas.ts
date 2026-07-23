@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  riskFactorsSchema,
+  riskLevelSchema,
+  taskClassSchema
+} from "./workflow-action-protocol.js";
 
 // Partial-mirror schemas of the external `visp` CLI's `--json` output.
 // We only describe the fields visp-hyper-agent consumes; unknown extra fields
@@ -133,7 +138,9 @@ const kitAuthoritativeTaskSchema = z
     validationCommands: z.array(z.string().min(1)),
     status: z.enum(["pending", "ready", "in_progress", "blocked", "done", "verified"]),
     parallelizable: z.boolean(),
-    riskLevel: z.enum(["low", "medium", "high"])
+    riskLevel: riskLevelSchema,
+    taskClass: taskClassSchema.optional(),
+    riskFactors: riskFactorsSchema.optional()
   })
   .passthrough();
 
@@ -541,7 +548,9 @@ export const kitTaskSchema = z.object({
   validationCommands: z.array(z.string()).optional(),
   status: z.string().optional(),
   parallelizable: z.boolean().optional(),
-  riskLevel: z.string().optional()
+  taskClass: taskClassSchema.optional(),
+  riskLevel: riskLevelSchema.optional(),
+  riskFactors: riskFactorsSchema.optional()
 });
 export type KitTask = z.infer<typeof kitTaskSchema>;
 

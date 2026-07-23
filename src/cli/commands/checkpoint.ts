@@ -125,7 +125,9 @@ export function checkpointCommand(): Command {
       }
 
       const task = currentTask(graph, session.pipeline!);
-      const taskClass = task?.riskLevel ?? "unknown";
+      const taskClass = task?.taskClass ?? null;
+      const riskLevel = task?.riskLevel ?? null;
+      const riskFactors = task?.riskFactors ?? null;
 
       // Only a genuinely Kit-absent project may use Hyper's local_checked path.
       const localConfig = await readConfig(projectPath);
@@ -168,6 +170,8 @@ export function checkpointCommand(): Command {
         await appendAttempt(projectPath, {
           taskId,
           taskClass,
+          riskLevel,
+          riskFactors,
           tier: options.tier ?? DEFAULT_TIER,
           verifyPassed,
           reviewPassed,
@@ -205,7 +209,11 @@ export function checkpointCommand(): Command {
         try {
           const hyperState = await readState(projectPath);
           await updateRoutingState(projectPath, (state) => escalate({
-            state, taskId, taskClass,
+            state,
+            taskId,
+            taskClass,
+            riskLevel,
+            riskFactors,
             sessionCount: Object.keys(hyperState.sessions).length,
             now: new Date().toISOString()
           }));
@@ -222,7 +230,7 @@ export function checkpointCommand(): Command {
           ];
           await recordFailurePattern(projectPath, {
             taskId,
-            taskClass,
+            taskClass: taskClass ?? "unknown",
             sessionId: session.id,
             source: evidenceSource,
             verifyPassed,

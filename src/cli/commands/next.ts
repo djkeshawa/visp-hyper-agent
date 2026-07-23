@@ -98,7 +98,7 @@ async function knownFailureModesFor(projectPath: string, task: KitTask): Promise
   try {
     const patterns = await readRelevantFailurePatterns(projectPath, {
       taskId: task.id,
-      taskClass: task.riskLevel ?? "unknown",
+      taskClass: task.taskClass ?? null,
       files: task.allowedFiles
     });
     const { knownFailureModes } = evidenceRequirements(task, patterns);
@@ -144,6 +144,8 @@ async function printAndRecordRouting(projectPath: string, task: KitTask): Promis
     await recordRoutingDecision(projectPath, {
       taskId: suggestion.taskId,
       taskClass: suggestion.taskClass,
+      riskLevel: suggestion.riskLevel,
+      riskFactors: suggestion.riskFactors,
       tier: suggestion.suggestedTier,
       reason: suggestion.reason,
       at: new Date().toISOString()

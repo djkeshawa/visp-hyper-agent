@@ -56,7 +56,7 @@ visp-hyper remember --summary "Implemented offline note sync"
 | `visp-hyper checkpoint [--task <id>] [--tier <tier>]` | Appends git diff evidence to `checkpoints.md`. With `--task`: runs Visp Kit verify + review through the bridge, confirms pinned Kit context and provenance artifacts have not changed since handoff, and records the attempt in telemetry. Its result is local evidence; strict progression and remediation come only from Kit's exact current ready action. |
 | `visp-hyper review` | Writes `review-report.md` and prints `BEGIN_VISP_REVIEW_RESULT` (deterministic path-based warnings from `git diff`). |
 | `visp-hyper remember [--summary <s>] [--decision <d>...] [--follow-up <f>...] [--used-skill <name>...] [--input-tokens <n>] [--output-tokens <n>] [--model <m>]` | Records session learnings: always writes `.visp/memory/session-history/`; additionally writes to llm-memory (session record, decisions, follow-ups) when enabled, records token usage in telemetry and forwards it to `visp budget`, harvests pending skill proposals, and tracks skill usage. It does not complete a Kit task. |
-| `visp-hyper report [--json]` | The cost/accuracy evidence view: first-attempt verify+review pass rates per model tier and per task class, token totals, active routing quarantines, recent routing decisions, and skill usage with prune flags. |
+| `visp-hyper report [--json]` | The cost/accuracy evidence view: first-attempt verify+review pass rates per model tier, task class, risk level, and risk factor; token totals; active routing quarantines; recent routing decisions; and skill usage with prune flags. |
 | `visp-hyper status` | Session metadata, generated files, context freshness, checkpoint/review state, and memory status. |
 | `visp-hyper doctor [--json]` | Read-only compatibility check for the Hyper + Visp Kit chain: detected Kit version, integration-contract version, selected WorkflowAction protocol and schema verification, canonical verdict, active context freshness, policy, next gate, context pack, git scope hook, and MCP surface manifest hash. |
 
@@ -193,11 +193,16 @@ Existing installs predating these blocks should re-run `visp-hyper init --tool <
 
 Routing advice is computed deterministically from local telemetry — visp-hyper never selects or calls a model:
 
-- **Baseline**: low-risk tasks suggest the cheap tier (`scout`); everything else suggests the strong tier (`implementer`).
-- **Downgrades must be earned**: a task class is suggested for the cheap tier only after ≥ 3 first-attempt records at ≥ 90% verify+review pass rate on that tier.
+- **Baseline**: every task starts on the strong tier (`implementer`). A missing task class remains unclassified and never borrows evidence from its risk level.
+- **Downgrades must be earned**: an explicit task class is suggested for the cheap tier (`scout`) only after at least 30 comparable first-attempt records whose 95% Wilson lower bound is at least 85%.
+- **Risk remains separate**: task class, risk level, and versioned risk factors are recorded independently. High-risk tasks stay on the strong tier even when their class has downgrade evidence.
 - **Quality recovers instantly**: any checkpoint failure escalates the suggestion to the strong tier and quarantines the task class from downgrades for 3 sessions.
 
-`visp-hyper report` shows the pass-rate evidence behind every decision, so cost cuts that hurt accuracy are visible and reversible.
+Legacy telemetry that used `low`, `medium`, or `high` as a task class is migrated
+to an unclassified task with the original risk level. It is preserved for
+reporting but excluded from task-class downgrade evidence.
+
+`visp-hyper report` shows class, risk-level, and risk-factor pass-rate evidence behind decisions, so cost cuts that hurt accuracy are visible and reversible.
 
 ## Active Memory (optional)
 

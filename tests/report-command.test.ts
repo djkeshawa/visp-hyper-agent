@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { createSession, initializeProject } from "../src/core/session-manager.js";
 import type { TelemetryFile } from "../src/telemetry/telemetry-store.js";
-import type { RoutingState } from "../src/routing/routing-state.js";
+import type { RoutingDecision, RoutingState } from "../src/routing/routing-state.js";
 import { startMockMemoryServer, type MockMemoryServer } from "./helpers/mock-memory-server.js";
 
 let logs: string[];
@@ -58,7 +58,9 @@ async function writeRouting(projectPath: string, state: RoutingState): Promise<v
 function attempt(overrides: Partial<TelemetryFile["attempts"][number]>): TelemetryFile["attempts"][number] {
   return {
     taskId: "T001",
-    taskClass: "medium",
+    taskClass: "bounded_feature",
+    riskLevel: "medium",
+    riskFactors: [],
     tier: "implementer",
     attempt: 1,
     verifyPassed: true,
@@ -81,15 +83,70 @@ describe("report command (AC006)", () => {
 
     const telemetry: TelemetryFile = {
       attempts: [
-        // implementer / medium: 2 first-attempts, both pass → 100%
-        attempt({ taskId: "T001", tier: "implementer", taskClass: "medium", firstAttempt: true, verifyPassed: true, reviewPassed: true }),
-        attempt({ taskId: "T002", tier: "implementer", taskClass: "medium", firstAttempt: true, verifyPassed: true, reviewPassed: true }),
-        // implementer / high: 2 first-attempts, one fails → 50%
-        attempt({ taskId: "T003", tier: "implementer", taskClass: "high", firstAttempt: true, verifyPassed: false, reviewPassed: true }),
-        attempt({ taskId: "T004", tier: "implementer", taskClass: "high", firstAttempt: true, verifyPassed: true, reviewPassed: true }),
-        // scout / high: 1 first-attempt passes, plus a non-first attempt (excluded)
-        attempt({ taskId: "T003", tier: "scout", taskClass: "high", firstAttempt: false, attempt: 2, verifyPassed: true, reviewPassed: true }),
-        attempt({ taskId: "T005", tier: "scout", taskClass: "low", firstAttempt: true, verifyPassed: true, reviewPassed: true })
+        // implementer / bounded_feature / medium: 2 first-attempts, both pass → 100%
+        attempt({
+          taskId: "T001",
+          tier: "implementer",
+          taskClass: "bounded_feature",
+          riskLevel: "medium",
+          riskFactors: [{ version: "1.0", code: "public_api" }],
+          firstAttempt: true,
+          verifyPassed: true,
+          reviewPassed: true
+        }),
+        attempt({
+          taskId: "T002",
+          tier: "implementer",
+          taskClass: "bounded_feature",
+          riskLevel: "medium",
+          riskFactors: [{ version: "1.0", code: "public_api" }],
+          firstAttempt: true,
+          verifyPassed: true,
+          reviewPassed: true
+        }),
+        // implementer / security / high: 2 first-attempts, one fails → 50%
+        attempt({
+          taskId: "T003",
+          tier: "implementer",
+          taskClass: "security",
+          riskLevel: "high",
+          riskFactors: [{ version: "1.0", code: "authorization" }],
+          firstAttempt: true,
+          verifyPassed: false,
+          reviewPassed: true
+        }),
+        attempt({
+          taskId: "T004",
+          tier: "implementer",
+          taskClass: "security",
+          riskLevel: "high",
+          riskFactors: [{ version: "1.0", code: "authorization" }],
+          firstAttempt: true,
+          verifyPassed: true,
+          reviewPassed: true
+        }),
+        // scout / security / high: retry excluded from the first-attempt rate.
+        attempt({
+          taskId: "T003",
+          tier: "scout",
+          taskClass: "security",
+          riskLevel: "high",
+          riskFactors: [{ version: "1.0", code: "authorization" }],
+          firstAttempt: false,
+          attempt: 2,
+          verifyPassed: true,
+          reviewPassed: true
+        }),
+        attempt({
+          taskId: "T005",
+          tier: "scout",
+          taskClass: "documentation",
+          riskLevel: "low",
+          riskFactors: [],
+          firstAttempt: true,
+          verifyPassed: true,
+          reviewPassed: true
+        })
       ],
       usage: [
         { sessionId: "vh_seed", inputTokens: 1000, outputTokens: 200, at: "2026-06-11T00:00:00.000Z" },
@@ -100,15 +157,17 @@ describe("report command (AC006)", () => {
 
     const decisions = Array.from({ length: 12 }, (_, i) => ({
       taskId: `D${String(i).padStart(3, "0")}`,
-      taskClass: "medium",
+      taskClass: "bounded_feature",
+      riskLevel: "medium",
+      riskFactors: [],
       tier: "implementer",
       reason: `decision ${i}`,
       at: "2026-06-11T00:00:00.000Z"
-    }));
+    })) satisfies RoutingDecision[];
     await writeRouting(projectPath, {
       quarantines: [
-        { taskClass: "high", untilSessionCount: 5 }, // active (5 > 3)
-        { taskClass: "low", untilSessionCount: 2 } // expired (2 <= 3)
+        { taskClass: "security", untilSessionCount: 5 }, // active (5 > 3)
+        { taskClass: "documentation", untilSessionCount: 2 } // expired (2 <= 3)
       ],
       decisions
     });
@@ -126,12 +185,18 @@ describe("report command (AC006)", () => {
     expect(text).toContain("tokens: input=1500 output=200");
     expect(text).toContain("implementer: attempts=4 pass_rate=75.0%");
     expect(text).toContain("scout: attempts=2 pass_rate=100.0%");
+    expect(text).toContain("bounded_feature: attempts=2 pass_rate=100.0%");
+    expect(text).toContain("security: attempts=3 pass_rate=50.0%");
+    expect(text).toContain("per_risk_level:");
     expect(text).toContain("medium: attempts=2 pass_rate=100.0%");
     expect(text).toContain("high: attempts=3 pass_rate=50.0%");
+    expect(text).toContain("per_risk_factor:");
+    expect(text).toContain("public_api: attempts=2 pass_rate=100.0%");
+    expect(text).toContain("authorization: attempts=3 pass_rate=50.0%");
 
     // Only the active quarantine appears.
-    expect(text).toContain("high: until session 5");
-    expect(text).not.toContain("low: until session 2");
+    expect(text).toContain("security: until session 5");
+    expect(text).not.toContain("documentation: until session 2");
 
     // Only the last 10 decisions appear (D002..D011), not D000/D001.
     expect(text).toContain("D011");
@@ -147,7 +212,21 @@ describe("report command (AC006)", () => {
     expect(parsed.totals.attempts).toBe(6);
     expect(parsed.totals.firstAttemptPassRate).toBeCloseTo(0.8);
     expect(parsed.tokens).toEqual({ inputTokens: 1500, outputTokens: 200 });
-    expect(parsed.quarantines).toEqual([{ taskClass: "high", untilSessionCount: 5 }]);
+    expect(parsed.perClass.map((entry: { taskClass: string | null }) => entry.taskClass)).toEqual([
+      "bounded_feature",
+      "security",
+      "documentation"
+    ]);
+    expect(parsed.perRiskLevel.map((entry: { riskLevel: string | null }) => entry.riskLevel)).toEqual([
+      "medium",
+      "high",
+      "low"
+    ]);
+    expect(parsed.perRiskFactor.map((entry: { riskFactor: string }) => entry.riskFactor)).toEqual([
+      "public_api",
+      "authorization"
+    ]);
+    expect(parsed.quarantines).toEqual([{ taskClass: "security", untilSessionCount: 5 }]);
     expect(parsed.recentDecisions).toHaveLength(10);
     expect(parsed.recentDecisions[0].taskId).toBe("D002");
     expect(parsed.recentDecisions[9].taskId).toBe("D011");

@@ -2,10 +2,19 @@ import { z } from "zod";
 import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
 import { parseJsonStore } from "../core/json-store.js";
 import { withStoreLock } from "../core/store-lock.js";
+import {
+  riskFactorsSchema,
+  riskLevelSchema,
+  riskLevelValues,
+  taskClassSchema,
+  taskClassValues
+} from "../kit/workflow-action-protocol.js";
 
 export const telemetryAttemptSchema = z.object({
   taskId: z.string(),
-  taskClass: z.string(),
+  taskClass: taskClassSchema.nullable(),
+  riskLevel: riskLevelSchema.nullable(),
+  riskFactors: riskFactorsSchema.nullable(),
   tier: z.string(),
   attempt: z.number().int().positive(),
   verifyPassed: z.boolean(),
@@ -23,10 +32,49 @@ export const telemetryUsageSchema = z.object({
   at: z.string()
 });
 
-export const telemetryFileSchema = z.object({
-  attempts: z.array(telemetryAttemptSchema),
-  usage: z.array(telemetryUsageSchema)
-});
+const riskLevels = new Set<string>(riskLevelValues);
+const taskClasses = new Set<string>(taskClassValues);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function migrateTelemetryFile(value: unknown): unknown {
+  if (!isRecord(value) || !Array.isArray(value.attempts)) {
+    return value;
+  }
+
+  const attempts = value.attempts.map((entry) => {
+    if (!isRecord(entry)) {
+      return entry;
+    }
+    const legacyRiskLevel =
+      typeof entry.taskClass === "string" && riskLevels.has(entry.taskClass)
+        ? entry.taskClass
+        : undefined;
+    const taskClass =
+      typeof entry.taskClass === "string" && !taskClasses.has(entry.taskClass)
+        ? null
+        : entry.taskClass;
+
+    return {
+      ...entry,
+      taskClass,
+      riskLevel: legacyRiskLevel ?? entry.riskLevel ?? null,
+      riskFactors: entry.riskFactors ?? null
+    };
+  });
+
+  return { ...value, attempts };
+}
+
+export const telemetryFileSchema = z.preprocess(
+  migrateTelemetryFile,
+  z.object({
+    attempts: z.array(telemetryAttemptSchema),
+    usage: z.array(telemetryUsageSchema)
+  })
+);
 
 export type TelemetryAttempt = z.infer<typeof telemetryAttemptSchema>;
 export type TelemetryUsage = z.infer<typeof telemetryUsageSchema>;

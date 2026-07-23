@@ -1,3 +1,8 @@
+import type {
+  RiskFactor,
+  RiskLevel,
+  TaskClass
+} from "../kit/workflow-action-protocol.js";
 import type { TelemetryAttempt } from "../telemetry/telemetry-store.js";
 import type { RoutingDecision, RoutingState } from "./routing-state.js";
 
@@ -15,7 +20,9 @@ export const CHEAP_TIER = "scout";
 
 export type RoutingSuggestion = {
   taskId: string;
-  taskClass: string;
+  taskClass: TaskClass | null;
+  riskLevel: RiskLevel | null;
+  riskFactors: RiskFactor[] | null;
   suggestedTier: string;
   reason: string;
   evidence: { samples: number; passes: number; passRate: number | null; lowerConfidenceBound: number | null };
@@ -34,8 +41,11 @@ export function wilsonLowerBound(passes: number, samples: number, z = 1.95996398
 
 function downgradeEvidence(
   attempts: TelemetryAttempt[],
-  taskClass: string
+  taskClass: TaskClass | null
 ): RoutingSuggestion["evidence"] {
+  if (taskClass === null) {
+    return { samples: 0, passes: 0, passRate: null, lowerConfidenceBound: null };
+  }
   const relevant = attempts.filter(
     (entry) => entry.taskClass === taskClass && entry.tier === CHEAP_TIER && entry.firstAttempt === true
   );
@@ -62,14 +72,23 @@ function pct(rate: number): string {
  * strongest tier regardless of how good the downgrade evidence looks.
  */
 export function computeSuggestedTier(input: {
-  task: { id: string; riskLevel?: string };
+  task: {
+    id: string;
+    taskClass?: TaskClass | null;
+    riskLevel?: RiskLevel | null;
+    riskFactors?: readonly RiskFactor[] | null;
+  };
   attempts: TelemetryAttempt[];
   routingState: RoutingState;
   sessionCount: number;
 }): RoutingSuggestion {
   const { task, attempts, routingState, sessionCount } = input;
   const taskId = task.id;
-  const taskClass = task.riskLevel ?? "unknown";
+  const taskClass = task.taskClass ?? null;
+  const riskLevel = task.riskLevel ?? null;
+  const riskFactors = task.riskFactors === undefined || task.riskFactors === null
+    ? null
+    : [...task.riskFactors];
 
   const evidence = downgradeEvidence(attempts, taskClass);
 
@@ -79,8 +98,22 @@ export function computeSuggestedTier(input: {
     return {
       taskId,
       taskClass,
+      riskLevel,
+      riskFactors,
       suggestedTier: STRONGEST_TIER,
       reason: `quarantined until session ${quarantine.untilSessionCount}`,
+      evidence
+    };
+  }
+
+  if (riskLevel === "high") {
+    return {
+      taskId,
+      taskClass,
+      riskLevel,
+      riskFactors,
+      suggestedTier: STRONGEST_TIER,
+      reason: "high risk requires the strongest tier",
       evidence
     };
   }
@@ -91,6 +124,8 @@ export function computeSuggestedTier(input: {
       return {
         taskId,
         taskClass,
+        riskLevel,
+        riskFactors,
         suggestedTier: CHEAP_TIER,
         reason: `experimental evidence: ${evidence.samples} samples, ${pct(evidence.lowerConfidenceBound)} Wilson lower bound`,
         evidence
@@ -99,6 +134,8 @@ export function computeSuggestedTier(input: {
     return {
       taskId,
       taskClass,
+      riskLevel,
+      riskFactors,
       suggestedTier: STRONGEST_TIER,
       reason: `Wilson lower bound ${pct(evidence.lowerConfidenceBound)} below ${pct(DOWNGRADE_MIN_WILSON_LOWER_BOUND)}`,
       evidence
@@ -108,6 +145,8 @@ export function computeSuggestedTier(input: {
   return {
     taskId,
     taskClass,
+    riskLevel,
+    riskFactors,
     suggestedTier: STRONGEST_TIER,
     reason: `insufficient evidence for downgrade (${evidence.samples}/${DOWNGRADE_MIN_SAMPLES} samples)`,
     evidence
@@ -122,11 +161,21 @@ export function computeSuggestedTier(input: {
 export function escalate(input: {
   state: RoutingState;
   taskId: string;
-  taskClass: string;
+  taskClass: TaskClass | null;
+  riskLevel?: RiskLevel | null;
+  riskFactors?: readonly RiskFactor[] | null;
   sessionCount: number;
   now: string;
 }): RoutingState {
-  const { state, taskId, taskClass, sessionCount, now } = input;
+  const {
+    state,
+    taskId,
+    taskClass,
+    riskLevel = null,
+    riskFactors = null,
+    sessionCount,
+    now
+  } = input;
   const untilSessionCount = sessionCount + QUARANTINE_SESSIONS;
 
   const existing = state.quarantines.find((entry) => entry.taskClass === taskClass);
@@ -141,6 +190,8 @@ export function escalate(input: {
   const decision: RoutingDecision = {
     taskId,
     taskClass,
+    riskLevel,
+    riskFactors: riskFactors === null ? null : [...riskFactors],
     tier: STRONGEST_TIER,
     reason: "checkpoint failure escalation",
     at: now

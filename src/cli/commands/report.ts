@@ -1,5 +1,10 @@
 import { Command } from "commander";
 import { readState } from "../../core/session-manager.js";
+import type {
+  RiskFactorCode,
+  RiskLevel,
+  TaskClass
+} from "../../kit/workflow-action-protocol.js";
 import { readRoutingState, type RoutingDecision } from "../../routing/routing-state.js";
 import { readSkillRegistry } from "../../skills/skill-registry.js";
 import { readTelemetry, type TelemetryAttempt } from "../../telemetry/telemetry-store.js";
@@ -14,7 +19,19 @@ interface TierBreakdown {
 }
 
 interface ClassBreakdown {
-  taskClass: string;
+  taskClass: TaskClass | null;
+  attempts: number;
+  firstAttemptPassRate: number | null;
+}
+
+interface RiskLevelBreakdown {
+  riskLevel: RiskLevel | null;
+  attempts: number;
+  firstAttemptPassRate: number | null;
+}
+
+interface RiskFactorBreakdown {
+  riskFactor: RiskFactorCode;
   attempts: number;
   firstAttemptPassRate: number | null;
 }
@@ -28,11 +45,13 @@ interface ReportAggregate {
   };
   perTier: TierBreakdown[];
   perClass: ClassBreakdown[];
+  perRiskLevel: RiskLevelBreakdown[];
+  perRiskFactor: RiskFactorBreakdown[];
   tokens: {
     inputTokens: number;
     outputTokens: number;
   };
-  quarantines: Array<{ taskClass: string; untilSessionCount: number }>;
+  quarantines: Array<{ taskClass: TaskClass | null; untilSessionCount: number }>;
   recentDecisions: RoutingDecision[];
   skills: SkillReport[];
 }
@@ -116,6 +135,22 @@ async function buildReport(projectPath: string): Promise<ReportAggregate> {
       attempts: rows.length,
       firstAttemptPassRate: firstAttemptPassRate(rows)
     })),
+    perRiskLevel: groupBy(attempts, (entry) => entry.riskLevel).map(([riskLevel, rows]) => ({
+      riskLevel,
+      attempts: rows.length,
+      firstAttemptPassRate: firstAttemptPassRate(rows)
+    })),
+    perRiskFactor: groupBy(
+      attempts.flatMap((attempt) =>
+        [...new Set((attempt.riskFactors ?? []).map((factor) => factor.code))]
+          .map((riskFactor) => ({ attempt, riskFactor }))
+      ),
+      (entry) => entry.riskFactor
+    ).map(([riskFactor, rows]) => ({
+      riskFactor,
+      attempts: rows.length,
+      firstAttemptPassRate: firstAttemptPassRate(rows.map((row) => row.attempt))
+    })),
     tokens,
     quarantines,
     recentDecisions,
@@ -136,9 +171,9 @@ function firstAttemptPassRate(attempts: TelemetryAttempt[]): number | null {
   return passed / firstAttempts.length;
 }
 
-/** Group rows by a string key, preserving first-seen key order. */
-function groupBy<T>(rows: T[], key: (row: T) => string): Array<[string, T[]]> {
-  const groups = new Map<string, T[]>();
+/** Group rows by a key, preserving first-seen key order. */
+function groupBy<T, K>(rows: T[], key: (row: T) => K): Array<[K, T[]]> {
+  const groups = new Map<K, T[]>();
   for (const row of rows) {
     const k = key(row);
     const existing = groups.get(k);
@@ -159,7 +194,17 @@ function formatRate(rate: number | null): string {
 }
 
 function renderReport(aggregate: ReportAggregate): string {
-  const { totals, perTier, perClass, tokens, quarantines, recentDecisions, skills } = aggregate;
+  const {
+    totals,
+    perTier,
+    perClass,
+    perRiskLevel,
+    perRiskFactor,
+    tokens,
+    quarantines,
+    recentDecisions,
+    skills
+  } = aggregate;
   const lines: string[] = [];
   lines.push("BEGIN_VISP_HYPER_REPORT");
   lines.push(`sessions: ${totals.sessions}    tasks: ${totals.tasks}    attempts: ${totals.attempts}`);
@@ -174,7 +219,17 @@ function renderReport(aggregate: ReportAggregate): string {
 
   lines.push("per_class:");
   for (const taskClass of perClass) {
-    lines.push(`  - ${taskClass.taskClass}: attempts=${taskClass.attempts} pass_rate=${formatRate(taskClass.firstAttemptPassRate)}`);
+    lines.push(`  - ${displayTaskClass(taskClass.taskClass)}: attempts=${taskClass.attempts} pass_rate=${formatRate(taskClass.firstAttemptPassRate)}`);
+  }
+
+  lines.push("per_risk_level:");
+  for (const riskLevel of perRiskLevel) {
+    lines.push(`  - ${riskLevel.riskLevel ?? "unavailable"}: attempts=${riskLevel.attempts} pass_rate=${formatRate(riskLevel.firstAttemptPassRate)}`);
+  }
+
+  lines.push("per_risk_factor:");
+  for (const riskFactor of perRiskFactor) {
+    lines.push(`  - ${riskFactor.riskFactor}: attempts=${riskFactor.attempts} pass_rate=${formatRate(riskFactor.firstAttemptPassRate)}`);
   }
 
   lines.push("quarantines:");
@@ -182,7 +237,7 @@ function renderReport(aggregate: ReportAggregate): string {
     lines.push("  - none");
   } else {
     for (const quarantine of quarantines) {
-      lines.push(`  - ${quarantine.taskClass}: until session ${quarantine.untilSessionCount}`);
+      lines.push(`  - ${displayTaskClass(quarantine.taskClass)}: until session ${quarantine.untilSessionCount}`);
     }
   }
 
@@ -191,7 +246,7 @@ function renderReport(aggregate: ReportAggregate): string {
     lines.push("  - none");
   } else {
     for (const decision of recentDecisions) {
-      lines.push(`  - ${decision.taskId} [${decision.taskClass}] -> ${decision.tier}: ${decision.reason}`);
+      lines.push(`  - ${decision.taskId} [${displayTaskClass(decision.taskClass)}] -> ${decision.tier}: ${decision.reason}`);
     }
   }
 
@@ -212,4 +267,8 @@ function renderReport(aggregate: ReportAggregate): string {
 
   lines.push("END_VISP_HYPER_REPORT");
   return lines.join("\n");
+}
+
+function displayTaskClass(taskClass: TaskClass | null): string {
+  return taskClass ?? "unclassified";
 }

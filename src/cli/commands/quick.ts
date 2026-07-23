@@ -105,6 +105,8 @@ async function printAndRecordRouting(projectPath: string, task: KitTask): Promis
     await recordRoutingDecision(projectPath, {
       taskId: suggestion.taskId,
       taskClass: suggestion.taskClass,
+      riskLevel: suggestion.riskLevel,
+      riskFactors: suggestion.riskFactors,
       tier: suggestion.suggestedTier,
       reason: suggestion.reason,
       at: new Date().toISOString()

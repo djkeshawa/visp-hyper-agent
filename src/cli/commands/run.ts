@@ -327,9 +327,9 @@ async function printAndRecordRouting(
     }
     const task = {
       id: action.task.id,
-      ...(action.risk.level.state === "available"
-        ? { riskLevel: action.risk.level.value }
-        : {})
+      taskClass: action.taskClass.state === "available" ? action.taskClass.value : null,
+      riskLevel: action.risk.level.state === "available" ? action.risk.level.value : null,
+      riskFactors: action.risk.factors.state === "available" ? action.risk.factors.value : null
     };
     const [{ data: telemetry }, { state: routingState }, hyperState] = await Promise.all([
       readTelemetry(projectPath),
@@ -347,6 +347,8 @@ async function printAndRecordRouting(
     await recordRoutingDecision(projectPath, {
       taskId: suggestion.taskId,
       taskClass: suggestion.taskClass,
+      riskLevel: suggestion.riskLevel,
+      riskFactors: suggestion.riskFactors,
       tier: suggestion.suggestedTier,
       reason: suggestion.reason,
       at: new Date().toISOString()

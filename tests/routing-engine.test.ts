@@ -15,10 +15,16 @@ import type { RoutingState } from "../src/routing/routing-state.js";
 
 const emptyState = (): RoutingState => ({ quarantines: [], decisions: [] });
 
-function scoutAttempts(taskClass: string, passes: number, samples: number): TelemetryAttempt[] {
+function scoutAttempts(
+  taskClass: TelemetryAttempt["taskClass"],
+  passes: number,
+  samples: number
+): TelemetryAttempt[] {
   return Array.from({ length: samples }, (_, index) => ({
     taskId: `T${index}`,
     taskClass,
+    riskLevel: "medium",
+    riskFactors: [],
     tier: CHEAP_TIER,
     attempt: 1,
     verifyPassed: index < passes,
@@ -32,8 +38,8 @@ function scoutAttempts(taskClass: string, passes: number, samples: number): Tele
 describe("evidence-first routing", () => {
   it("requires 30 comparable successes and a strong Wilson lower bound", () => {
     const result = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
-      attempts: scoutAttempts("medium", 30, 30),
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
+      attempts: scoutAttempts("bounded_feature", 30, 30),
       routingState: emptyState(),
       sessionCount: 0
     });
@@ -45,8 +51,8 @@ describe("evidence-first routing", () => {
 
   it("rejects 29/30 because its lower confidence bound is too weak", () => {
     const result = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
-      attempts: scoutAttempts("medium", 29, 30),
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
+      attempts: scoutAttempts("bounded_feature", 29, 30),
       routingState: emptyState(),
       sessionCount: 0
     });
@@ -57,8 +63,8 @@ describe("evidence-first routing", () => {
 
   it("rejects perfect but undersized evidence", () => {
     const result = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
-      attempts: scoutAttempts("medium", 29, 29),
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
+      attempts: scoutAttempts("bounded_feature", 29, 29),
       routingState: emptyState(),
       sessionCount: 0
     });
@@ -68,7 +74,7 @@ describe("evidence-first routing", () => {
 
   it("does not make an unconditional cheap choice for low risk", () => {
     const result = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "low" },
+      task: { id: "T001", taskClass: "localized_bug", riskLevel: "low", riskFactors: [] },
       attempts: [],
       routingState: emptyState(),
       sessionCount: 0
@@ -79,9 +85,12 @@ describe("evidence-first routing", () => {
 
   it("lets active quarantine override otherwise sufficient evidence", () => {
     const result = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
-      attempts: scoutAttempts("medium", 30, 30),
-      routingState: { quarantines: [{ taskClass: "medium", untilSessionCount: 5 }], decisions: [] },
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
+      attempts: scoutAttempts("bounded_feature", 30, 30),
+      routingState: {
+        quarantines: [{ taskClass: "bounded_feature", untilSessionCount: 5 }],
+        decisions: []
+      },
       sessionCount: 4
     });
     expect(result.suggestedTier).toBe(STRONGEST_TIER);
@@ -90,13 +99,54 @@ describe("evidence-first routing", () => {
 
   it("renders sample counts and confidence evidence", () => {
     const result = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
-      attempts: scoutAttempts("medium", 30, 30),
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
+      attempts: scoutAttempts("bounded_feature", 30, 30),
       routingState: emptyState(),
       sessionCount: 0
     });
     expect(renderModelRouting(result)).toContain("wilson_lower_bound=");
     expect(renderModelRouting(result)).toContain("passes=30");
+  });
+
+  it("keeps task class independent when two tasks have the same risk level", () => {
+    const result = computeSuggestedTier({
+      task: { id: "T001", taskClass: "documentation", riskLevel: "medium", riskFactors: [] },
+      attempts: scoutAttempts("bounded_feature", 30, 30),
+      routingState: emptyState(),
+      sessionCount: 0
+    });
+
+    expect(result.taskClass).toBe("documentation");
+    expect(result.riskLevel).toBe("medium");
+    expect(result.evidence.samples).toBe(0);
+    expect(result.suggestedTier).toBe(STRONGEST_TIER);
+  });
+
+  it("keeps unavailable task class null and excludes classified evidence", () => {
+    const result = computeSuggestedTier({
+      task: { id: "T001", taskClass: null, riskLevel: "medium", riskFactors: [] },
+      attempts: scoutAttempts("bounded_feature", 30, 30),
+      routingState: emptyState(),
+      sessionCount: 0
+    });
+
+    expect(result.taskClass).toBeNull();
+    expect(result.riskLevel).toBe("medium");
+    expect(result.evidence.samples).toBe(0);
+    expect(result.suggestedTier).toBe(STRONGEST_TIER);
+  });
+
+  it("uses high risk to tighten routing even with sufficient same-class evidence", () => {
+    const result = computeSuggestedTier({
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "high", riskFactors: [] },
+      attempts: scoutAttempts("bounded_feature", 30, 30),
+      routingState: emptyState(),
+      sessionCount: 0
+    });
+
+    expect(result.evidence.samples).toBe(30);
+    expect(result.suggestedTier).toBe(STRONGEST_TIER);
+    expect(result.reason).toContain("high risk");
   });
 });
 
@@ -114,23 +164,28 @@ describe("quality recovery", () => {
     const next = escalate({
       state,
       taskId: "T001",
-      taskClass: "medium",
+      taskClass: "bounded_feature",
       sessionCount: 5,
       now: "2026-07-11T00:00:00.000Z"
     });
     expect(state.quarantines).toEqual([]);
-    expect(next.quarantines).toEqual([{ taskClass: "medium", untilSessionCount: 5 + QUARANTINE_SESSIONS }]);
+    expect(next.quarantines).toEqual([
+      { taskClass: "bounded_feature", untilSessionCount: 5 + QUARANTINE_SESSIONS }
+    ]);
     expect(next.decisions[0]?.tier).toBe(STRONGEST_TIER);
   });
 
   it("extends an existing quarantine to the later boundary", () => {
     const next = escalate({
-      state: { quarantines: [{ taskClass: "medium", untilSessionCount: 5 }], decisions: [] },
+      state: {
+        quarantines: [{ taskClass: "bounded_feature", untilSessionCount: 5 }],
+        decisions: []
+      },
       taskId: "T002",
-      taskClass: "medium",
+      taskClass: "bounded_feature",
       sessionCount: 4,
       now: "2026-07-11T00:00:00.000Z"
     });
-    expect(next.quarantines).toEqual([{ taskClass: "medium", untilSessionCount: 7 }]);
+    expect(next.quarantines).toEqual([{ taskClass: "bounded_feature", untilSessionCount: 7 }]);
   });
 });

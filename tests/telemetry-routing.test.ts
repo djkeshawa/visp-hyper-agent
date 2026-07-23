@@ -304,7 +304,9 @@ describe("telemetry store and budget round-trip", () => {
 
     const first = await appendAttempt(projectPath, {
       taskId: "T001",
-      taskClass: "high",
+      taskClass: "security",
+      riskLevel: "high",
+      riskFactors: [{ version: "1.0", code: "authorization" }],
       tier: "implementer",
       verifyPassed: true,
       reviewPassed: true,
@@ -315,7 +317,9 @@ describe("telemetry store and budget round-trip", () => {
 
     const second = await appendAttempt(projectPath, {
       taskId: "T001",
-      taskClass: "high",
+      taskClass: "security",
+      riskLevel: "high",
+      riskFactors: [{ version: "1.0", code: "authorization" }],
       tier: "implementer",
       verifyPassed: false,
       reviewPassed: true,
@@ -330,6 +334,11 @@ describe("telemetry store and budget round-trip", () => {
     expect(data.attempts[0]?.attempt).toBe(1);
     expect(data.attempts[1]?.attempt).toBe(2);
     expect(data.attempts[1]?.verifyPassed).toBe(false);
+    expect(data.attempts[1]).toMatchObject({
+      taskClass: "security",
+      riskLevel: "high",
+      riskFactors: [{ version: "1.0", code: "authorization" }]
+    });
   });
 
   it("AC001b: corrupt telemetry.json yields empty + warning and append still works", async () => {
@@ -345,7 +354,9 @@ describe("telemetry store and budget round-trip", () => {
 
     const record = await appendAttempt(projectPath, {
       taskId: "T001",
-      taskClass: "unknown",
+      taskClass: null,
+      riskLevel: null,
+      riskFactors: [],
       tier: "implementer",
       verifyPassed: true,
       reviewPassed: true,
@@ -358,7 +369,56 @@ describe("telemetry store and budget round-trip", () => {
     expect(after.data.attempts).toHaveLength(1);
   });
 
-  it("AC001c: a local checkpoint records a telemetry attempt with verify + taskClass", async () => {
+  it("migrates legacy risk-named classes without treating them as task-class evidence", async () => {
+    const projectPath = await createProject();
+    const telemetryPath = join(projectPath, ".visp", "hyper", "telemetry.json");
+    await mkdir(dirname(telemetryPath), { recursive: true });
+    await writeFile(
+      telemetryPath,
+      JSON.stringify({
+        attempts: [
+          {
+            taskId: "T001",
+            taskClass: "medium",
+            tier: "scout",
+            attempt: 1,
+            verifyPassed: true,
+            reviewPassed: true,
+            firstAttempt: true,
+            sessionId: "vh_legacy",
+            at: "2026-07-11T00:00:00.000Z"
+          }
+        ],
+        usage: []
+      }),
+      "utf8"
+    );
+
+    const { data } = await readTelemetry(projectPath);
+    expect(data.attempts).toEqual([
+      expect.objectContaining({
+        taskClass: null,
+        riskLevel: "medium",
+        riskFactors: null
+      })
+    ]);
+
+    const suggestion = computeSuggestedTier({
+      task: {
+        id: "T001",
+        taskClass: "bounded_feature",
+        riskLevel: "medium",
+        riskFactors: []
+      },
+      attempts: data.attempts,
+      routingState: emptyRoutingState(),
+      sessionCount: 0
+    });
+    expect(suggestion.evidence.samples).toBe(0);
+    expect(suggestion.suggestedTier).toBe(STRONGEST_TIER);
+  });
+
+  it("AC001c: a local checkpoint keeps missing class separate from low risk", async () => {
     const projectPath = await createProject();
     await startLocalQuick(projectPath, 0);
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "Q001"]);
@@ -368,7 +428,9 @@ describe("telemetry store and budget round-trip", () => {
     expect(telemetry.attempts[0].taskId).toBe("Q001");
     expect(telemetry.attempts[0].verifyPassed).toBe(true);
     expect(telemetry.attempts[0].reviewPassed).toBe(true);
-    expect(telemetry.attempts[0].taskClass).toBe("low");
+    expect(telemetry.attempts[0].taskClass).toBeNull();
+    expect(telemetry.attempts[0].riskLevel).toBe("low");
+    expect(telemetry.attempts[0].riskFactors).toBeNull();
     expect(telemetry.attempts[0].tier).toBe("implementer");
     expect(telemetry.attempts[0].attempt).toBe(1);
     expect(telemetry.attempts[0].firstAttempt).toBe(true);
@@ -461,7 +523,9 @@ function emptyRoutingState(): RoutingState {
 function scoutAttempt(overrides: Partial<TelemetryAttempt> = {}): TelemetryAttempt {
   return {
     taskId: "T001",
-    taskClass: "medium",
+    taskClass: "bounded_feature",
+    riskLevel: "medium",
+    riskFactors: [],
     tier: CHEAP_TIER,
     attempt: 1,
     verifyPassed: true,
@@ -476,7 +540,7 @@ function scoutAttempt(overrides: Partial<TelemetryAttempt> = {}): TelemetryAttem
 describe("routing engine (pure)", () => {
   it("AC003a: no evidence + medium risk → implementer with insufficient-evidence reason", () => {
     const suggestion = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
       attempts: [],
       routingState: emptyRoutingState(),
       sessionCount: 0
@@ -488,8 +552,8 @@ describe("routing engine (pure)", () => {
 
   it("AC003b: low risk without evidence remains on strongest tier", () => {
     const suggestion = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "low" },
-      attempts: [scoutAttempt({ taskClass: "low" })],
+      task: { id: "T001", taskClass: "localized_bug", riskLevel: "low", riskFactors: [] },
+      attempts: [scoutAttempt({ taskClass: "localized_bug", riskLevel: "low" })],
       routingState: emptyRoutingState(),
       sessionCount: 0
     });
@@ -500,7 +564,7 @@ describe("routing engine (pure)", () => {
   it("AC003c: 30 passing scout first-attempts earn an experimental downgrade", () => {
     const attempts = Array.from({ length: 30 }, () => scoutAttempt());
     const suggestion = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
       attempts,
       routingState: emptyRoutingState(),
       sessionCount: 0
@@ -513,7 +577,7 @@ describe("routing engine (pure)", () => {
   it("AC003c: 29 samples do not earn a downgrade", () => {
     const attempts = Array.from({ length: 29 }, () => scoutAttempt());
     const suggestion = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
       attempts,
       routingState: emptyRoutingState(),
       sessionCount: 0
@@ -528,7 +592,7 @@ describe("routing engine (pure)", () => {
       scoutAttempt(index === 29 ? { verifyPassed: false } : {})
     );
     const suggestion = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
       attempts,
       routingState: emptyRoutingState(),
       sessionCount: 0
@@ -541,11 +605,11 @@ describe("routing engine (pure)", () => {
     const next = escalate({
       state: emptyRoutingState(),
       taskId: "T001",
-      taskClass: "medium",
+      taskClass: "bounded_feature",
       sessionCount: 5,
       now: "2026-06-11T00:00:00.000Z"
     });
-    expect(next.quarantines).toEqual([{ taskClass: "medium", untilSessionCount: 8 }]);
+    expect(next.quarantines).toEqual([{ taskClass: "bounded_feature", untilSessionCount: 8 }]);
     expect(next.decisions).toHaveLength(1);
     expect(next.decisions[0]?.tier).toBe(STRONGEST_TIER);
     expect(next.decisions[0]?.reason).toBe("checkpoint failure escalation");
@@ -554,11 +618,11 @@ describe("routing engine (pure)", () => {
   it("AC004a: quality-first invariant: quarantine blocks downgrade despite perfect evidence", () => {
     const attempts = [scoutAttempt(), scoutAttempt(), scoutAttempt(), scoutAttempt(), scoutAttempt()];
     const routingState: RoutingState = {
-      quarantines: [{ taskClass: "medium", untilSessionCount: 8 }],
+      quarantines: [{ taskClass: "bounded_feature", untilSessionCount: 8 }],
       decisions: []
     };
     const suggestion = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
       attempts,
       routingState,
       sessionCount: 5
@@ -572,11 +636,11 @@ describe("routing engine (pure)", () => {
   it("AC004b: expired quarantine re-enables evidence-based downgrade", () => {
     const attempts = Array.from({ length: 30 }, () => scoutAttempt());
     const routingState: RoutingState = {
-      quarantines: [{ taskClass: "medium", untilSessionCount: 8 }],
+      quarantines: [{ taskClass: "bounded_feature", untilSessionCount: 8 }],
       decisions: []
     };
     const suggestion = computeSuggestedTier({
-      task: { id: "T001", riskLevel: "medium" },
+      task: { id: "T001", taskClass: "bounded_feature", riskLevel: "medium", riskFactors: [] },
       attempts,
       routingState,
       sessionCount: 8
@@ -612,9 +676,20 @@ describe("routing CLI integration", () => {
   it("AC005a: run prints a model_routing block with a suggested tier", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
+    const action = await canonicalRunAction(projectPath, {
+      taskClass: available("bounded_feature"),
+      risk: {
+        level: available("medium"),
+        factors: available([
+          { version: "1.0", code: "public_api" },
+          { version: "1.0", code: "schema" }
+        ])
+      }
+    });
 
     const shim = await createVispShim(
       await strictRunSpec(projectPath, {
+        next: { stdout: action },
         verify: { stdout: { success: true } },
         review: { stdout: { success: true } }
       })
@@ -628,19 +703,26 @@ describe("routing CLI integration", () => {
     const output = logs.join("\n");
     expect(output).toContain("BEGIN_VISP_MODEL_ROUTING");
     expect(output).toContain("suggested_tier:");
-    // The graph is high risk, but strict routing binds to the medium-risk action.
+    // Strict routing binds only to the canonical class/risk/factors, not the
+    // incompatible legacy graph risk.
     expect(output).toContain(`suggested_tier: ${STRONGEST_TIER}`);
     expect((await readRoutingFile(projectPath)).decisions.at(-1)).toMatchObject({
       taskId: "T001",
-      taskClass: "medium"
+      taskClass: "bounded_feature",
+      riskLevel: "medium",
+      riskFactors: [
+        { version: "1.0", code: "public_api" },
+        { version: "1.0", code: "schema" }
+      ]
     });
   });
 
-  it("AC005a: unavailable canonical risk routes as unknown without graph substitution", async () => {
+  it("AC005a: unavailable canonical class stays null while explicit risk remains separate", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
     const action = await canonicalRunAction(projectPath, {
-      risk: { level: unavailable(), factors: unavailable() }
+      taskClass: unavailable(),
+      risk: { level: available("medium"), factors: available([]) }
     });
     const shim = await createVispShim(
       await strictRunSpec(projectPath, { next: { stdout: action } })
@@ -652,7 +734,9 @@ describe("routing CLI integration", () => {
     expect(logs.join("\n")).toContain("BEGIN_VISP_MODEL_ROUTING");
     expect((await readRoutingFile(projectPath)).decisions.at(-1)).toMatchObject({
       taskId: "T001",
-      taskClass: "unknown"
+      taskClass: null,
+      riskLevel: "medium",
+      riskFactors: []
     });
   });
 
@@ -713,13 +797,14 @@ describe("routing CLI integration", () => {
 
     // Exercise local routing in a separate project that has never carried Kit
     // policy, project, feature, or context artifacts. Quick creates an explicit
-    // synthetic local task. Its failed checkpoint owns the low-risk quarantine.
+    // synthetic local task. Its failed checkpoint owns an unclassified
+    // quarantine while preserving low as the separate risk level.
     const localProjectPath = await createProject();
     await startLocalQuick(localProjectPath, 2);
     await runCli(["node", "visp-hyper", "--project", localProjectPath, "checkpoint", "--task", "Q001"]);
     const localRouting = await readRoutingFile(localProjectPath);
     expect(localRouting.quarantines).toHaveLength(1);
-    expect(localRouting.quarantines[0].taskClass).toBe("low");
+    expect(localRouting.quarantines[0].taskClass).toBeNull();
 
     logs = [];
     await runCli(["node", "visp-hyper", "--project", localProjectPath, "next"]);

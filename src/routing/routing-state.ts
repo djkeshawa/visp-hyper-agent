@@ -2,24 +2,111 @@ import { z } from "zod";
 import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
 import { parseJsonStore } from "../core/json-store.js";
 import { withStoreLock } from "../core/store-lock.js";
+import {
+  riskFactorsSchema,
+  riskLevelSchema,
+  riskLevelValues,
+  taskClassSchema,
+  taskClassValues
+} from "../kit/workflow-action-protocol.js";
 
 export const routingQuarantineSchema = z.object({
-  taskClass: z.string(),
+  taskClass: taskClassSchema.nullable(),
   untilSessionCount: z.number().int().nonnegative()
 });
 
 export const routingDecisionSchema = z.object({
   taskId: z.string(),
-  taskClass: z.string(),
+  taskClass: taskClassSchema.nullable(),
+  riskLevel: riskLevelSchema.nullable(),
+  riskFactors: riskFactorsSchema.nullable(),
   tier: z.string(),
   reason: z.string(),
   at: z.string()
 });
 
-export const routingStateSchema = z.object({
-  quarantines: z.array(routingQuarantineSchema),
-  decisions: z.array(routingDecisionSchema)
-});
+const taskClasses = new Set<string>(taskClassValues);
+const riskLevels = new Set<string>(riskLevelValues);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function migratedTaskClass(value: unknown): string | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return taskClasses.has(value) ? value : null;
+  }
+  return undefined;
+}
+
+function migrateRoutingState(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const migratedQuarantines = Array.isArray(value.quarantines)
+    ? value.quarantines.flatMap((entry) => {
+        if (!isRecord(entry)) {
+          return [];
+        }
+        const taskClass = migratedTaskClass(entry.taskClass);
+        return taskClass === undefined ? [] : [{ ...entry, taskClass }];
+      })
+    : value.quarantines;
+
+  const quarantines = Array.isArray(migratedQuarantines)
+    ? [...migratedQuarantines.reduce((byClass, quarantine) => {
+        if (!isRecord(quarantine)) {
+          return byClass;
+        }
+        const key = quarantine.taskClass === null ? null : String(quarantine.taskClass);
+        const existing = byClass.get(key);
+        if (
+          !existing ||
+          (typeof quarantine.untilSessionCount === "number" &&
+            quarantine.untilSessionCount > Number(existing.untilSessionCount))
+        ) {
+          byClass.set(key, quarantine);
+        }
+        return byClass;
+      }, new Map<string | null, Record<string, unknown>>()).values()]
+    : migratedQuarantines;
+
+  const decisions = Array.isArray(value.decisions)
+    ? value.decisions.flatMap((entry) => {
+        if (!isRecord(entry)) {
+          return [];
+        }
+        const legacyRiskLevel =
+          typeof entry.taskClass === "string" && riskLevels.has(entry.taskClass)
+            ? entry.taskClass
+            : undefined;
+        const taskClass = migratedTaskClass(entry.taskClass);
+        if (taskClass === undefined) {
+          return [];
+        }
+        return [{
+          ...entry,
+          taskClass,
+          riskLevel: legacyRiskLevel ?? entry.riskLevel ?? null,
+          riskFactors: entry.riskFactors ?? null
+        }];
+      })
+    : value.decisions;
+
+  return { ...value, quarantines, decisions };
+}
+
+export const routingStateSchema = z.preprocess(
+  migrateRoutingState,
+  z.object({
+    quarantines: z.array(routingQuarantineSchema),
+    decisions: z.array(routingDecisionSchema)
+  })
+);
 
 export type RoutingQuarantine = z.infer<typeof routingQuarantineSchema>;
 export type RoutingDecision = z.infer<typeof routingDecisionSchema>;
