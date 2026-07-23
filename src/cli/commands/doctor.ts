@@ -238,7 +238,7 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
           `Selected protocol ${source.protocolVersion} via ${source.selectionMode}.`,
           `Local schema hash ${source.localSchemaHash}; verification state ${source.schemaHashVerification.state}.`,
           `Authoritative action verdict ${action.value.verdict}.`,
-          "Current strict command surfaces remain on WorkflowAction 2.0 until P1-07."
+          "Configured strict surfaces consume this negotiated canonical action."
         ].join(" ")
       });
     }

@@ -272,6 +272,12 @@ describe("doctor command", () => {
     expect(actionProtocol?.detail).toContain("advertised_verified");
     expect(actionProtocol?.detail).toContain(TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.0"]);
     expect(actionProtocol?.detail).toContain("verdict ready");
+    expect(actionProtocol?.detail).toContain(
+      "Configured strict surfaces consume this negotiated canonical action."
+    );
+    expect(actionProtocol?.detail).not.toContain(
+      "remain on WorkflowAction 2.0 until P1-07"
+    );
     expect(summary.checks.find((check) => check.id === "kit-read-contract")?.status).toBe("pass");
     expect(summary.checks.find((check) => check.id === "kit-read-contract")?.detail).toContain("2 required artifacts");
     expect(summary.checks.find((check) => check.id === "kit-policy")?.status).toBe("pass");
