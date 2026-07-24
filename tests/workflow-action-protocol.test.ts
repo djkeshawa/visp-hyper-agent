@@ -14,6 +14,7 @@ import {
   createWorkflowActionV3Id,
   normalizeWorkflowAction
 } from "../src/kit/workflow-action-adapter.js";
+import { toHyperActionEnvelope } from "../src/kit/workflow-action-renderer.js";
 import { workflowActionV31Fixture } from "./helpers/canonical-action-fixture.js";
 
 const V2_HASH =
@@ -644,6 +645,53 @@ describe("WorkflowAction strict schemas and adapters", () => {
       ok: false,
       reasonCode: "workflow_action_contradiction"
     });
+  });
+
+  it.each([
+    ["passed", { status: "passed" }],
+    ["failed", { status: "failed", reason: "The required command failed." }],
+    ["inconclusive", { status: "inconclusive", reason: "The provider was unavailable." }],
+    [
+      "not_applicable",
+      {
+        status: "not_applicable",
+        reason: "The declared rule does not apply.",
+        determination: { kind: "rule", ruleId: "VSP999" }
+      }
+    ]
+  ] as const)("renders Kit's %s evidence outcome without reinterpretation", (_status, outcome) => {
+    const base = workflowActionV31Fixture();
+    if (base.evidence.state !== "available") throw new Error("Expected available evidence.");
+    const evidence = {
+      state: "available" as const,
+      value: {
+        ...base.evidence.value,
+        outcome: outcome.status,
+        providers: base.evidence.value.providers.map((provider, providerIndex) => ({
+          ...provider,
+          status: outcome.status === "inconclusive" ? "inconclusive" as const : provider.status,
+          failure:
+            outcome.status === "inconclusive"
+              ? {
+                  code: "skipped_evidence" as const,
+                  reason: "The provider was unavailable."
+                }
+              : provider.failure,
+          results: provider.results.map((result, resultIndex) => ({
+            ...result,
+            outcome:
+              providerIndex === 0 && resultIndex === 0
+                ? outcome
+                : result.outcome
+          }))
+        }))
+      }
+    };
+    const wire = workflowActionV31Fixture({ evidence });
+    const normalized = normalizeWorkflowAction(wire, advertisedSelection("3.1"));
+    if (!normalized.ok) throw new Error(normalized.reason);
+
+    expect(toHyperActionEnvelope(normalized.value).action.evidence).toEqual(evidence);
   });
 
   it("preserves equivalent overlapping v2 and v3 meaning", () => {
