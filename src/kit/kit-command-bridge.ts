@@ -700,7 +700,7 @@ function contractActionContradiction(
   if (contractTaskId !== actionTaskId) {
     return `Kit integration contract active task ${contractTaskId ?? "null"} contradicts WorkflowAction task ${actionTaskId ?? "null"}.`;
   }
-  if (action.protocolVersion === "3.0") {
+  if (action.protocolVersion !== "2.0") {
     const contractFeature = contract.activeFeature;
     const actionFeature = action.feature;
     if (
@@ -709,7 +709,7 @@ function contractActionContradiction(
         actionFeature !== null &&
         (contractFeature.id !== actionFeature.id || contractFeature.slug !== actionFeature.slug))
     ) {
-      return "Kit integration contract active feature contradicts WorkflowAction 3.0 feature identity.";
+      return `Kit integration contract active feature contradicts WorkflowAction ${action.protocolVersion} feature identity.`;
     }
   }
   return undefined;

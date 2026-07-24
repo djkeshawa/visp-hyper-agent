@@ -100,7 +100,8 @@ export function runCommand(): Command {
         return;
       }
       if (
-        action.source.protocolVersion !== "3.0" ||
+        (action.source.protocolVersion !== "3.0" &&
+          action.source.protocolVersion !== "3.1") ||
         action.phase.state !== "available" ||
         action.phase.value !== "implement" ||
         action.task === null
@@ -110,7 +111,7 @@ export function runCommand(): Command {
             status: "INCONCLUSIVE",
             reasonCode: "strict_session_adoption_unavailable",
             reason:
-              "Strict session adoption requires a ready WorkflowAction 3.0 with an explicitly available implement phase and task."
+              "Strict session adoption requires a ready canonical WorkflowAction with an explicitly available implement phase and task."
           }),
           action
         );

@@ -4,8 +4,14 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { createWorkflowActionV3Id } from "../../src/kit/workflow-action-adapter.js";
-import type { WorkflowActionV3Wire } from "../../src/kit/workflow-action-protocol.js";
+import {
+  createWorkflowActionV31Id,
+  createWorkflowActionV3Id
+} from "../../src/kit/workflow-action-adapter.js";
+import type {
+  WorkflowActionV31Wire,
+  WorkflowActionV3Wire
+} from "../../src/kit/workflow-action-protocol.js";
 import {
   authoritativeContextPackFixture,
   authoritativeTaskFixture,
@@ -23,6 +29,8 @@ export const V2_SCHEMA_HASH =
   "sha256:c63b279b1ce89f047b2be696a47e845a57adda7f8437892e211e3a4cfad39ed6";
 export const V3_SCHEMA_HASH =
   "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7";
+export const V31_SCHEMA_HASH =
+  "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d";
 
 const FEATURE_DIR = "001-pipeline";
 const unavailable = (reasonCode = "not_in_source_artifact") => ({
@@ -141,8 +149,70 @@ export function tasklessWorkflowActionV3Fixture(
   });
 }
 
+export function workflowActionV31Fixture(
+  overrides: Record<string, unknown> = {}
+): WorkflowActionV31Wire {
+  const {
+    protocolVersion: _protocolVersion,
+    canonicalVersion: _canonicalVersion,
+    actionId: _actionId,
+    ...v3Body
+  } = workflowActionV3Fixture();
+  const draft = {
+    ...v3Body,
+    protocolVersion: "3.1" as const,
+    canonicalVersion: "1.1" as const,
+    actionId: `sha256:${"0".repeat(64)}`,
+    evidence: available({
+      version: "1.0" as const,
+      source: "candidate" as const,
+      artifact: {
+        path: ".visp/features/001-pipeline/evidence/T001.candidate.json",
+        contentHash: `sha256:${"b".repeat(64)}`
+      },
+      generatedAt: "2026-07-25T00:00:00.000Z",
+      outcome: "passed" as const,
+      freshness: "fresh" as const,
+      providers: [
+        {
+          id: "PROVIDER001",
+          provider: { id: "command", version: "1.0" },
+          status: "passed" as const,
+          failure: null,
+          results: [
+            {
+              id: "RESULT001",
+              requirementId: "EVIDENCE001",
+              target: { kind: "command" as const, command: "pnpm test" },
+              freshness: {
+                status: "fresh" as const,
+                checkedAt: "2026-07-25T00:00:00.000Z",
+                inputHashes: [
+                  { id: "workspace", sha256: `sha256:${"c".repeat(64)}` }
+                ]
+              },
+              independence: "pre_approved" as const,
+              outcome: { status: "passed" as const }
+            }
+          ]
+        }
+      ],
+      testStrength: available({
+        status: "passed" as const,
+        independence: ["pre_approved" as const],
+        reason: "A pre-approved test passed."
+      })
+    }),
+    ...overrides
+  };
+  return {
+    ...draft,
+    actionId: createWorkflowActionV31Id(draft)
+  } as WorkflowActionV31Wire;
+}
+
 export function integrationContractFixture(options: {
-  protocols?: readonly ("2.0" | "3.0")[] | null;
+  protocols?: readonly ("2.0" | "3.0" | "3.1")[] | null;
   activeTask?: Record<string, unknown> | null;
   overrides?: Record<string, unknown>;
 } = {}) {
@@ -223,7 +293,11 @@ export function integrationContractFixture(options: {
               schemaHashes: Object.fromEntries(
                 protocols.map((protocol) => [
                   protocol,
-                  protocol === "3.0" ? V3_SCHEMA_HASH : V2_SCHEMA_HASH
+                  protocol === "3.1"
+                    ? V31_SCHEMA_HASH
+                    : protocol === "3.0"
+                      ? V3_SCHEMA_HASH
+                      : V2_SCHEMA_HASH
                 ])
               )
             }

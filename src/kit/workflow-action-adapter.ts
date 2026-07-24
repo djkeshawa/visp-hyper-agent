@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import {
   isWorkflowActionProtocolSelection,
+  workflowActionV31StrictSchema,
   workflowActionV3StrictSchema,
   type WorkflowActionProtocolSelection,
   type WorkflowActionV2Wire,
+  type WorkflowActionV31Wire,
   type WorkflowActionV3Wire,
   type WorkflowActionWire
 } from "./workflow-action-protocol.js";
@@ -46,7 +48,7 @@ export type NormalizedWorkflowAction = DeepReadonly<{
     localSchemaHash: WorkflowActionProtocolSelection["localSchemaHash"];
     schemaHashVerification: WorkflowActionProtocolSelection["schemaHashVerification"];
   }>;
-  sourceCanonicalVersion: NormalizedDeclaredValue<"1.0">;
+  sourceCanonicalVersion: NormalizedDeclaredValue<"1.0" | "1.1">;
   actionId: NormalizedDeclaredValue<string>;
   phase: NormalizedDeclaredValue<WorkflowPhase>;
   sourcePhase: WorkflowActionWire["phase"];
@@ -93,6 +95,7 @@ export type NormalizedWorkflowAction = DeepReadonly<{
   }>[];
   validationCommands: readonly string[];
   requiredEvidence: WorkflowActionV3Wire["requiredEvidence"];
+  evidence: WorkflowActionV31Wire["evidence"];
   policy: Readonly<{
     status: WorkflowActionV3Wire["policy"]["status"];
     appliedOverrides: WorkflowActionV3Wire["policy"]["appliedOverrides"];
@@ -142,7 +145,8 @@ const validationMethods = new Set<ValidationMethod>([
 ]);
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
 const bareSha256Pattern = /^[a-f0-9]{64}$/u;
-const identityDomain = "visp.workflow-action\0canonical-1.0\0";
+const identityDomainV1 = "visp.workflow-action\0canonical-1.0\0";
+const identityDomainV1_1 = "visp.workflow-action\0canonical-1.1\0";
 
 export function normalizeWorkflowAction(
   action: WorkflowActionWire,
@@ -159,16 +163,17 @@ export function normalizeWorkflowAction(
   }
   return action.protocolVersion === "2.0"
     ? normalizeWorkflowActionV2(action, selection)
-    : normalizeWorkflowActionV3(action, selection);
+    : normalizeCanonicalWorkflowAction(action, selection);
 }
 
 export function createWorkflowActionV3Id(action: unknown): `sha256:${string}` {
   const parsed = workflowActionV3StrictSchema.parse(action);
-  const { protocolVersion: _protocolVersion, actionId: _actionId, ...identityInput } = parsed;
-  return `sha256:${createHash("sha256")
-    .update(identityDomain, "utf8")
-    .update(canonicalJsonV1(identityInput), "utf8")
-    .digest("hex")}`;
+  return createCanonicalWorkflowActionId(parsed, identityDomainV1);
+}
+
+export function createWorkflowActionV31Id(action: unknown): `sha256:${string}` {
+  const parsed = workflowActionV31StrictSchema.parse(action);
+  return createCanonicalWorkflowActionId(parsed, identityDomainV1_1);
 }
 
 function normalizeWorkflowActionV2(
@@ -278,6 +283,7 @@ function normalizeWorkflowActionV2(
     validationOracles,
     validationCommands: [...action.validationCommands],
     requiredEvidence: unavailable(),
+    evidence: unavailable(),
     policy: { status: unavailable(), appliedOverrides: unavailable() },
     structuredFindings: unavailable(),
     findingMessages: [...action.findings],
@@ -288,14 +294,18 @@ function normalizeWorkflowActionV2(
   return { ok: true, value: deepFreeze(normalized) };
 }
 
-function normalizeWorkflowActionV3(
-  action: WorkflowActionV3Wire,
+function normalizeCanonicalWorkflowAction(
+  action: WorkflowActionV3Wire | WorkflowActionV31Wire,
   selection: WorkflowActionProtocolSelection
 ): WorkflowActionAdapterResult {
-  if (createWorkflowActionV3Id(action) !== action.actionId) {
+  const expectedActionId =
+    action.protocolVersion === "3.0"
+      ? createWorkflowActionV3Id(action)
+      : createWorkflowActionV31Id(action);
+  if (expectedActionId !== action.actionId) {
     return adapterFailure(
       "workflow_action_identity_invalid",
-      "WorkflowAction 3.0 actionId does not match its canonical body."
+      `WorkflowAction ${action.protocolVersion} actionId does not match its canonical body.`
     );
   }
   const effects = new Set(action.findings.map((finding) => finding.effect));
@@ -306,14 +316,16 @@ function normalizeWorkflowActionV3(
   if (!verdictCoherent) {
     return adapterFailure(
       "workflow_action_contradiction",
-      `WorkflowAction 3.0 verdict ${action.verdict} contradicts structured finding effects.`
+      `WorkflowAction ${action.protocolVersion} verdict ${action.verdict} contradicts structured finding effects.`
     );
   }
   if (
     !unique(action.requiredReads.map((read) => read.id)) ||
     !unique(action.validationOracles.map((oracle) => oracle.id))
   ) {
-    return semanticFailure("WorkflowAction 3.0 contains duplicate stable IDs.");
+    return semanticFailure(
+      `WorkflowAction ${action.protocolVersion} contains duplicate stable IDs.`
+    );
   }
 
   const normalized: NormalizedWorkflowAction = {
@@ -362,6 +374,7 @@ function normalizeWorkflowActionV3(
     })),
     validationCommands: [...action.validationCommands],
     requiredEvidence: action.requiredEvidence,
+    evidence: action.protocolVersion === "3.1" ? action.evidence : unavailable(),
     policy: action.policy,
     structuredFindings: available([...action.findings]),
     findingMessages: action.findings.map((finding) => finding.message),
@@ -370,6 +383,17 @@ function normalizeWorkflowActionV3(
     wire: action
   };
   return { ok: true, value: deepFreeze(normalized) };
+}
+
+function createCanonicalWorkflowActionId(
+  action: WorkflowActionV3Wire | WorkflowActionV31Wire,
+  identityDomain: string
+): `sha256:${string}` {
+  const { protocolVersion: _protocolVersion, actionId: _actionId, ...identityInput } = action;
+  return `sha256:${createHash("sha256")
+    .update(identityDomain, "utf8")
+    .update(canonicalJsonV1(identityInput), "utf8")
+    .digest("hex")}`;
 }
 
 function normalizedSource(

@@ -74,7 +74,10 @@ function kit20IntegrationContract(
       workflowAction: {
         supported: ["2.0", "3.0"],
         default: "2.0",
-        schemaHashes: TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES
+        schemaHashes: {
+          "2.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["2.0"],
+          "3.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.0"]
+        }
       }
     },
     kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },

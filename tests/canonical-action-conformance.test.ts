@@ -14,6 +14,7 @@ import {
   integrationContractFixture,
   parseActionFrame,
   projectBoundV3Action,
+  workflowActionV31Fixture,
   workflowActionV2Fixture
 } from "./helpers/canonical-action-fixture.js";
 import { createVispShim } from "./helpers/visp-shim.js";
@@ -86,6 +87,64 @@ describe("canonical action cross-surface conformance", () => {
     expect(() => parseActionFrame(`${frame}\n${frame}`)).toThrow(
       "Expected exactly one compact VISP_HYPER_ACTION_V1 frame."
     );
+  });
+
+  it("preserves one complete WorkflowAction 3.1 evidence view across all six surfaces", async () => {
+    const projectPath = await createCanonicalProject();
+    await execFileAsync("git", ["switch", "-c", WORKTREE_BRANCH], { cwd: projectPath });
+    const action = workflowActionV31Fixture();
+    const contract = integrationContractFixture({ protocols: ["2.0", "3.0", "3.1"] });
+    const shim = await createVispShim(canonicalKitSpec({ action, contract }));
+    prependShim(shim.binary);
+
+    const runEnvelope = framedEnvelope(
+      await captureCli(projectPath, ["run", "ignored raw goal", "--tool", "codex"])
+    );
+    const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
+    const resumeEnvelope = JSON.parse(
+      await captureCli(projectPath, ["resume", "--json"])
+    ) as Envelope;
+
+    await execFileAsync("git", ["add", "src/feature.ts"], { cwd: projectPath });
+    const guardEnvelope = framedEnvelope(await captureCli(projectPath, ["guard", "--staged"]));
+    const checkpointEnvelope = framedEnvelope(
+      await captureCli(projectPath, ["checkpoint", "--task", "T001"])
+    );
+    const mcpEnvelope = await readMcpEnvelope(projectPath);
+
+    for (const envelope of [
+      runEnvelope,
+      nextEnvelope,
+      resumeEnvelope,
+      guardEnvelope,
+      checkpointEnvelope,
+      mcpEnvelope
+    ]) {
+      expect(envelope).toEqual(runEnvelope);
+      expect(envelope.action).not.toHaveProperty("wire");
+    }
+    expect(runEnvelope.action).toMatchObject({
+      source: {
+        protocolVersion: "3.1",
+        selectionMode: "advertised",
+        localSchemaHash:
+          "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d"
+      },
+      sourceCanonicalVersion: { state: "available", value: "1.1" },
+      evidence: {
+        state: "available",
+        value: {
+          source: "candidate",
+          freshness: "fresh",
+          providers: [
+            {
+              status: "passed",
+              results: [{ independence: "pre_approved", outcome: { status: "passed" } }]
+            }
+          ]
+        }
+      }
+    });
   });
 
   it.each([

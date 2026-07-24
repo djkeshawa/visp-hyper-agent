@@ -5,18 +5,23 @@ import {
   parseSelectedWorkflowAction,
   selectWorkflowActionProtocol,
   workflowActionV2StrictSchema,
+  workflowActionV31StrictSchema,
   workflowActionV3StrictSchema,
   type WorkflowActionProtocolSelection
 } from "../src/kit/workflow-action-protocol.js";
 import {
+  createWorkflowActionV31Id,
   createWorkflowActionV3Id,
   normalizeWorkflowAction
 } from "../src/kit/workflow-action-adapter.js";
+import { workflowActionV31Fixture } from "./helpers/canonical-action-fixture.js";
 
 const V2_HASH =
   "sha256:c63b279b1ce89f047b2be696a47e845a57adda7f8437892e211e3a4cfad39ed6";
 const V3_HASH =
   "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7";
+const V31_HASH =
+  "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d";
 const V3_ACTION_ID =
   "sha256:f43debda81ad16a4cebb07c3f3ad149538a531b09dac991a284fb62219f50fce";
 
@@ -133,9 +138,16 @@ function workflowActionV3(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function advertisedSelection(protocol: "2.0" | "3.0"): WorkflowActionProtocolSelection {
+function advertisedSelection(protocol: "2.0" | "3.0" | "3.1"): WorkflowActionProtocolSelection {
+  const advertisement =
+    protocol === "3.1"
+      ? workflowActionAdvertisement({
+          supported: ["2.0", "3.0", "3.1"],
+          schemaHashes: { "2.0": V2_HASH, "3.0": V3_HASH, "3.1": V31_HASH }
+        })
+      : workflowActionAdvertisement();
   const result = selectWorkflowActionProtocol(
-    integrationContract(workflowActionAdvertisement()),
+    integrationContract(advertisement),
     protocol
   );
   if (!result.ok) throw new Error(result.reason);
@@ -144,10 +156,11 @@ function advertisedSelection(protocol: "2.0" | "3.0"): WorkflowActionProtocolSel
 
 describe("WorkflowAction protocol negotiation", () => {
   it("keeps immutable local preference and accepted schema-hash trust anchors", () => {
-    expect(WORKFLOW_ACTION_PROTOCOL_PREFERENCE).toEqual(["3.0", "2.0"]);
+    expect(WORKFLOW_ACTION_PROTOCOL_PREFERENCE).toEqual(["3.1", "3.0", "2.0"]);
     expect(TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES).toEqual({
       "2.0": V2_HASH,
-      "3.0": V3_HASH
+      "3.0": V3_HASH,
+      "3.1": V31_HASH
     });
     expect(Object.isFrozen(WORKFLOW_ACTION_PROTOCOL_PREFERENCE)).toBe(true);
     expect(Object.isFrozen(TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)).toBe(true);
@@ -180,6 +193,31 @@ describe("WorkflowAction protocol negotiation", () => {
     if (result.ok) expect(Object.isFrozen(result.value)).toBe(true);
   });
 
+  it("prefers advertised WorkflowAction 3.1 and verifies its exact trust anchor", () => {
+    const result = selectWorkflowActionProtocol(
+      integrationContract(
+        workflowActionAdvertisement({
+          supported: ["2.0", "3.0", "3.1"],
+          schemaHashes: { "2.0": V2_HASH, "3.0": V3_HASH, "3.1": V31_HASH }
+        })
+      ),
+      "auto"
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        protocolVersion: "3.1",
+        mode: "advertised",
+        localSchemaHash: V31_HASH,
+        schemaHashVerification: {
+          state: "advertised_verified",
+          advertisedHash: V31_HASH
+        }
+      }
+    });
+  });
+
   it("allows selector-less legacy v2 only for auto and explicit v2", () => {
     for (const preference of ["auto", "2.0"] as const) {
       expect(selectWorkflowActionProtocol(integrationContract(), preference)).toEqual({
@@ -193,6 +231,10 @@ describe("WorkflowAction protocol negotiation", () => {
       });
     }
     expect(selectWorkflowActionProtocol(integrationContract(), "3.0")).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_no_mutual_protocol"
+    });
+    expect(selectWorkflowActionProtocol(integrationContract(), "3.1")).toMatchObject({
       ok: false,
       reasonCode: "workflow_action_no_mutual_protocol"
     });
@@ -506,6 +548,65 @@ describe("WorkflowAction strict schemas and adapters", () => {
         task: { id: "T001", title: { state: "available", value: "Demo task" } },
         structuredFindings: { state: "available", value: [] }
       }
+    });
+  });
+
+  it("strictly validates 3.1 identity and preserves Kit-authored evidence without inference", () => {
+    const wire = workflowActionV31StrictSchema.parse(workflowActionV31Fixture());
+    expect(createWorkflowActionV31Id(wire)).toBe(wire.actionId);
+
+    const parsed = parseSelectedWorkflowAction(wire, advertisedSelection("3.1"));
+    expect(parsed).toMatchObject({ ok: true, value: { protocolVersion: "3.1" } });
+
+    const result = normalizeWorkflowAction(wire, advertisedSelection("3.1"));
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        sourceCanonicalVersion: { state: "available", value: "1.1" },
+        evidence: {
+          state: "available",
+          value: {
+            source: "candidate",
+            freshness: "fresh",
+            providers: [
+              {
+                status: "passed",
+                results: [
+                  {
+                    independence: "pre_approved",
+                    outcome: { status: "passed" }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    });
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value.evidence).toEqual(wire.evidence);
+    expect(Object.isFrozen(result.value.evidence)).toBe(true);
+  });
+
+  it("fails closed for malformed or tampered 3.1 evidence and identity", () => {
+    const valid = workflowActionV31Fixture();
+    expect(
+      workflowActionV31StrictSchema.safeParse({
+        ...valid,
+        evidence: {
+          ...valid.evidence,
+          unexpected: true
+        }
+      }).success
+    ).toBe(false);
+
+    const tampered = workflowActionV31StrictSchema.parse({
+      ...valid,
+      evidence: unavailable("source_invalid")
+    });
+    expect(normalizeWorkflowAction(tampered, advertisedSelection("3.1"))).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_identity_invalid"
     });
   });
 

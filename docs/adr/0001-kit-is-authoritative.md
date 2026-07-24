@@ -189,6 +189,25 @@ schema, and the temporary reader that derived action verdicts from
 surface now consumes only the negotiated canonical API and strict local wire
 validators established by P1-06.
 
+## P2-09 addendum: evidence-bearing WorkflowAction consumption
+
+P2-09 adds WorkflowAction `3.1` as Hyper's first local preference, ahead of
+unchanged `3.0` and `2.0` support. Hyper pins the reviewed `3.1` schema hash,
+validates the evidence-bearing wire object with an independent strict schema,
+and recomputes canonical `1.1` identity with the
+`visp.workflow-action\0canonical-1.1\0` domain. A malformed advertisement,
+schema-hash mismatch, malformed evidence summary, or identity mismatch fails
+closed without downgrade.
+
+Hyper preserves Kit's declared evidence value verbatim in its immutable
+normalized action and renders that same value on every canonical action
+surface. It does not rerun providers, infer missing evidence, upgrade
+freshness or independence, or derive a separate evidence verdict. Older
+WorkflowAction versions truthfully expose evidence as
+`unavailable/not_in_protocol`; selector-less legacy behavior remains limited
+to `2.0`. Kit remains the sole authority for whether the evidence changes an
+action verdict or permits workflow progress.
+
 The deprecated presentation marker remains detectable for fail-closed
 migration behavior, but its body is opaque and supplies no action verdict. A
 successful legacy-only frame is inconclusive, a failed legacy-only transport

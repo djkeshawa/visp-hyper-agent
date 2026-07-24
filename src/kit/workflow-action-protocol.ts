@@ -1,12 +1,13 @@
 import { z } from "zod";
 
-export const WORKFLOW_ACTION_PROTOCOL_PREFERENCE = Object.freeze(["3.0", "2.0"] as const);
+export const WORKFLOW_ACTION_PROTOCOL_PREFERENCE = Object.freeze(["3.1", "3.0", "2.0"] as const);
 export type WorkflowActionProtocol = (typeof WORKFLOW_ACTION_PROTOCOL_PREFERENCE)[number];
 export type WorkflowActionPreference = "auto" | WorkflowActionProtocol;
 
 export const TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES = Object.freeze({
   "2.0": "sha256:c63b279b1ce89f047b2be696a47e845a57adda7f8437892e211e3a4cfad39ed6",
-  "3.0": "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7"
+  "3.0": "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7",
+  "3.1": "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d"
 } as const satisfies Readonly<Record<WorkflowActionProtocol, `sha256:${string}`>>);
 
 const sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
@@ -263,9 +264,136 @@ export const workflowActionV3StrictSchema = z
   })
   .strict();
 
+const evidenceInputHashSchema = z
+  .object({
+    id: idSchema,
+    sha256: sha256Schema
+  })
+  .strict();
+const evidenceFreshnessSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("fresh"),
+      checkedAt: z.string().datetime(),
+      inputHashes: z.array(evidenceInputHashSchema)
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("stale"),
+      checkedAt: z.string().datetime(),
+      inputHashes: z.array(evidenceInputHashSchema),
+      reason: nonEmptyStringSchema
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("unknown"),
+      checkedAt: z.string().datetime(),
+      inputHashes: z.array(evidenceInputHashSchema),
+      reason: nonEmptyStringSchema
+    })
+    .strict()
+]);
+const notApplicableDeterminationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("rule"), ruleId: idSchema }).strict(),
+  z.object({ kind: z.literal("override"), overrideId: idSchema }).strict()
+]);
+const evidenceOutcomeSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("passed") }).strict(),
+  z.object({ status: z.literal("failed"), reason: nonEmptyStringSchema }).strict(),
+  z.object({ status: z.literal("inconclusive"), reason: nonEmptyStringSchema }).strict(),
+  z
+    .object({
+      status: z.literal("not_applicable"),
+      reason: nonEmptyStringSchema,
+      determination: notApplicableDeterminationSchema
+    })
+    .strict()
+]);
+const evidenceResultSummarySchema = z
+  .object({
+    id: idSchema,
+    requirementId: idSchema,
+    target: evidenceTargetSchema,
+    freshness: evidenceFreshnessSchema,
+    independence: z.enum([
+      "pre_existing",
+      "pre_approved",
+      "implementer_authored",
+      "independent_challenger",
+      "human_attestation"
+    ]),
+    outcome: evidenceOutcomeSchema
+  })
+  .strict();
+const evidenceProviderSummarySchema = z
+  .object({
+    id: idSchema,
+    provider: z
+      .object({
+        id: idSchema,
+        version: nonEmptyStringSchema
+      })
+      .strict(),
+    status: z.enum(["passed", "inconclusive"]),
+    failure: z
+      .object({
+        code: z.enum([
+          "unsupported_provider",
+          "malformed_output",
+          "timeout",
+          "command_not_found",
+          "skipped_evidence"
+        ]),
+        reason: nonEmptyStringSchema
+      })
+      .strict()
+      .nullable(),
+    results: z.array(evidenceResultSummarySchema)
+  })
+  .strict();
+const evidenceSummarySchema = z
+  .object({
+    version: z.literal("1.0"),
+    source: z.enum(["baseline", "candidate"]),
+    artifact: z
+      .object({
+        path: projectPathSchema,
+        contentHash: sha256Schema
+      })
+      .strict(),
+    generatedAt: z.string().datetime(),
+    outcome: z.enum(["passed", "failed", "inconclusive", "not_applicable"]),
+    freshness: z.enum(["fresh", "stale", "unknown"]),
+    providers: z.array(evidenceProviderSummarySchema),
+    testStrength: declaredValueSchema(
+      z
+        .object({
+          status: z.enum(["passed", "inconclusive"]),
+          independence: z.array(z.enum(["pre_existing", "pre_approved"])),
+          reason: nonEmptyStringSchema
+        })
+        .strict()
+    )
+  })
+  .strict();
+
+export const workflowActionV31StrictSchema = workflowActionV3StrictSchema
+  .extend({
+    protocolVersion: z.literal("3.1"),
+    canonicalVersion: z.literal("1.1"),
+    evidence: declaredValueSchema(evidenceSummarySchema)
+  })
+  .strict();
+
 export type WorkflowActionV2Wire = z.infer<typeof workflowActionV2StrictSchema>;
 export type WorkflowActionV3Wire = z.infer<typeof workflowActionV3StrictSchema>;
-export type WorkflowActionWire = WorkflowActionV2Wire | WorkflowActionV3Wire;
+export type WorkflowActionV31Wire = z.infer<typeof workflowActionV31StrictSchema>;
+export type WorkflowActionWire =
+  | WorkflowActionV2Wire
+  | WorkflowActionV3Wire
+  | WorkflowActionV31Wire;
 
 export type WorkflowActionProtocolSelection =
   | Readonly<{
@@ -290,6 +418,15 @@ export type WorkflowActionProtocolSelection =
       schemaHashVerification: Readonly<{
         state: "advertised_verified";
         advertisedHash: (typeof TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)["3.0"];
+      }>;
+    }>
+  | Readonly<{
+      protocolVersion: "3.1";
+      mode: "advertised";
+      localSchemaHash: (typeof TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)["3.1"];
+      schemaHashVerification: Readonly<{
+        state: "advertised_verified";
+        advertisedHash: (typeof TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)["3.1"];
       }>;
     }>;
 
@@ -336,10 +473,10 @@ export function selectWorkflowActionProtocol(
   }
 
   if (!Object.prototype.hasOwnProperty.call(contract, "protocols")) {
-    if (preference === "3.0") {
+    if (preference !== "auto" && preference !== "2.0") {
       return failure(
         "workflow_action_no_mutual_protocol",
-        "Legacy integration contract 2.0 does not advertise WorkflowAction 3.0."
+        `Legacy integration contract 2.0 does not advertise WorkflowAction ${preference}.`
       );
     }
     return success(
@@ -395,29 +532,17 @@ export function selectWorkflowActionProtocol(
     );
   }
 
-  return selected === "2.0"
-    ? success(
-        deepFreeze({
-          protocolVersion: "2.0",
-          mode: "advertised",
-          localSchemaHash: TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["2.0"],
-          schemaHashVerification: {
-            state: "advertised_verified",
-            advertisedHash: TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["2.0"]
-          }
-        })
-      )
-    : success(
-        deepFreeze({
-          protocolVersion: "3.0",
-          mode: "advertised",
-          localSchemaHash: TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.0"],
-          schemaHashVerification: {
-            state: "advertised_verified",
-            advertisedHash: TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.0"]
-          }
-        })
-      );
+  return success(
+    deepFreeze({
+      protocolVersion: selected,
+      mode: "advertised",
+      localSchemaHash,
+      schemaHashVerification: {
+        state: "advertised_verified",
+        advertisedHash: localSchemaHash
+      }
+    }) as WorkflowActionProtocolSelection
+  );
 }
 
 export function isWorkflowActionProtocolSelection(
@@ -432,7 +557,13 @@ export function isWorkflowActionProtocolSelection(
     return false;
   }
   const protocolVersion = value.protocolVersion;
-  if (protocolVersion !== "2.0" && protocolVersion !== "3.0") return false;
+  if (
+    protocolVersion !== "2.0" &&
+    protocolVersion !== "3.0" &&
+    protocolVersion !== "3.1"
+  ) {
+    return false;
+  }
   const expectedHash = TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES[protocolVersion];
   if (value.localSchemaHash !== expectedHash || !isRecord(value.schemaHashVerification)) {
     return false;
@@ -493,7 +624,9 @@ export function parseSelectedWorkflowAction(
   const schema =
     selection.protocolVersion === "2.0"
       ? workflowActionV2StrictSchema
-      : workflowActionV3StrictSchema;
+      : selection.protocolVersion === "3.0"
+        ? workflowActionV3StrictSchema
+        : workflowActionV31StrictSchema;
   const parsed = schema.safeParse(payload);
   if (!parsed.success) {
     return failure(
