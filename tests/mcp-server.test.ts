@@ -24,6 +24,7 @@ import {
   snapshotProject,
   tasklessWorkflowActionV3Fixture,
   workflowActionV2Fixture,
+  workflowActionV32Fixture,
   workflowActionV3Fixture
 } from "./helpers/canonical-action-fixture.js";
 import { toolOnlyPath } from "./helpers/tool-path.js";
@@ -1042,6 +1043,33 @@ describe("handleMessage resources and prompts surface", () => {
       })
     ]);
     expect(await snapshotProject(projectPath)).toEqual(before);
+  });
+
+  it("exposes the exact Kit-authored WorkflowAction 3.2 assurance summary", async () => {
+    const projectPath = await createCanonicalProject();
+    const action = workflowActionV32Fixture();
+    const contract = integrationContractFixture({
+      protocols: ["2.0", "3.0", "3.1", "3.2"]
+    });
+    const shim = await createVispShim(canonicalKitSpec({ action, contract }));
+    prependVispShim(shim.binary);
+
+    const { body } = await readCanonicalActionResource(projectPath);
+    const publicAction = (body.envelope as { action: Record<string, unknown> }).action;
+    expect(publicAction.assuranceSummary).toEqual(action.assuranceSummary);
+    expect(publicAction.verdict).toBe(action.verdict);
+    expect(publicAction.nextCommand).toBe(action.nextCommand);
+    expect(publicAction).not.toHaveProperty("wire");
+    expect(
+      (await readFile(shim.argvLogPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+    ).toEqual([
+      ["status", "--json"],
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.2", "--json"]
+    ]);
   });
 
   it.each([

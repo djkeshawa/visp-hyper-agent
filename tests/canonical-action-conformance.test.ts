@@ -14,7 +14,7 @@ import {
   integrationContractFixture,
   parseActionFrame,
   projectBoundV3Action,
-  workflowActionV31Fixture,
+  workflowActionV32Fixture,
   workflowActionV2Fixture
 } from "./helpers/canonical-action-fixture.js";
 import { createVispShim } from "./helpers/visp-shim.js";
@@ -89,11 +89,13 @@ describe("canonical action cross-surface conformance", () => {
     );
   });
 
-  it("preserves one complete WorkflowAction 3.1 evidence view across all six surfaces", async () => {
+  it("preserves one complete WorkflowAction 3.2 assurance view across all six surfaces", async () => {
     const projectPath = await createCanonicalProject();
     await execFileAsync("git", ["switch", "-c", WORKTREE_BRANCH], { cwd: projectPath });
-    const action = workflowActionV31Fixture();
-    const contract = integrationContractFixture({ protocols: ["2.0", "3.0", "3.1"] });
+    const action = workflowActionV32Fixture();
+    const contract = integrationContractFixture({
+      protocols: ["2.0", "3.0", "3.1", "3.2"]
+    });
     const shim = await createVispShim(canonicalKitSpec({ action, contract }));
     prependShim(shim.binary);
 
@@ -125,26 +127,28 @@ describe("canonical action cross-surface conformance", () => {
     }
     expect(runEnvelope.action).toMatchObject({
       source: {
-        protocolVersion: "3.1",
+        protocolVersion: "3.2",
         selectionMode: "advertised",
         localSchemaHash:
-          "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d"
+          "sha256:77dcaba51ef8e1a78064680077f8bcc48c081d8025596c6cc8df9ea7873d68e9"
       },
-      sourceCanonicalVersion: { state: "available", value: "1.1" },
-      evidence: {
+      sourceCanonicalVersion: { state: "available", value: "1.2" },
+      assuranceSummary: {
         state: "available",
-        value: {
-          source: "candidate",
-          freshness: "fresh",
-          providers: [
-            {
-              status: "passed",
-              results: [{ independence: "pre_approved", outcome: { status: "passed" } }]
-            }
-          ]
+        caseHash: action.assuranceSummary.state === "available"
+          ? action.assuranceSummary.caseHash
+          : undefined,
+        verdict: "inconclusive",
+        reviewDecision: {
+          required: true,
+          status: "missing",
+          decisionHash: null
         }
       }
     });
+    expect(runEnvelope.action.assuranceSummary).toEqual(action.assuranceSummary);
+    expect(runEnvelope.action.verdict).toBe(action.verdict);
+    expect(runEnvelope.action.nextCommand).toBe(action.nextCommand);
   });
 
   it.each([

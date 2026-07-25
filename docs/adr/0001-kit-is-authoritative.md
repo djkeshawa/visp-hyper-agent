@@ -223,3 +223,28 @@ selector-less `legacy_v2` command; and v3 negotiation, the frozen
 `VISP_HYPER_ACTION_V1` envelope, exact Kit verdicts and `nextCommand`, and
 genuine Kit-less behavior remain unchanged. Compatibility claims remain
 limited to exact packed pairs whose evidence has run.
+
+## P3-08 addendum: assurance-aware WorkflowAction consumption
+
+P3-08 adds WorkflowAction `3.2` as Hyper's first local preference, ahead of
+unchanged `3.1`, `3.0`, and `2.0` support. Hyper pins the reviewed `3.2` schema
+hash, validates the assurance-aware wire object with an independent strict
+schema, and recomputes canonical `1.2` identity with the
+`visp.workflow-action\0canonical-1.2\0` domain. A malformed advertisement,
+schema-hash mismatch, malformed or unsafely pathed assurance summary,
+unsorted or duplicate mandatory hotspot, or identity mismatch fails closed
+without downgrade.
+
+Hyper preserves Kit's assurance summary verbatim in its deeply immutable
+normalized action. The same case hash, assurance verdict, mandatory hotspots,
+review-decision state, top-level action verdict, and exact `nextCommand` are
+rendered through `run`, `next`, `resume`, `guard`, checkpoint, the generic
+host frame, and the canonical-action MCP resource. Hyper does not decide
+whether review is required, reinterpret a decision status, infer assurance
+from evidence, sessions, Memory, or commands, or substitute another command.
+
+Older WorkflowAction versions truthfully expose assurance as
+`unavailable/not_in_protocol`. Their prior evidence and action behavior is
+unchanged, including the selector-less legacy boundary at `2.0`. Kit remains
+the sole authority for assurance acceptance, decision currentness, workflow
+progress, and PR readiness.

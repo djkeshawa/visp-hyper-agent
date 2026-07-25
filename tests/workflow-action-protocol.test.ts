@@ -6,16 +6,21 @@ import {
   selectWorkflowActionProtocol,
   workflowActionV2StrictSchema,
   workflowActionV31StrictSchema,
+  workflowActionV32StrictSchema,
   workflowActionV3StrictSchema,
   type WorkflowActionProtocolSelection
 } from "../src/kit/workflow-action-protocol.js";
 import {
   createWorkflowActionV31Id,
+  createWorkflowActionV32Id,
   createWorkflowActionV3Id,
   normalizeWorkflowAction
 } from "../src/kit/workflow-action-adapter.js";
 import { toHyperActionEnvelope } from "../src/kit/workflow-action-renderer.js";
-import { workflowActionV31Fixture } from "./helpers/canonical-action-fixture.js";
+import {
+  workflowActionV31Fixture,
+  workflowActionV32Fixture
+} from "./helpers/canonical-action-fixture.js";
 
 const V2_HASH =
   "sha256:c63b279b1ce89f047b2be696a47e845a57adda7f8437892e211e3a4cfad39ed6";
@@ -23,6 +28,8 @@ const V3_HASH =
   "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7";
 const V31_HASH =
   "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d";
+const V32_HASH =
+  "sha256:77dcaba51ef8e1a78064680077f8bcc48c081d8025596c6cc8df9ea7873d68e9";
 const V3_ACTION_ID =
   "sha256:f43debda81ad16a4cebb07c3f3ad149538a531b09dac991a284fb62219f50fce";
 
@@ -139,9 +146,21 @@ function workflowActionV3(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function advertisedSelection(protocol: "2.0" | "3.0" | "3.1"): WorkflowActionProtocolSelection {
+function advertisedSelection(
+  protocol: "2.0" | "3.0" | "3.1" | "3.2"
+): WorkflowActionProtocolSelection {
   const advertisement =
-    protocol === "3.1"
+    protocol === "3.2"
+      ? workflowActionAdvertisement({
+          supported: ["2.0", "3.0", "3.1", "3.2"],
+          schemaHashes: {
+            "2.0": V2_HASH,
+            "3.0": V3_HASH,
+            "3.1": V31_HASH,
+            "3.2": V32_HASH
+          }
+        })
+      : protocol === "3.1"
       ? workflowActionAdvertisement({
           supported: ["2.0", "3.0", "3.1"],
           schemaHashes: { "2.0": V2_HASH, "3.0": V3_HASH, "3.1": V31_HASH }
@@ -157,11 +176,12 @@ function advertisedSelection(protocol: "2.0" | "3.0" | "3.1"): WorkflowActionPro
 
 describe("WorkflowAction protocol negotiation", () => {
   it("keeps immutable local preference and accepted schema-hash trust anchors", () => {
-    expect(WORKFLOW_ACTION_PROTOCOL_PREFERENCE).toEqual(["3.1", "3.0", "2.0"]);
+    expect(WORKFLOW_ACTION_PROTOCOL_PREFERENCE).toEqual(["3.2", "3.1", "3.0", "2.0"]);
     expect(TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES).toEqual({
       "2.0": V2_HASH,
       "3.0": V3_HASH,
-      "3.1": V31_HASH
+      "3.1": V31_HASH,
+      "3.2": V32_HASH
     });
     expect(Object.isFrozen(WORKFLOW_ACTION_PROTOCOL_PREFERENCE)).toBe(true);
     expect(Object.isFrozen(TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)).toBe(true);
@@ -219,6 +239,36 @@ describe("WorkflowAction protocol negotiation", () => {
     });
   });
 
+  it("prefers advertised WorkflowAction 3.2 and verifies its exact trust anchor", () => {
+    const result = selectWorkflowActionProtocol(
+      integrationContract(
+        workflowActionAdvertisement({
+          supported: ["2.0", "3.0", "3.1", "3.2"],
+          schemaHashes: {
+            "2.0": V2_HASH,
+            "3.0": V3_HASH,
+            "3.1": V31_HASH,
+            "3.2": V32_HASH
+          }
+        })
+      ),
+      "auto"
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        protocolVersion: "3.2",
+        mode: "advertised",
+        localSchemaHash: V32_HASH,
+        schemaHashVerification: {
+          state: "advertised_verified",
+          advertisedHash: V32_HASH
+        }
+      }
+    });
+  });
+
   it("allows selector-less legacy v2 only for auto and explicit v2", () => {
     for (const preference of ["auto", "2.0"] as const) {
       expect(selectWorkflowActionProtocol(integrationContract(), preference)).toEqual({
@@ -236,6 +286,10 @@ describe("WorkflowAction protocol negotiation", () => {
       reasonCode: "workflow_action_no_mutual_protocol"
     });
     expect(selectWorkflowActionProtocol(integrationContract(), "3.1")).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_no_mutual_protocol"
+    });
+    expect(selectWorkflowActionProtocol(integrationContract(), "3.2")).toMatchObject({
       ok: false,
       reasonCode: "workflow_action_no_mutual_protocol"
     });
@@ -303,6 +357,27 @@ describe("WorkflowAction protocol negotiation", () => {
       integrationContract(
         workflowActionAdvertisement({
           schemaHashes: { "2.0": V2_HASH, "3.0": `sha256:${"0".repeat(64)}` }
+        })
+      ),
+      "auto"
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_schema_hash_mismatch"
+    });
+  });
+
+  it("does not downgrade after selected WorkflowAction 3.2 hash verification fails", () => {
+    const result = selectWorkflowActionProtocol(
+      integrationContract(
+        workflowActionAdvertisement({
+          supported: ["2.0", "3.0", "3.1", "3.2"],
+          schemaHashes: {
+            "2.0": V2_HASH,
+            "3.0": V3_HASH,
+            "3.1": V31_HASH,
+            "3.2": `sha256:${"0".repeat(64)}`
+          }
         })
       ),
       "auto"
@@ -453,6 +528,7 @@ describe("WorkflowAction strict schemas and adapters", () => {
           }
         ],
         requiredEvidence: { state: "unavailable", reasonCode: "not_in_protocol" },
+        assuranceSummary: { state: "unavailable", reasonCode: "not_in_protocol" },
         policy: {
           status: { state: "unavailable", reasonCode: "not_in_protocol" },
           appliedOverrides: { state: "unavailable", reasonCode: "not_in_protocol" }
@@ -550,6 +626,11 @@ describe("WorkflowAction strict schemas and adapters", () => {
         structuredFindings: { state: "available", value: [] }
       }
     });
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value.assuranceSummary).toEqual({
+      state: "unavailable",
+      reasonCode: "not_in_protocol"
+    });
   });
 
   it("strictly validates 3.1 identity and preserves Kit-authored evidence without inference", () => {
@@ -586,7 +667,205 @@ describe("WorkflowAction strict schemas and adapters", () => {
     });
     if (!result.ok) throw new Error(result.reason);
     expect(result.value.evidence).toEqual(wire.evidence);
+    expect(result.value.assuranceSummary).toEqual({
+      state: "unavailable",
+      reasonCode: "not_in_protocol"
+    });
     expect(Object.isFrozen(result.value.evidence)).toBe(true);
+  });
+
+  it("strictly validates 3.2 identity and preserves Kit-authored assurance without inference", () => {
+    const wire = workflowActionV32StrictSchema.parse(workflowActionV32Fixture());
+    expect(createWorkflowActionV32Id(wire)).toBe(wire.actionId);
+
+    const parsed = parseSelectedWorkflowAction(wire, advertisedSelection("3.2"));
+    expect(parsed).toMatchObject({ ok: true, value: { protocolVersion: "3.2" } });
+
+    const result = normalizeWorkflowAction(wire, advertisedSelection("3.2"));
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        sourceCanonicalVersion: { state: "available", value: "1.2" },
+        assuranceSummary: {
+          state: "available",
+          caseHash: `sha256:${"e".repeat(64)}`,
+          verdict: "inconclusive",
+          mandatoryHotspots: [
+            {
+              id: "HS001",
+              category: "security",
+              severity: "critical",
+              path: "src/feature.ts"
+            }
+          ],
+          reviewDecision: {
+            required: true,
+            status: "missing",
+            decisionHash: null
+          }
+        },
+        nextCommand: 'visp gate implement --task "T001 exact" && printf opaque'
+      }
+    });
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value.assuranceSummary).toEqual(wire.assuranceSummary);
+    expect(toHyperActionEnvelope(result.value).action.assuranceSummary).toEqual(
+      wire.assuranceSummary
+    );
+    expect(Object.isFrozen(result.value.assuranceSummary)).toBe(true);
+    if (result.value.assuranceSummary.state !== "available") {
+      throw new Error("Expected available assurance summary.");
+    }
+    expect(Object.isFrozen(result.value.assuranceSummary.mandatoryHotspots)).toBe(true);
+    expect(Object.isFrozen(result.value.assuranceSummary.reviewDecision)).toBe(true);
+  });
+
+  it.each([
+    [
+      "extra summary field",
+      () => ({
+        ...workflowActionV32Fixture(),
+        assuranceSummary: {
+          ...workflowActionV32Fixture().assuranceSummary,
+          accepted: true
+        }
+      })
+    ],
+    [
+      "unsafe artifact path",
+      () => {
+        const action = workflowActionV32Fixture();
+        if (action.assuranceSummary.state !== "available") throw new Error("Expected summary.");
+        return {
+          ...action,
+          assuranceSummary: {
+            ...action.assuranceSummary,
+            artifact: { ...action.assuranceSummary.artifact, path: "../case.json" }
+          }
+        };
+      }
+    ],
+    [
+      "invalid case hash",
+      () => {
+        const action = workflowActionV32Fixture();
+        return {
+          ...action,
+          assuranceSummary: { ...action.assuranceSummary, caseHash: "sha256:ABC" }
+        };
+      }
+    ],
+    [
+      "invalid review status",
+      () => {
+        const action = workflowActionV32Fixture();
+        return {
+          ...action,
+          assuranceSummary: {
+            ...action.assuranceSummary,
+            reviewDecision: {
+              ...action.assuranceSummary.reviewDecision,
+              status: "accepted"
+            }
+          }
+        };
+      }
+    ],
+    [
+      "unsorted hotspots",
+      () => {
+        const action = workflowActionV32Fixture();
+        if (action.assuranceSummary.state !== "available") throw new Error("Expected summary.");
+        const hotspot = action.assuranceSummary.mandatoryHotspots[0]!;
+        return {
+          ...action,
+          assuranceSummary: {
+            ...action.assuranceSummary,
+            mandatoryHotspots: [
+              { ...hotspot, id: "HS002" },
+              { ...hotspot, id: "HS001" }
+            ]
+          }
+        };
+      }
+    ],
+    [
+      "duplicate hotspots",
+      () => {
+        const action = workflowActionV32Fixture();
+        if (action.assuranceSummary.state !== "available") throw new Error("Expected summary.");
+        const hotspot = action.assuranceSummary.mandatoryHotspots[0]!;
+        return {
+          ...action,
+          assuranceSummary: {
+            ...action.assuranceSummary,
+            mandatoryHotspots: [hotspot, hotspot]
+          }
+        };
+      }
+    ],
+    [
+      "non-null unavailable decision hash",
+      () => ({
+        ...workflowActionV32Fixture(),
+        assuranceSummary: {
+          state: "unavailable",
+          reason: "Assurance case is missing.",
+          reviewDecision: {
+            required: true,
+            status: "missing",
+            decisionHash: `sha256:${"f".repeat(64)}`,
+            reason: "No decision is recorded."
+          }
+        }
+      })
+    ]
+  ])("strictly rejects malformed 3.2 %s", (_label, mutate) => {
+    expect(workflowActionV32StrictSchema.safeParse(mutate()).success).toBe(false);
+  });
+
+  it("rejects a 3.2 assurance summary changed after identity generation", () => {
+    const valid = workflowActionV32Fixture();
+    if (valid.assuranceSummary.state !== "available") throw new Error("Expected summary.");
+    const tampered = workflowActionV32StrictSchema.parse({
+      ...valid,
+      assuranceSummary: {
+        ...valid.assuranceSummary,
+        reviewDecision: {
+          ...valid.assuranceSummary.reviewDecision,
+          reason: "The case changed after identity generation."
+        }
+      }
+    });
+    expect(normalizeWorkflowAction(tampered, advertisedSelection("3.2"))).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_identity_invalid"
+    });
+  });
+
+  it("preserves Kit's unavailable 3.2 assurance summary without reinterpretation", () => {
+    const assuranceSummary = {
+      state: "unavailable" as const,
+      reason: "The assurance case is missing.",
+      reviewDecision: {
+        required: true,
+        status: "missing" as const,
+        decisionHash: null,
+        reason: "No review decision is recorded."
+      }
+    };
+    const wire = workflowActionV32StrictSchema.parse(
+      workflowActionV32Fixture({ assuranceSummary })
+    );
+    const result = normalizeWorkflowAction(wire, advertisedSelection("3.2"));
+    if (!result.ok) throw new Error(result.reason);
+
+    expect(result.value.assuranceSummary).toEqual(assuranceSummary);
+    expect(Object.isFrozen(result.value.assuranceSummary)).toBe(true);
+    if (!("reviewDecision" in result.value.assuranceSummary)) {
+      throw new Error("Expected Kit-authored unavailable assurance summary.");
+    }
+    expect(Object.isFrozen(result.value.assuranceSummary.reviewDecision)).toBe(true);
   });
 
   it("fails closed for malformed or tampered 3.1 evidence and identity", () => {

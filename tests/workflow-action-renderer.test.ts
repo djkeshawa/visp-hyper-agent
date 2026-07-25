@@ -7,6 +7,7 @@ import {
 import {
   TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES,
   workflowActionV2StrictSchema,
+  workflowActionV32StrictSchema,
   workflowActionV3StrictSchema,
   type WorkflowActionProtocolSelection
 } from "../src/kit/workflow-action-protocol.js";
@@ -17,6 +18,7 @@ import {
   renderHyperActionFrame,
   toHyperActionEnvelope
 } from "../src/kit/workflow-action-renderer.js";
+import { workflowActionV32Fixture } from "./helpers/canonical-action-fixture.js";
 
 const unavailable = (reasonCode = "not_in_source_artifact") => ({
   state: "unavailable" as const,
@@ -28,7 +30,7 @@ const notApplicable = (reasonCode = "stage_does_not_require_value") => ({
   reasonCode
 });
 
-function selection(protocolVersion: "2.0" | "3.0"): WorkflowActionProtocolSelection {
+function selection(protocolVersion: "2.0" | "3.0" | "3.2"): WorkflowActionProtocolSelection {
   const localSchemaHash = TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES[protocolVersion];
   return {
     protocolVersion,
@@ -133,10 +135,18 @@ function normalizedV3(): NormalizedWorkflowAction {
   return result.value;
 }
 
+function normalizedV32(): NormalizedWorkflowAction {
+  const wire = workflowActionV32StrictSchema.parse(workflowActionV32Fixture());
+  const result = normalizeWorkflowAction(wire, selection("3.2"));
+  if (!result.ok) throw new Error(result.reason);
+  return result.value;
+}
+
 describe("Hyper canonical action renderer", () => {
   it.each([
     ["v2", normalizedV2()],
-    ["v3", normalizedV3()]
+    ["v3", normalizedV3()],
+    ["v3.2", normalizedV32()]
   ])("projects %s without wire and preserves every normalized public field", (_name, action) => {
     const envelope = toHyperActionEnvelope(action);
     const { wire: _wire, ...publicAction } = action;
@@ -155,6 +165,10 @@ describe("Hyper canonical action renderer", () => {
         state: "not_applicable",
         reasonCode: "stage_does_not_require_value"
       });
+    }
+    if (_name === "v3.2") {
+      expect(envelope.action.assuranceSummary).toEqual(action.assuranceSummary);
+      expect(envelope.action.nextCommand).toBe(action.nextCommand);
     }
     expect(Object.isFrozen(envelope)).toBe(true);
     expect(Object.isFrozen(envelope.action)).toBe(true);

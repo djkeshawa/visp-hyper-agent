@@ -1,13 +1,19 @@
 import { z } from "zod";
 
-export const WORKFLOW_ACTION_PROTOCOL_PREFERENCE = Object.freeze(["3.1", "3.0", "2.0"] as const);
+export const WORKFLOW_ACTION_PROTOCOL_PREFERENCE = Object.freeze([
+  "3.2",
+  "3.1",
+  "3.0",
+  "2.0"
+] as const);
 export type WorkflowActionProtocol = (typeof WORKFLOW_ACTION_PROTOCOL_PREFERENCE)[number];
 export type WorkflowActionPreference = "auto" | WorkflowActionProtocol;
 
 export const TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES = Object.freeze({
   "2.0": "sha256:c63b279b1ce89f047b2be696a47e845a57adda7f8437892e211e3a4cfad39ed6",
   "3.0": "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7",
-  "3.1": "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d"
+  "3.1": "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d",
+  "3.2": "sha256:77dcaba51ef8e1a78064680077f8bcc48c081d8025596c6cc8df9ea7873d68e9"
 } as const satisfies Readonly<Record<WorkflowActionProtocol, `sha256:${string}`>>);
 
 const sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
@@ -387,13 +393,111 @@ export const workflowActionV31StrictSchema = workflowActionV3StrictSchema
   })
   .strict();
 
+const assuranceReviewDecisionSchema = z
+  .object({
+    required: z.boolean(),
+    status: z.enum(["current", "missing", "rejected", "stale", "invalid"]),
+    decisionHash: sha256Schema.nullable(),
+    reason: nonEmptyStringSchema
+  })
+  .strict();
+const mandatoryHotspotSchema = z
+  .object({
+    id: idSchema,
+    category: z.enum([
+      "public_api",
+      "dependency",
+      "schema_migration",
+      "security",
+      "concurrency",
+      "permissions",
+      "deployment_configuration",
+      "test_deletion",
+      "test_weakening",
+      "validation_command_change",
+      "unmapped_change",
+      "scope_expansion",
+      "oversized_scope",
+      "inconclusive_evidence",
+      "override_usage",
+      "generated_behavior"
+    ]),
+    severity: z.enum(["critical", "high", "medium"]),
+    path: projectPathSchema.nullable(),
+    reason: nonEmptyStringSchema
+  })
+  .strict();
+const availableAssuranceSummarySchema = z
+  .object({
+    state: z.literal("available"),
+    version: z.literal("1.0"),
+    artifact: z
+      .object({
+        path: projectPathSchema,
+        contentHash: sha256Schema
+      })
+      .strict(),
+    caseHash: sha256Schema,
+    verdict: z.enum(["passed", "failed", "inconclusive"]),
+    mandatoryHotspots: z.array(mandatoryHotspotSchema),
+    reviewDecision: assuranceReviewDecisionSchema
+  })
+  .strict()
+  .superRefine((summary, context) => {
+    for (const [index, hotspot] of summary.mandatoryHotspots.entries()) {
+      const previous = summary.mandatoryHotspots[index - 1];
+      if (previous === undefined) continue;
+      const fields: Array<[string, string]> = [
+        [previous.id, hotspot.id],
+        [previous.category, hotspot.category],
+        [previous.severity, hotspot.severity],
+        [previous.path ?? "", hotspot.path ?? ""],
+        [previous.reason, hotspot.reason]
+      ];
+      let comparison = 0;
+      for (const [left, right] of fields) {
+        comparison = compareCodeUnits(left, right);
+        if (comparison !== 0) break;
+      }
+      if (comparison >= 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["mandatoryHotspots", index],
+          message: "Mandatory hotspots must use stable UTF-16 order and be unique."
+        });
+      }
+    }
+  });
+const assuranceSummarySchema = z.union([
+  availableAssuranceSummarySchema,
+  z
+    .object({
+      state: z.literal("unavailable"),
+      reason: nonEmptyStringSchema,
+      reviewDecision: assuranceReviewDecisionSchema.extend({
+        decisionHash: z.null()
+      })
+    })
+    .strict()
+]);
+
+export const workflowActionV32StrictSchema = workflowActionV31StrictSchema
+  .extend({
+    protocolVersion: z.literal("3.2"),
+    canonicalVersion: z.literal("1.2"),
+    assuranceSummary: assuranceSummarySchema
+  })
+  .strict();
+
 export type WorkflowActionV2Wire = z.infer<typeof workflowActionV2StrictSchema>;
 export type WorkflowActionV3Wire = z.infer<typeof workflowActionV3StrictSchema>;
 export type WorkflowActionV31Wire = z.infer<typeof workflowActionV31StrictSchema>;
+export type WorkflowActionV32Wire = z.infer<typeof workflowActionV32StrictSchema>;
 export type WorkflowActionWire =
   | WorkflowActionV2Wire
   | WorkflowActionV3Wire
-  | WorkflowActionV31Wire;
+  | WorkflowActionV31Wire
+  | WorkflowActionV32Wire;
 
 export type WorkflowActionProtocolSelection =
   | Readonly<{
@@ -427,6 +531,15 @@ export type WorkflowActionProtocolSelection =
       schemaHashVerification: Readonly<{
         state: "advertised_verified";
         advertisedHash: (typeof TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)["3.1"];
+      }>;
+    }>
+  | Readonly<{
+      protocolVersion: "3.2";
+      mode: "advertised";
+      localSchemaHash: (typeof TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)["3.2"];
+      schemaHashVerification: Readonly<{
+        state: "advertised_verified";
+        advertisedHash: (typeof TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)["3.2"];
       }>;
     }>;
 
@@ -560,7 +673,8 @@ export function isWorkflowActionProtocolSelection(
   if (
     protocolVersion !== "2.0" &&
     protocolVersion !== "3.0" &&
-    protocolVersion !== "3.1"
+    protocolVersion !== "3.1" &&
+    protocolVersion !== "3.2"
   ) {
     return false;
   }
@@ -626,7 +740,9 @@ export function parseSelectedWorkflowAction(
       ? workflowActionV2StrictSchema
       : selection.protocolVersion === "3.0"
         ? workflowActionV3StrictSchema
-        : workflowActionV31StrictSchema;
+        : selection.protocolVersion === "3.1"
+          ? workflowActionV31StrictSchema
+          : workflowActionV32StrictSchema;
   const parsed = schema.safeParse(payload);
   if (!parsed.success) {
     return failure(

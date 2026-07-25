@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import {
   isWorkflowActionProtocolSelection,
   workflowActionV31StrictSchema,
+  workflowActionV32StrictSchema,
   workflowActionV3StrictSchema,
   type WorkflowActionProtocolSelection,
   type WorkflowActionV2Wire,
   type WorkflowActionV31Wire,
+  type WorkflowActionV32Wire,
   type WorkflowActionV3Wire,
   type WorkflowActionWire
 } from "./workflow-action-protocol.js";
@@ -48,7 +50,7 @@ export type NormalizedWorkflowAction = DeepReadonly<{
     localSchemaHash: WorkflowActionProtocolSelection["localSchemaHash"];
     schemaHashVerification: WorkflowActionProtocolSelection["schemaHashVerification"];
   }>;
-  sourceCanonicalVersion: NormalizedDeclaredValue<"1.0" | "1.1">;
+  sourceCanonicalVersion: NormalizedDeclaredValue<"1.0" | "1.1" | "1.2">;
   actionId: NormalizedDeclaredValue<string>;
   phase: NormalizedDeclaredValue<WorkflowPhase>;
   sourcePhase: WorkflowActionWire["phase"];
@@ -96,6 +98,9 @@ export type NormalizedWorkflowAction = DeepReadonly<{
   validationCommands: readonly string[];
   requiredEvidence: WorkflowActionV3Wire["requiredEvidence"];
   evidence: WorkflowActionV31Wire["evidence"];
+  assuranceSummary:
+    | WorkflowActionV32Wire["assuranceSummary"]
+    | Readonly<{ state: "unavailable"; reasonCode: "not_in_protocol" }>;
   policy: Readonly<{
     status: WorkflowActionV3Wire["policy"]["status"];
     appliedOverrides: WorkflowActionV3Wire["policy"]["appliedOverrides"];
@@ -147,6 +152,7 @@ const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
 const bareSha256Pattern = /^[a-f0-9]{64}$/u;
 const identityDomainV1 = "visp.workflow-action\0canonical-1.0\0";
 const identityDomainV1_1 = "visp.workflow-action\0canonical-1.1\0";
+const identityDomainV1_2 = "visp.workflow-action\0canonical-1.2\0";
 
 export function normalizeWorkflowAction(
   action: WorkflowActionWire,
@@ -174,6 +180,11 @@ export function createWorkflowActionV3Id(action: unknown): `sha256:${string}` {
 export function createWorkflowActionV31Id(action: unknown): `sha256:${string}` {
   const parsed = workflowActionV31StrictSchema.parse(action);
   return createCanonicalWorkflowActionId(parsed, identityDomainV1_1);
+}
+
+export function createWorkflowActionV32Id(action: unknown): `sha256:${string}` {
+  const parsed = workflowActionV32StrictSchema.parse(action);
+  return createCanonicalWorkflowActionId(parsed, identityDomainV1_2);
 }
 
 function normalizeWorkflowActionV2(
@@ -284,6 +295,7 @@ function normalizeWorkflowActionV2(
     validationCommands: [...action.validationCommands],
     requiredEvidence: unavailable(),
     evidence: unavailable(),
+    assuranceSummary: unavailableInProtocol(),
     policy: { status: unavailable(), appliedOverrides: unavailable() },
     structuredFindings: unavailable(),
     findingMessages: [...action.findings],
@@ -295,13 +307,15 @@ function normalizeWorkflowActionV2(
 }
 
 function normalizeCanonicalWorkflowAction(
-  action: WorkflowActionV3Wire | WorkflowActionV31Wire,
+  action: WorkflowActionV3Wire | WorkflowActionV31Wire | WorkflowActionV32Wire,
   selection: WorkflowActionProtocolSelection
 ): WorkflowActionAdapterResult {
   const expectedActionId =
     action.protocolVersion === "3.0"
       ? createWorkflowActionV3Id(action)
-      : createWorkflowActionV31Id(action);
+      : action.protocolVersion === "3.1"
+        ? createWorkflowActionV31Id(action)
+        : createWorkflowActionV32Id(action);
   if (expectedActionId !== action.actionId) {
     return adapterFailure(
       "workflow_action_identity_invalid",
@@ -374,7 +388,9 @@ function normalizeCanonicalWorkflowAction(
     })),
     validationCommands: [...action.validationCommands],
     requiredEvidence: action.requiredEvidence,
-    evidence: action.protocolVersion === "3.1" ? action.evidence : unavailable(),
+    evidence: action.protocolVersion === "3.0" ? unavailable() : action.evidence,
+    assuranceSummary:
+      action.protocolVersion === "3.2" ? action.assuranceSummary : unavailableInProtocol(),
     policy: action.policy,
     structuredFindings: available([...action.findings]),
     findingMessages: action.findings.map((finding) => finding.message),
@@ -386,7 +402,7 @@ function normalizeCanonicalWorkflowAction(
 }
 
 function createCanonicalWorkflowActionId(
-  action: WorkflowActionV3Wire | WorkflowActionV31Wire,
+  action: WorkflowActionV3Wire | WorkflowActionV31Wire | WorkflowActionV32Wire,
   identityDomain: string
 ): `sha256:${string}` {
   const { protocolVersion: _protocolVersion, actionId: _actionId, ...identityInput } = action;
@@ -472,6 +488,13 @@ function available<T>(value: T): NormalizedDeclaredValue<T> {
 }
 
 function unavailable<T>(): NormalizedDeclaredValue<T> {
+  return { state: "unavailable", reasonCode: "not_in_protocol" };
+}
+
+function unavailableInProtocol(): Readonly<{
+  state: "unavailable";
+  reasonCode: "not_in_protocol";
+}> {
   return { state: "unavailable", reasonCode: "not_in_protocol" };
 }
 

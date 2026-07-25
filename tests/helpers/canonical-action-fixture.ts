@@ -6,10 +6,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import {
   createWorkflowActionV31Id,
+  createWorkflowActionV32Id,
   createWorkflowActionV3Id
 } from "../../src/kit/workflow-action-adapter.js";
 import type {
   WorkflowActionV31Wire,
+  WorkflowActionV32Wire,
   WorkflowActionV3Wire
 } from "../../src/kit/workflow-action-protocol.js";
 import {
@@ -31,6 +33,8 @@ export const V3_SCHEMA_HASH =
   "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7";
 export const V31_SCHEMA_HASH =
   "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d";
+export const V32_SCHEMA_HASH =
+  "sha256:77dcaba51ef8e1a78064680077f8bcc48c081d8025596c6cc8df9ea7873d68e9";
 
 const FEATURE_DIR = "001-pipeline";
 const unavailable = (reasonCode = "not_in_source_artifact") => ({
@@ -211,8 +215,55 @@ export function workflowActionV31Fixture(
   } as WorkflowActionV31Wire;
 }
 
+export function workflowActionV32Fixture(
+  overrides: Record<string, unknown> = {}
+): WorkflowActionV32Wire {
+  const {
+    protocolVersion: _protocolVersion,
+    canonicalVersion: _canonicalVersion,
+    actionId: _actionId,
+    ...v31Body
+  } = workflowActionV31Fixture();
+  const draft = {
+    ...v31Body,
+    protocolVersion: "3.2" as const,
+    canonicalVersion: "1.2" as const,
+    actionId: `sha256:${"0".repeat(64)}`,
+    assuranceSummary: {
+      state: "available" as const,
+      version: "1.0" as const,
+      artifact: {
+        path: ".visp/features/001-pipeline/assurance/T001/assurance-case.json",
+        contentHash: `sha256:${"d".repeat(64)}`
+      },
+      caseHash: `sha256:${"e".repeat(64)}`,
+      verdict: "inconclusive" as const,
+      mandatoryHotspots: [
+        {
+          id: "HS001",
+          category: "security" as const,
+          severity: "critical" as const,
+          path: "src/feature.ts",
+          reason: "Security-sensitive behavior requires accountable review."
+        }
+      ],
+      reviewDecision: {
+        required: true,
+        status: "missing" as const,
+        decisionHash: null,
+        reason: "No review decision is recorded."
+      }
+    },
+    ...overrides
+  };
+  return {
+    ...draft,
+    actionId: createWorkflowActionV32Id(draft)
+  } as WorkflowActionV32Wire;
+}
+
 export function integrationContractFixture(options: {
-  protocols?: readonly ("2.0" | "3.0" | "3.1")[] | null;
+  protocols?: readonly ("2.0" | "3.0" | "3.1" | "3.2")[] | null;
   activeTask?: Record<string, unknown> | null;
   overrides?: Record<string, unknown>;
 } = {}) {
@@ -293,7 +344,9 @@ export function integrationContractFixture(options: {
               schemaHashes: Object.fromEntries(
                 protocols.map((protocol) => [
                   protocol,
-                  protocol === "3.1"
+                  protocol === "3.2"
+                    ? V32_SCHEMA_HASH
+                    : protocol === "3.1"
                     ? V31_SCHEMA_HASH
                     : protocol === "3.0"
                       ? V3_SCHEMA_HASH

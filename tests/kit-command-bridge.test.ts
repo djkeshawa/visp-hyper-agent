@@ -17,6 +17,7 @@ import {
   gateResultFixture,
   policyValidateFixture
 } from "./helpers/visp-shim.js";
+import { workflowActionV32Fixture } from "./helpers/canonical-action-fixture.js";
 
 const initializedStatus = {
   success: true,
@@ -1130,6 +1131,36 @@ describe("KitCommandBridge", () => {
       ok: false,
       reasonCode: "workflow_action_protocol_mismatch"
     });
+  });
+
+  it("P3_08_FAIL_CLOSED: does not downgrade after selected 3.2 schema validation fails", async () => {
+    const contract = advertisedIntegrationContractFixture({
+      protocols: {
+        workflowAction: {
+          supported: ["2.0", "3.0", "3.1", "3.2"],
+          default: "2.0",
+          schemaHashes: TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES
+        }
+      }
+    });
+    const shim = await createVispShim({
+      integration: { stdout: contract },
+      next: { stdout: { ...workflowActionV32Fixture(), unexpected: true } }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect(await bridge.nextCanonicalActionDiagnostic()).toMatchObject({
+      ok: false,
+      reasonCode: "workflow_action_schema_invalid"
+    });
+    const argv = (await readFile(shim.argvLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(argv).toEqual([
+      ["integration", "contract", "--json"],
+      ["next", "--format", "json", "--protocol", "3.2", "--json"]
+    ]);
   });
 
   it("P1_06_FAIL_CLOSED: maps Kit's structured unsupported-protocol error", async () => {
