@@ -101,7 +101,8 @@ export function runCommand(): Command {
       }
       if (
         (action.source.protocolVersion !== "3.0" &&
-          action.source.protocolVersion !== "3.1") ||
+          action.source.protocolVersion !== "3.1" &&
+          action.source.protocolVersion !== "3.2") ||
         action.phase.state !== "available" ||
         action.phase.value !== "implement" ||
         action.task === null

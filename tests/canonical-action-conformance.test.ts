@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { delimiter, dirname } from "node:path";
+import { readFile } from "node:fs/promises";
+import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
@@ -14,6 +15,7 @@ import {
   integrationContractFixture,
   parseActionFrame,
   projectBoundV3Action,
+  workflowActionV31Fixture,
   workflowActionV32Fixture,
   workflowActionV2Fixture
 } from "./helpers/canonical-action-fixture.js";
@@ -92,16 +94,41 @@ describe("canonical action cross-surface conformance", () => {
   it("preserves one complete WorkflowAction 3.2 assurance view across all six surfaces", async () => {
     const projectPath = await createCanonicalProject();
     await execFileAsync("git", ["switch", "-c", WORKTREE_BRANCH], { cwd: projectPath });
-    const action = workflowActionV32Fixture();
+    const projectBoundAction = await projectBoundV3Action(projectPath);
+    const action = workflowActionV32Fixture({
+      requiredReads: projectBoundAction.requiredReads
+    });
     const contract = integrationContractFixture({
       protocols: ["2.0", "3.0", "3.1", "3.2"]
     });
     const shim = await createVispShim(canonicalKitSpec({ action, contract }));
     prependShim(shim.binary);
 
-    const runEnvelope = framedEnvelope(
-      await captureCli(projectPath, ["run", "ignored raw goal", "--tool", "codex"])
-    );
+    const runOutput = await captureCli(projectPath, [
+      "run",
+      "ignored raw goal",
+      "--tool",
+      "codex"
+    ]);
+    expect(runOutput).toContain("BEGIN_VISP_AGENT_HANDOFF");
+    const runEnvelope = framedEnvelope(runOutput);
+    const manifest = JSON.parse(
+      await readFile(
+        join(projectPath, ".visp", "hyper", "current", "context-manifest.json"),
+        "utf8"
+      )
+    ) as {
+      taskId: string;
+      contextSource: string;
+      nextCommand: string;
+      kitReadContract: { readContractVersion: string };
+    };
+    expect(manifest).toMatchObject({
+      taskId: "T001",
+      contextSource: "visp-kit context pack (T001)",
+      nextCommand: action.nextCommand,
+      kitReadContract: { readContractVersion: "0.1" }
+    });
     const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
     const resumeEnvelope = JSON.parse(
       await captureCli(projectPath, ["resume", "--json"])
@@ -149,6 +176,83 @@ describe("canonical action cross-surface conformance", () => {
     expect(runEnvelope.action.assuranceSummary).toEqual(action.assuranceSummary);
     expect(runEnvelope.action.verdict).toBe(action.verdict);
     expect(runEnvelope.action.nextCommand).toBe(action.nextCommand);
+  });
+
+  it("preserves ready WorkflowAction 3.1 strict session adoption", async () => {
+    const projectPath = await createCanonicalProject();
+    const projectBoundAction = await projectBoundV3Action(projectPath);
+    const action = workflowActionV31Fixture({
+      requiredReads: projectBoundAction.requiredReads
+    });
+    const contract = integrationContractFixture({
+      protocols: ["2.0", "3.0", "3.1"]
+    });
+    const shim = await createVispShim(canonicalKitSpec({ action, contract }));
+    prependShim(shim.binary);
+
+    const output = await captureCli(projectPath, ["run", "ignored raw goal"]);
+
+    expect(output).toContain("BEGIN_VISP_AGENT_HANDOFF");
+    expect(framedEnvelope(output).action).toMatchObject({
+      source: { protocolVersion: "3.1", selectionMode: "advertised" },
+      verdict: "ready"
+    });
+  });
+
+  it.each([
+    {
+      label: "non-ready",
+      action: (requiredReads: object[]) =>
+        workflowActionV32Fixture({
+          requiredReads,
+          verdict: "blocked",
+          findings: [
+            {
+              code: "VISP.TEST.BLOCKED",
+              source: "workflow",
+              severity: "error",
+              effect: "blocks",
+              message: "The canonical action is blocked.",
+              recommendation: "Follow the exact Kit command.",
+              evidence: []
+            }
+          ]
+        }),
+      actionExitCode: 1,
+      expectedReason: '"verdict":"blocked"'
+    },
+    {
+      label: "malformed",
+      action: (requiredReads: object[]) => ({
+        ...workflowActionV32Fixture({ requiredReads }),
+        actionId: `sha256:${"f".repeat(64)}`
+      }),
+      actionExitCode: undefined,
+      expectedReason: "reason_code: workflow_action_identity_invalid"
+    }
+  ])("keeps $label WorkflowAction 3.2 fail closed before session creation", async ({
+    action: createAction,
+    actionExitCode,
+    expectedReason
+  }) => {
+    const projectPath = await createCanonicalProject();
+    const projectBoundAction = await projectBoundV3Action(projectPath);
+    const action = createAction([...projectBoundAction.requiredReads]);
+    const contract = integrationContractFixture({
+      protocols: ["2.0", "3.0", "3.1", "3.2"]
+    });
+    const shim = await createVispShim(
+      canonicalKitSpec({ action, contract, actionExitCode })
+    );
+    prependShim(shim.binary);
+
+    const output = await captureCli(projectPath, ["run", "ignored raw goal"]);
+
+    expect(output).toContain(expectedReason);
+    expect(output).not.toContain("BEGIN_VISP_AGENT_HANDOFF");
+    await expect(
+      readFile(join(projectPath, ".visp", "hyper", "state.json"), "utf8")
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each([
