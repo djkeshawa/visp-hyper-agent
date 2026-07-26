@@ -1,0 +1,10 @@
+# Check every text file out with LF on every platform.
+#
+# Windows runners default to core.autocrlf=true, which rewrites the working
+# tree to CRLF at checkout. That is not cosmetic here: `templates/` is the
+# source of truth the asset installer copies verbatim, and `doctor` verifies
+# installed assets by SHA-256 against the bundled template. A CRLF checkout
+# therefore produces different asset hashes on Windows than on Linux for the
+# same released version, and the published npm tarball (built from the
+# committed LF bytes) would match neither.
+* text=auto eol=lf

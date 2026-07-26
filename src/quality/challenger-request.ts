@@ -122,28 +122,63 @@ export type HumanChallengerSubstitution = {
   at: string;
 };
 
+export type ChallengerApplicability =
+  | {
+      ok: true;
+      assuranceProfile: "behavioral" | "critical";
+      task: NonNullable<NormalizedWorkflowAction["task"]>;
+    }
+  | { ok: false; status: "not_applicable" | "unavailable"; reasonCode: string; reason: string };
+
+/**
+ * Whether the canonical action is one a challenger applies to at all: it must
+ * carry an active task and declare a behavioral or critical assurance profile.
+ *
+ * EVERY challenger entry point must pass this gate, not just the request
+ * builder. Recording a human substitution or accepting a challenger response
+ * for routine work would manufacture a challenge artifact for an action that
+ * Kit never required one for — and `challenge` reporting `challenger_not_required`
+ * while `challenge --human-reviewer` happily writes a pending-review record is
+ * exactly the kind of disagreement that makes an audit trail untrustworthy.
+ */
+export function challengerApplicability(action: NormalizedWorkflowAction): ChallengerApplicability {
+  if (!action.task) {
+    return {
+      ok: false,
+      status: "unavailable",
+      reasonCode: "challenger_task_unavailable",
+      reason: "The canonical action has no active task."
+    };
+  }
+  if (action.assurance.profile.state !== "available") {
+    return {
+      ok: false,
+      status: "unavailable",
+      reasonCode: "challenger_profile_unavailable",
+      reason: "The canonical action does not declare an assurance profile."
+    };
+  }
+  const assuranceProfile = action.assurance.profile.value;
+  if (assuranceProfile !== "behavioral" && assuranceProfile !== "critical") {
+    return {
+      ok: false,
+      status: "not_applicable",
+      reasonCode: "challenger_not_required",
+      reason: `The ${assuranceProfile} assurance profile does not require a challenger.`
+    };
+  }
+  return { ok: true, assuranceProfile, task: action.task };
+}
+
 export async function buildChallengerRequest(
   projectPath: string,
   action: NormalizedWorkflowAction
 ): Promise<ChallengerRequestResult> {
-  if (!action.task) {
-    return unavailable("unavailable", "challenger_task_unavailable", "The canonical action has no active task.");
+  const applicability = challengerApplicability(action);
+  if (!applicability.ok) {
+    return unavailable(applicability.status, applicability.reasonCode, applicability.reason);
   }
-  if (action.assurance.profile.state !== "available") {
-    return unavailable(
-      "unavailable",
-      "challenger_profile_unavailable",
-      "The canonical action does not declare an assurance profile."
-    );
-  }
-  const assuranceProfile = action.assurance.profile.value;
-  if (assuranceProfile !== "behavioral" && assuranceProfile !== "critical") {
-    return unavailable(
-      "not_applicable",
-      "challenger_not_required",
-      `The ${assuranceProfile} assurance profile does not require a challenger.`
-    );
-  }
+  const assuranceProfile = applicability.assuranceProfile;
   if (action.claims.state !== "available") {
     return unavailable(
       "unavailable",
@@ -203,7 +238,19 @@ export async function buildChallengerRequest(
   );
   const evidenceGaps = action.requiredEvidence.value.flatMap((requirement) => {
     const results = observed.filter((result) => result.requirementId === requirement.id);
-    if (results.length > 0 && results.every((result) => result.outcome.status === "passed")) {
+    // A requirement is only discharged when some observed result actually
+    // ANSWERS it: same declared provider, same target, a passing outcome, and
+    // Kit's own freshness verdict of `fresh`. Matching on requirementId and
+    // `outcome.status` alone would drop the requirement from the gaps whenever a
+    // stale result, or one from a different provider or target, happened to
+    // carry `passed` — silently hiding the precise gap the challenger exists to
+    // surface. The `every` clause is kept so a single non-pass still raises the
+    // gap, making this strictly additive: it can never remove a gap that the
+    // previous rule reported.
+    const discharged =
+      results.some((result) => resultDischarges(requirement, result)) &&
+      results.every((result) => result.outcome.status === "passed");
+    if (discharged) {
       return [];
     }
     return [{
@@ -224,7 +271,7 @@ export async function buildChallengerRequest(
       version: "1.0",
       status: "unverified",
       authority: "non_authoritative",
-      taskId: action.task.id,
+      taskId: applicability.task.id,
       actionId: action.actionId.value,
       assuranceProfile,
       goal: action.goal,
@@ -462,6 +509,54 @@ async function readFilePrefix(
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * Whether one observed evidence result discharges a requirement.
+ *
+ * Only mechanically decidable attributes are compared. `providerId`, `target`,
+ * `outcome.status`, and `freshness.status` are all typed values on both sides,
+ * so identity is unambiguous. `independenceRule` and `freshnessRule` are
+ * deliberately NOT interpreted here: they are opaque Kit-authored strings, and
+ * deciding what they permit is Kit's adjudication, not Hyper's (ADR 0001). An
+ * unmatched rule therefore leaves the requirement in the gaps with its observed
+ * results attached — including their raw `independence` and `freshness` — so the
+ * challenger can judge what Hyper must not.
+ */
+function resultDischarges(
+  requirement: { providerId: string; target: unknown },
+  result: { providerId: string; target: unknown; freshness: unknown; outcome: { status: string } }
+): boolean {
+  if (result.providerId !== requirement.providerId) return false;
+  if (!sameEvidenceTarget(requirement.target, result.target)) return false;
+  if (result.outcome.status !== "passed") return false;
+  return freshnessStatus(result.freshness) === "fresh";
+}
+
+/** Structural identity of two evidence targets (a discriminated union keyed by `kind`). */
+function sameEvidenceTarget(left: unknown, right: unknown): boolean {
+  return stableJson(left) === stableJson(right);
+}
+
+function freshnessStatus(freshness: unknown): string | null {
+  if (typeof freshness !== "object" || freshness === null) return null;
+  const status = (freshness as { status?: unknown }).status;
+  return typeof status === "string" ? status : null;
+}
+
+/** Key-order-independent JSON, so target equality does not depend on field order. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 function isWritable(path: string, prefixes: readonly string[]): boolean {

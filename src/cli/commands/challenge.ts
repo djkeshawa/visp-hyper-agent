@@ -5,6 +5,7 @@ import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
 import {
   buildChallengerRequest,
+  challengerApplicability,
   recordHumanChallengerSubstitution,
   renderChallengerResult,
   renderChallengerResponseResult,
@@ -69,6 +70,26 @@ export function challengeCommand(): Command {
           })
         );
         process.exitCode = 1;
+        return;
+      }
+
+      // Applicability is checked BEFORE the substitution and response branches,
+      // not only inside buildChallengerRequest. Otherwise a routine action that
+      // a plain `challenge` correctly reports as `challenger_not_required` could
+      // still persist a pending-human-review record or validate a response as
+      // ok, producing a challenge artifact for work Kit never required one for.
+      const applicability = challengerApplicability(diagnostic.value);
+      if (!applicability.ok) {
+        const result = {
+          ok: false as const,
+          status: applicability.status,
+          reasonCode: applicability.reasonCode,
+          reason: applicability.reason
+        };
+        console.log(options.json ? JSON.stringify(result, null, 2) : renderChallengerResult(result));
+        if (result.status === "unavailable") {
+          process.exitCode = 1;
+        }
         return;
       }
 

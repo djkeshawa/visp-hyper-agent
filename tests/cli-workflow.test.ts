@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startCommand } from "../src/cli/commands/start.js";
 import { runCli } from "../src/cli/index.js";
-import { createWorkflowActionV3Id } from "../src/kit/workflow-action-adapter.js";
+import { createWorkflowActionV32Id, createWorkflowActionV3Id } from "../src/kit/workflow-action-adapter.js";
 import { emptyDelta } from "../src/quality/checkpoint-snapshot.js";
 import { toolOnlyPath } from "./helpers/tool-path.js";
 import { createVispShim, type ShimSpec } from "./helpers/visp-shim.js";
@@ -564,6 +564,122 @@ describe("CLI workflow", () => {
     await runCli(["node", "visp-hyper", "--project", localProject, "challenge"]);
     expect(logs.join("\n")).toContain("reason_code: challenger_requires_kit_action");
     expect(process.exitCode).toBe(1);
+  });
+
+  it("refuses a human challenger substitution for routine work", async () => {
+    const projectPath = await createProject();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) =>
+      logs.push(String(message))
+    );
+    const action = workflowActionV3Fixture({
+      assurance: {
+        level: "kit_strict",
+        profile: available("routine"),
+        workflowStrictness: available("standard")
+      },
+      claims: available([])
+    });
+    await configureKit(
+      projectPath,
+      healthyKitSpec({
+        integration: {
+          stdout: integrationContractFixture({
+            protocols: {
+              workflowAction: {
+                supported: ["3.0"],
+                default: "3.0",
+                schemaHashes: { "3.0": V3_HASH }
+              }
+            }
+          })
+        },
+        next: { stdout: action }
+      })
+    );
+
+    await runCli([
+      "node", "visp-hyper", "--project", projectPath,
+      "challenge", "--human-reviewer", "alice"
+    ]);
+
+    // A plain `challenge` already reports challenger_not_required here; the
+    // substitution path must agree instead of minting an audit record.
+    expect(logs.join("\n")).toContain("reason_code: challenger_not_required");
+    expect(logs.join("\n")).not.toContain("BEGIN_VISP_HUMAN_CHALLENGER_RECORD");
+    await expect(
+      readFile(join(projectPath, ".visp", "hyper", "challenger-human.jsonl"), "utf8")
+    ).rejects.toThrow();
+  });
+
+  it("keeps an evidence requirement in the gaps when no result actually answers it", async () => {
+    const projectPath = await createProject();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) =>
+      logs.push(String(message))
+    );
+    const requirement = {
+      version: "1.0",
+      id: "EVIDENCE001",
+      providerId: "command",
+      target: { kind: "command", command: "pnpm test" },
+      freshnessRule: "current diff",
+      independenceRule: "pre-approved",
+      requiredVerdict: "passed"
+    };
+    const base = workflowActionV32Fixture({
+      assurance: {
+        level: "kit_strict",
+        profile: available("behavioral"),
+        workflowStrictness: available("strict")
+      },
+      claims: available([]),
+      requiredEvidence: available([requirement])
+    });
+    // Kit's own evidence payload, rewritten so the single result still carries
+    // requirementId EVIDENCE001 and `passed` but no longer answers the
+    // requirement: different provider, different target, and stale.
+    const evidence = base.evidence as { state: "available"; value: Record<string, any> };
+    const result = evidence.value.providers[0].results[0];
+    const action = {
+      ...base,
+      evidence: available({
+        ...evidence.value,
+        providers: [{
+          ...evidence.value.providers[0],
+          provider: { id: "static-analyzer", version: "1.0" },
+          results: [{
+            ...result,
+            requirementId: "EVIDENCE001",
+            target: { kind: "static_check", checkId: "unrelated" },
+            freshness: { ...result.freshness, status: "stale", reason: "inputs changed" },
+            outcome: { status: "passed" }
+          }]
+        }]
+      })
+    };
+    await configureKit(
+      projectPath,
+      healthyKitSpec({
+        status: { stdout: healthyStatusFixture() },
+        integration: {
+          stdout: sharedIntegrationContractFixture({ protocols: ["3.2"] })
+        },
+        next: { stdout: { ...action, actionId: createWorkflowActionV32Id(action) } }
+      })
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "challenge", "--json"]);
+
+    const request = JSON.parse(logs.join("\n")) as Record<string, any>;
+    // Matching on requirementId + `passed` alone would discharge this
+    // requirement and drop precisely the gap the challenger exists to surface.
+    expect(request.evidenceGaps).toHaveLength(1);
+    expect(request.evidenceGaps[0].id).toBe("EVIDENCE001");
+    // The near-miss result travels with the gap so the challenger can see why.
+    expect(request.evidenceGaps[0].observedResults).toHaveLength(1);
+    expect(request.evidenceGaps[0].observedResults[0].freshness.status).toBe("stale");
+    expect(request.evidenceGaps[0].observedResults[0].providerId).toBe("static-analyzer");
   });
 
   it("preserves exact Kit-less next and human/JSON resume output", async () => {

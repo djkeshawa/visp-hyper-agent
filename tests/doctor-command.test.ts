@@ -10,6 +10,7 @@ import { renderGitHookContent } from "../src/cli/commands/hooks.js";
 import { defaultConfig } from "../src/core/defaults.js";
 import { createWorkflowActionV3Id } from "../src/kit/workflow-action-adapter.js";
 import { TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES } from "../src/kit/workflow-action-protocol.js";
+import { createFakeHostBinaryDir } from "./helpers/fake-host-binary.js";
 import {
   createVispShim,
   gateResultFixture,
@@ -522,10 +523,7 @@ describe("doctor command", () => {
       `${JSON.stringify({ ...defaultConfig, defaultTool: "codex" })}\n`,
       "utf8"
     );
-    const hostBin = await mkdtemp(join(tmpdir(), "visp-doctor-host-"));
-    const codex = join(hostBin, "codex");
-    await writeFile(codex, "#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n", "utf8");
-    await chmod(codex, 0o755);
+    const hostBin = await createFakeHostBinaryDir("codex", "codex-cli 1.2.3");
     prependToPath(hostBin);
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
