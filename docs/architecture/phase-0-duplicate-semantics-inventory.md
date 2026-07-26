@@ -1,7 +1,8 @@
 # Phase 0 Duplicate-Semantics Inventory
 
-- **Status:** Accepted Phase 0 inventory
+- **Status:** Accepted Phase 0 inventory; Phase 4 re-audit current
 - **Date:** 2026-07-16
+- **Last re-audited:** 2026-07-25
 - **Authority decision:** `docs/adr/0001-kit-is-authoritative.md`
 - **Scope:** Current Hyper source and tests; documentation only
 
@@ -13,11 +14,33 @@ The audit follows the call paths used by `run`, `next`, `start`, `quick`, `resum
 
 ## Evidence baseline
 
-- WorkflowAction `2.0`, integration contract `2.0`, and orchestrator read contract `0.1` are current.
-- WorkflowAction `2.0` supplies a canonical task action, scope, acceptance oracles, validation commands, assurance, verdict, findings, required reads, and one exact next command.
-- Current contracts do not supply `taskClass`, negotiation, schema hashes, complete evidence definitions, authoritative graph or ready-sibling state, or authoritative post-checkpoint completion and PR state.
-- Current compatibility evidence is limited to the exact pair and cases actually tested. The recorded live-binary baseline is an unpacked three-case drift check; packed-pair compatibility remains pending. No semver or broader support window is currently proven.
-- WorkflowAction `3.0`, schema identity, negotiation, canonical v2/v3 derivation, and a wider support window are future gated design, not current behavior.
+- Integration contract `2.0`, orchestrator read contract `0.1`, and negotiated
+  WorkflowAction `2.0`, `3.0`, `3.1`, and `3.2` are implemented with local
+  schema-hash trust anchors.
+- WorkflowAction `3.2` supplies the canonical task action, task class, risk,
+  claims, evidence, assurance summary, mandatory hotspots, verdict, scope, and
+  exact next command used by strict Hyper surfaces.
+- Hyper preserves V2 compatibility only through explicit protocol negotiation;
+  unknown, malformed, or mismatched contracts fail closed.
+- Packed-pair and host-runtime compatibility are Phase 4 deliverables. No
+  untested semver window or host capability is inferred.
+- Authoritative ready-sibling scheduling and public Visp Memory lifecycle/query
+  contracts remain outside the currently available Kit/Memory boundary.
+
+## Phase 4 disposition addendum
+
+This addendum supersedes obsolete Phase 0 follow-ups in the historical
+symbol-level table below. The original rows remain as audit history.
+
+| Area | Current Phase 4 disposition | Evidence |
+|---|---|---|
+| strict `run`, `next`, `resume`, review/status, guard, checkpoint, MCP | canonical renderer/adapter | All configured healthy paths negotiate and render the same normalized Kit action; configured-unhealthy paths remain inconclusive and never select local fallback. |
+| local pipeline, synthetic tasks, local evidence/review/adaptation | genuine Kit-less fallback only | Outputs are capped at `local_checked`/advisory and configured Kit paths stop before these utilities. |
+| task class, risk, claims, evidence, assurance, hotspots | Kit-owned contract data | WorkflowAction 3.0–3.2 fields are consumed without reconstructing missing authoritative values. |
+| host installation and compatibility | Hyper-owned adapter | Versioned capability manifests drive assets; doctor validates config, host probe, manifest/assets, effective Git hook path, Kit, Memory reachability, and MCP hashes. |
+| routing | Hyper-owned advisory | Cohorts require task/risk/profile/host/model ID+version/project preset; unknown cohorts and critical work use the strongest tier; inconclusive attempts are reported separately. |
+| challenger | Hyper-owned non-authoritative adapter | Behavioral/critical requests require 3.2 canonical claims/evidence/assurance hotspots; responses stay bounded, unverified, and never execute proposed commands. |
+| durable Memory lifecycle/query | unresolved public contract dependency | File fallback remains non-authoritative. Private `llm-memory` is legacy compatibility only and cannot satisfy P4-08. |
 
 ## Mode rules
 

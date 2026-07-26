@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +11,11 @@ import { createWorkflowActionV3Id } from "../src/kit/workflow-action-adapter.js"
 import { emptyDelta } from "../src/quality/checkpoint-snapshot.js";
 import { toolOnlyPath } from "./helpers/tool-path.js";
 import { createVispShim, type ShimSpec } from "./helpers/visp-shim.js";
+import {
+  healthyStatusFixture,
+  integrationContractFixture as sharedIntegrationContractFixture,
+  workflowActionV32Fixture
+} from "./helpers/canonical-action-fixture.js";
 
 const execFileAsync = promisify(execFile);
 const originalPath = process.env.PATH;
@@ -250,6 +255,315 @@ describe("CLI workflow", () => {
     expect(checkpoint).toContain("src/feature.ts");
     expect(review).toContain("No test changes detected for this diff.");
     expect(memory).toContain("Functional workflow covered.");
+  });
+
+  it.each(["status", "review"] as const)(
+    "configured %s renders the canonical Kit action without local fallback or writes",
+    async (command) => {
+      const projectPath = await createProject();
+      const logs: string[] = [];
+      vi.spyOn(console, "log").mockImplementation((message?: unknown) =>
+        logs.push(String(message))
+      );
+      const shim = await configureKit(projectPath);
+
+      await runCli(["node", "visp-hyper", "--project", projectPath, command]);
+
+      const output = logs.join("\n");
+      expect(envelopeFromFrame(output).action).toMatchObject({
+        task: { id: "T900" },
+        assurance: { level: "kit_strict" },
+        verdict: "ready"
+      });
+      expect(output).not.toContain("Assurance: local_checked");
+      expect(output).not.toContain("assurance: local_checked");
+      expect(output).not.toContain("BEGIN_VISP_REVIEW_RESULT");
+      await expect(
+        readFile(join(projectPath, ".visp", "hyper", "current", "review-report.md"), "utf8")
+      ).rejects.toThrow();
+      expect(await readArgvLog(shim.argvLogPath)).toEqual([
+        ["status", "--json"],
+        ["integration", "contract", "--json"],
+        ["next", "--format", "json", "--protocol", "2.0", "--json"]
+      ]);
+      expect(process.exitCode).toBeFalsy();
+    }
+  );
+
+  it.each(["status", "review"] as const)(
+    "configured-unhealthy %s stops inconclusively without local fallback",
+    async (command) => {
+      const projectPath = await createProject();
+      const logs: string[] = [];
+      vi.spyOn(console, "log").mockImplementation((message?: unknown) =>
+        logs.push(String(message))
+      );
+      await mkdir(join(projectPath, ".visp"), { recursive: true });
+      await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+      process.env.PATH = await toolOnlyPath(["git"]);
+
+      await runCli(["node", "visp-hyper", "--project", projectPath, command]);
+
+      const output = logs.join("\n");
+      expect(output).toContain("BEGIN_VISP_KIT_AUTHORITY_RESULT");
+      expect(output).toContain("status: INCONCLUSIVE");
+      expect(output).not.toContain("Assurance: local_checked");
+      expect(output).not.toContain("assurance: local_checked");
+      expect(output).not.toContain("BEGIN_VISP_REVIEW_RESULT");
+      expect(process.exitCode).toBe(1);
+    }
+  );
+
+  it("builds a bounded, non-authoritative challenger request for behavioral work", async () => {
+    const projectPath = await createProject();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) =>
+      logs.push(String(message))
+    );
+    await writeFile(join(projectPath, "src", "feature.ts"), "export const value = 2;\n", "utf8");
+    await writeFile(
+      join(projectPath, "src", "new-behavior.ts"),
+      "export const newBehavior = true;\n",
+      "utf8"
+    );
+    let symlinkPath: string | undefined;
+    if (process.platform !== "win32") {
+      const external = join(await mkdtemp(join(tmpdir(), "visp-challenger-secret-")), "secret.ts");
+      await writeFile(external, "DO_NOT_LEAK_EXTERNAL_SECRET\n", "utf8");
+      symlinkPath = "src/external-link.ts";
+      await symlink(external, join(projectPath, symlinkPath));
+    }
+    const action = workflowActionV32Fixture({
+      assurance: {
+        level: "kit_strict",
+        profile: available("behavioral"),
+        workflowStrictness: available("strict")
+      },
+      scope: {
+        writablePaths: ["src"],
+        expectedPaths: unavailable(),
+        forbiddenPaths: [".env"],
+        operationLimits: unavailable()
+      },
+      claims: available([
+        {
+          id: "CLM-001",
+          statement: "The feature preserves existing behavior.",
+          priority: "must",
+          acceptanceCriterionIds: ["AC-001"],
+          accountableOwner: unavailable()
+        }
+      ]),
+      requiredEvidence: available([
+        {
+          version: "1.0",
+          id: "EVIDENCE001",
+          providerId: "command",
+          target: { kind: "command", command: "pnpm test" },
+          freshnessRule: "current diff",
+          independenceRule: "pre-approved",
+          requiredVerdict: "passed"
+        },
+        {
+          version: "1.0",
+          id: "EVIDENCE002",
+          providerId: "challenger",
+          target: { kind: "static_check", checkId: "behavioral-counterexample" },
+          freshnessRule: "current diff",
+          independenceRule: "independent challenger",
+          requiredVerdict: "passed"
+        }
+      ])
+    });
+    await configureKit(
+      projectPath,
+      healthyKitSpec({
+        status: { stdout: healthyStatusFixture() },
+        integration: {
+          stdout: sharedIntegrationContractFixture({ protocols: ["3.2"] })
+        },
+        next: { stdout: action }
+      })
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "challenge", "--json"]);
+
+    const request = JSON.parse(logs.join("\n")) as Record<string, any>;
+    expect(request).toMatchObject({
+      version: "1.0",
+      status: "unverified",
+      authority: "non_authoritative",
+      taskId: "T001",
+      actionId: action.actionId,
+      assuranceProfile: "behavioral",
+      lockedClaims: [{ id: "CLM-001" }],
+      evidenceGaps: [{
+        id: "EVIDENCE002",
+        requiredVerdict: "passed",
+        reason: "missing_result",
+        observedResults: []
+      }],
+      hotspots: action.assuranceSummary.state === "available"
+        ? action.assuranceSummary.mandatoryHotspots
+        : []
+    });
+    expect(request.evidenceGaps).toHaveLength(1);
+    expect(request.repositoryContext.changedFiles).toEqual(
+      ["src/feature.ts", ...(symlinkPath ? [symlinkPath] : []), "src/new-behavior.ts"].sort()
+    );
+    expect(request.repositoryContext.diff).toContain("export const value = 2");
+    expect(request.repositoryContext.diff).toContain("export const newBehavior = true");
+    expect(request.repositoryContext.diff).not.toContain("DO_NOT_LEAK_EXTERNAL_SECRET");
+    expect(request.instructions.join("\n")).toContain("do not execute");
+    expect(request).not.toHaveProperty("implementerRationale");
+    expect(process.exitCode).toBeFalsy();
+
+    await expect(
+      readFile(join(projectPath, ".visp", "hyper", "challenger-human.jsonl"), "utf8")
+    ).rejects.toThrow();
+    logs.length = 0;
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "challenge",
+      "--human-reviewer",
+      "reviewer@example.test",
+      "--note",
+      "Review the behavioral counterexamples.",
+      "--json"
+    ]);
+    const humanRecord = JSON.parse(logs.join("\n")) as Record<string, unknown>;
+    expect(humanRecord).toMatchObject({
+      version: "1.0",
+      status: "pending_human_review",
+      authority: "non_authoritative",
+      taskId: "T001",
+      reviewer: "reviewer@example.test"
+    });
+    expect(
+      JSON.parse(
+        (await readFile(
+          join(projectPath, ".visp", "hyper", "challenger-human.jsonl"),
+          "utf8"
+        )).trim()
+      )
+    ).toMatchObject(humanRecord);
+
+    const sentinel = join(projectPath, "challenger-command-ran");
+    const responsePath = join(projectPath, "challenger-response.json");
+    await writeFile(
+      responsePath,
+      JSON.stringify({
+        version: "1.0",
+        status: "unverified",
+        authority: "non_authoritative",
+        taskId: "T001",
+        actionId: action.actionId,
+        proposals: [{
+          id: "PROP-001",
+          kind: "test_proposal",
+          statement: "Try the missing behavioral boundary.",
+          relatedClaimIds: ["CLM-001"],
+          proposedCommand: `node -e "require('node:fs').writeFileSync('${sentinel}', 'ran')"`
+        }]
+      }),
+      "utf8"
+    );
+    logs.length = 0;
+    process.exitCode = undefined;
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "challenge",
+      "--response",
+      "challenger-response.json",
+      "--json"
+    ]);
+    expect(JSON.parse(logs.join("\n"))).toMatchObject({
+      ok: true,
+      response: { status: "unverified", authority: "non_authoritative" }
+    });
+    await expect(readFile(sentinel, "utf8")).rejects.toThrow();
+
+    await writeFile(
+      responsePath,
+      JSON.stringify({
+        version: "1.0",
+        status: "unverified",
+        authority: "authoritative",
+        taskId: "T001",
+        actionId: action.actionId,
+        proposals: []
+      }),
+      "utf8"
+    );
+    logs.length = 0;
+    process.exitCode = undefined;
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "challenge",
+      "--response",
+      "challenger-response.json",
+      "--json"
+    ]);
+    expect(JSON.parse(logs.join("\n"))).toMatchObject({
+      ok: false,
+      status: "unverified",
+      authority: "non_authoritative",
+      reasonCode: "challenger_response_malformed"
+    });
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("marks the challenger not applicable for routine work and unavailable without Kit", async () => {
+    const projectPath = await createProject();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) =>
+      logs.push(String(message))
+    );
+    const action = workflowActionV3Fixture({
+      assurance: {
+        level: "kit_strict",
+        profile: available("routine"),
+        workflowStrictness: available("standard")
+      },
+      claims: available([])
+    });
+    await configureKit(
+      projectPath,
+      healthyKitSpec({
+        integration: {
+          stdout: integrationContractFixture({
+            protocols: {
+              workflowAction: {
+                supported: ["3.0"],
+                default: "3.0",
+                schemaHashes: { "3.0": V3_HASH }
+              }
+            }
+          })
+        },
+        next: { stdout: action }
+      })
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "challenge"]);
+    expect(logs.join("\n")).toContain("status: not_applicable");
+    expect(logs.join("\n")).toContain("reason_code: challenger_not_required");
+    expect(process.exitCode).toBeFalsy();
+
+    const localProject = await createProject();
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", localProject, "challenge"]);
+    expect(logs.join("\n")).toContain("reason_code: challenger_requires_kit_action");
+    expect(process.exitCode).toBe(1);
   });
 
   it("preserves exact Kit-less next and human/JSON resume output", async () => {

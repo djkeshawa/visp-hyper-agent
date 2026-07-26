@@ -57,12 +57,3 @@ export function vispPath(projectPath: string, ...parts: string[]): string {
   return join(projectPath, ".visp", ...parts);
 }
 
-/**
- * Project-relative paths that reach handoff blocks, context packs, or memory
- * artifacts are always forward-slash, even when computed on Windows — the
- * consuming coding tools and stored artifacts treat "/" as canonical.
- */
-export function toPosixPath(path: string): string {
-  return path.replace(/\\/g, "/");
-}
-

@@ -9,7 +9,7 @@ import { withStoreLock } from "./store-lock.js";
 import { kitTaskSchema } from "../kit/kit-schemas.js";
 import type { HyperConfig, HyperState, SessionRecord, ToolProfile } from "./types.js";
 
-const configSchema = z.object({
+export const hyperConfigSchema = z.object({
   defaultTool: z.enum(["generic", "codex", "claude-code", "copilot", "opencode"]),
   tokenBudget: z.number().int().positive(),
   memoryMode: z.enum(["file", "llm-memory"]),
@@ -22,8 +22,8 @@ const configSchema = z.object({
   blockedPaths: z
     .array(z.string())
     .default([".env", ".env.*", "node_modules", "dist", "build", ".git"]),
-  skillMode: z.enum(["auto", "review"]).default("review")
-  ,validationCommands: z.array(z.string()).optional()
+  skillMode: z.enum(["auto", "review"]).default("review"),
+  validationCommands: z.array(z.string()).optional()
 });
 
 const pipelineStepRecordSchema = z.object({
@@ -112,7 +112,7 @@ export async function readConfig(projectPath: string): Promise<HyperConfig> {
   const raw = await readTextIfExists(vispPath(projectPath, "hyper", "config.json"));
   const { value, warnings } = parseJsonStore(
     raw,
-    configSchema,
+    hyperConfigSchema,
     () => defaultConfig,
     "config.json",
     "the default configuration"
@@ -196,4 +196,3 @@ export async function updateActiveSession(
 export function currentDir(projectPath: string): string {
   return join(projectPath, ".visp", "hyper", "current");
 }
-

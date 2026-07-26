@@ -213,6 +213,9 @@ describe("skill-registry", () => {
       expect(destinationFor("copilot", "deploy-dance")).toBe(
         ".github/instructions/hyper-deploy-dance.instructions.md"
       );
+      expect(destinationFor("opencode", "deploy-dance")).toBe(
+        ".agents/skills/hyper-deploy-dance/SKILL.md"
+      );
       expect(destinationFor("generic", "deploy-dance")).toBe(
         ".visp/hyper/skills/hyper-deploy-dance.md"
       );
@@ -244,6 +247,26 @@ describe("skill-registry", () => {
       expect(entry?.destinations).toEqual([".claude/skills/hyper-deploy-dance/SKILL.md"]);
       expect(entry?.usedCount).toBe(0);
       expect(entry?.lastUsedAt).toBeNull();
+    });
+
+    it("writes Copilot applyTo frontmatter and OpenCode native skill paths", async () => {
+      const copilotProject = await makeProject();
+      const copilot = await installSkill(copilotProject, proposal(), {
+        tool: "copilot",
+        sessionId: "vh_test",
+        sessionCount: 1
+      });
+      expect(await readFile(join(copilotProject, copilot.destination), "utf8")).toMatch(
+        /^---\napplyTo: "\*\*"\n---\n/u
+      );
+
+      const opencodeProject = await makeProject();
+      const opencode = await installSkill(opencodeProject, proposal(), {
+        tool: "opencode",
+        sessionId: "vh_test",
+        sessionCount: 1
+      });
+      expect(opencode.destination).toBe(".agents/skills/hyper-deploy-dance/SKILL.md");
     });
 
     it("skips a second install to an existing file and leaves the registry unchanged", async () => {

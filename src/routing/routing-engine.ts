@@ -1,4 +1,5 @@
 import type {
+  AssuranceProfile,
   RiskFactor,
   RiskLevel,
   TaskClass
@@ -25,7 +26,21 @@ export type RoutingSuggestion = {
   riskFactors: RiskFactor[] | null;
   suggestedTier: string;
   reason: string;
-  evidence: { samples: number; passes: number; passRate: number | null; lowerConfidenceBound: number | null };
+  evidence: {
+    samples: number;
+    passes: number;
+    inconclusive: number;
+    passRate: number | null;
+    lowerConfidenceBound: number | null;
+  };
+};
+
+export type RoutingEvidenceCohort = {
+  assuranceProfile: AssuranceProfile | null;
+  host: string;
+  modelId: string;
+  modelVersion: string | null;
+  projectPreset: string;
 };
 
 /** 95% Wilson score lower bound for a binomial proportion. */
@@ -41,25 +56,68 @@ export function wilsonLowerBound(passes: number, samples: number, z = 1.95996398
 
 function downgradeEvidence(
   attempts: TelemetryAttempt[],
-  taskClass: TaskClass | null
+  taskClass: TaskClass | null,
+  riskLevel: RiskLevel | null,
+  cohort: RoutingEvidenceCohort
 ): RoutingSuggestion["evidence"] {
-  if (taskClass === null) {
-    return { samples: 0, passes: 0, passRate: null, lowerConfidenceBound: null };
+  if (taskClass === null || incompleteDowngradeCohort(riskLevel, cohort).length > 0) {
+    return { samples: 0, passes: 0, inconclusive: 0, passRate: null, lowerConfidenceBound: null };
   }
   const relevant = attempts.filter(
-    (entry) => entry.taskClass === taskClass && entry.tier === CHEAP_TIER && entry.firstAttempt === true
+    (entry) =>
+      entry.taskClass === taskClass &&
+      entry.riskLevel === riskLevel &&
+      entry.assuranceProfile === cohort.assuranceProfile &&
+      entry.host === cohort.host &&
+      entry.modelId === cohort.modelId &&
+      entry.modelVersion === cohort.modelVersion &&
+      entry.projectPreset === cohort.projectPreset &&
+      entry.tier === CHEAP_TIER &&
+      entry.firstAttempt === true
   );
-  const samples = relevant.length;
+  const inconclusive = relevant.filter((entry) => entry.verdict === "inconclusive").length;
+  const decided = relevant.filter(
+    (entry) => entry.verdict === "passed" || entry.verdict === "failed"
+  );
+  const samples = decided.length;
   if (samples === 0) {
-    return { samples: 0, passes: 0, passRate: null, lowerConfidenceBound: null };
+    return { samples: 0, passes: 0, inconclusive, passRate: null, lowerConfidenceBound: null };
   }
-  const passed = relevant.filter((entry) => entry.verifyPassed && entry.reviewPassed).length;
+  const passed = decided.filter((entry) => entry.verdict === "passed").length;
   return {
     samples,
     passes: passed,
+    inconclusive,
     passRate: passed / samples,
     lowerConfidenceBound: wilsonLowerBound(passed, samples)
   };
+}
+
+const PLACEHOLDER_MODEL_IDS = new Set([
+  "",
+  "unknown",
+  "unreported",
+  "scout",
+  "implementer",
+  "coordinator"
+]);
+
+function incompleteDowngradeCohort(
+  riskLevel: RiskLevel | null,
+  cohort: RoutingEvidenceCohort
+): string[] {
+  const missing: string[] = [];
+  if (riskLevel === null) missing.push("risk level");
+  if (cohort.assuranceProfile === null) missing.push("assurance profile");
+  if (cohort.host === "unknown" || cohort.host === "unreported") missing.push("host");
+  if (PLACEHOLDER_MODEL_IDS.has(cohort.modelId.trim().toLowerCase())) missing.push("model id");
+  if (cohort.modelVersion === null || cohort.modelVersion.trim().length === 0) {
+    missing.push("model version");
+  }
+  if (cohort.projectPreset === "unknown" || cohort.projectPreset === "unreported") {
+    missing.push("project preset");
+  }
+  return missing;
 }
 
 function pct(rate: number): string {
@@ -77,7 +135,9 @@ export function computeSuggestedTier(input: {
     taskClass?: TaskClass | null;
     riskLevel?: RiskLevel | null;
     riskFactors?: readonly RiskFactor[] | null;
+    assuranceProfile?: AssuranceProfile | null;
   };
+  cohort?: Partial<RoutingEvidenceCohort>;
   attempts: TelemetryAttempt[];
   routingState: RoutingState;
   sessionCount: number;
@@ -89,8 +149,31 @@ export function computeSuggestedTier(input: {
   const riskFactors = task.riskFactors === undefined || task.riskFactors === null
     ? null
     : [...task.riskFactors];
+  const assuranceProfile =
+    task.assuranceProfile !== undefined
+      ? task.assuranceProfile
+      : input.cohort?.assuranceProfile ?? null;
+  const cohort: RoutingEvidenceCohort = {
+    assuranceProfile,
+    host: input.cohort?.host ?? "unknown",
+    modelId: input.cohort?.modelId ?? CHEAP_TIER,
+    modelVersion: input.cohort?.modelVersion ?? null,
+    projectPreset: input.cohort?.projectPreset ?? "unknown"
+  };
 
-  const evidence = downgradeEvidence(attempts, taskClass);
+  const evidence = downgradeEvidence(attempts, taskClass, riskLevel, cohort);
+
+  if (assuranceProfile === "critical") {
+    return {
+      taskId,
+      taskClass,
+      riskLevel,
+      riskFactors,
+      suggestedTier: STRONGEST_TIER,
+      reason: "critical assurance requires the strongest tier",
+      evidence
+    };
+  }
 
   // 3. Active quarantine forces strongest tier — quality recovers unconditionally.
   const quarantine = routingState.quarantines.find((entry) => entry.taskClass === taskClass);
@@ -114,6 +197,22 @@ export function computeSuggestedTier(input: {
       riskFactors,
       suggestedTier: STRONGEST_TIER,
       reason: "high risk requires the strongest tier",
+      evidence
+    };
+  }
+
+  const incompleteCohort = incompleteDowngradeCohort(riskLevel, cohort);
+  if (taskClass === null) {
+    incompleteCohort.unshift("task class");
+  }
+  if (incompleteCohort.length > 0) {
+    return {
+      taskId,
+      taskClass,
+      riskLevel,
+      riskFactors,
+      suggestedTier: STRONGEST_TIER,
+      reason: `incomplete routing cohort: ${incompleteCohort.join(", ")}`,
       evidence
     };
   }
@@ -214,7 +313,7 @@ export function renderModelRouting(suggestion: RoutingSuggestion): string {
     `task: ${suggestion.taskId}`,
     `suggested_tier: ${suggestion.suggestedTier}`,
     `reason: ${suggestion.reason}`,
-    `evidence: samples=${suggestion.evidence.samples} passes=${suggestion.evidence.passes} pass_rate=${passRate} wilson_lower_bound=${lowerBound}`,
+    `evidence: samples=${suggestion.evidence.samples} passes=${suggestion.evidence.passes} inconclusive=${suggestion.evidence.inconclusive} pass_rate=${passRate} wilson_lower_bound=${lowerBound}`,
     "END_VISP_MODEL_ROUTING"
   ].join("\n");
 }

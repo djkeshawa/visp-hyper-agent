@@ -1,3 +1,7 @@
+---
+applyTo: "**"
+---
+
 # visp-hyper instructions
 
 This project uses **visp-hyper**, a local-first companion that selects context and

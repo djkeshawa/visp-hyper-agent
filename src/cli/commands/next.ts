@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { getActiveSession, readState } from "../../core/session-manager.js";
 import type { SessionRecord } from "../../core/types.js";
 import type { KitTask } from "../../kit/kit-schemas.js";
@@ -6,6 +6,11 @@ import { readRelevantFailurePatterns } from "../../memory/failure-patterns.js";
 import { effectiveGraph, evidenceRequirements } from "../../pipeline/adaptive-rules.js";
 import { buildActionBlock, currentTask, loadTaskGraph, readySet } from "../../pipeline/pipeline-engine.js";
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
+import {
+  routingCohortForTask,
+  routingTaskFromAction,
+  type RoutingTaskDescriptor
+} from "../../routing/routing-context.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { contextPackPathIfExists, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
@@ -19,7 +24,12 @@ import {
 export function nextCommand(): Command {
   return new Command("next")
     .description("Print the next recommended action for the active session.")
-    .action(async function (this: Command) {
+    .addOption(new Option("--target-model <model-id>", "Exact cheap-tier model ID to evaluate for advisory routing."))
+    .addOption(new Option("--target-model-version <version>", "Exact cheap-tier model version to evaluate for advisory routing."))
+    .action(async function (
+      this: Command,
+      options: { targetModel?: string; targetModelVersion?: string }
+    ) {
       const projectPath = resolveProjectPath(this);
       const kit = await detectVisp(projectPath);
       if (kit.state === "configured-unhealthy") {
@@ -39,6 +49,14 @@ export function nextCommand(): Command {
         if (actionDiagnostic.ok) {
           const envelope = toHyperActionEnvelope(actionDiagnostic.value);
           console.log(renderHyperActionFrame(envelope));
+          const session = await getActiveSession(projectPath);
+          const routingTask = routingTaskFromAction(actionDiagnostic.value);
+          if (session && routingTask) {
+            await printAndRecordRouting(projectPath, routingTask, session.tool, {
+              modelId: options.targetModel,
+              modelVersion: options.targetModelVersion
+            });
+          }
           if (actionDiagnostic.value.verdict !== "ready") {
             process.exitCode = 1;
           }
@@ -82,7 +100,10 @@ export function nextCommand(): Command {
             const concurrentWith = readySet(graph, task.id, session.pipeline.completed);
             const knownFailureModes = await knownFailureModesFor(projectPath, task);
             console.log(buildActionBlock(task, { sessionId: session.id, contextPackPath, concurrentWith, knownFailureModes }));
-            await printAndRecordRouting(projectPath, task);
+            await printAndRecordRouting(projectPath, task, session.tool, {
+              modelId: options.targetModel,
+              modelVersion: options.targetModelVersion
+            });
             printWorkflowDirectiveIfAny(graph, session.pipeline, session.tool, session.id);
             return;
           }
@@ -126,7 +147,12 @@ function printLegacyNext(session: SessionRecord): void {
  * action block, and persist the decision. Best-effort: a routing failure must
  * never break the next command, so errors are swallowed.
  */
-async function printAndRecordRouting(projectPath: string, task: KitTask): Promise<void> {
+async function printAndRecordRouting(
+  projectPath: string,
+  task: KitTask | RoutingTaskDescriptor,
+  host: SessionRecord["tool"],
+  target: { modelId?: string; modelVersion?: string }
+): Promise<void> {
   try {
     const [{ data: telemetry }, { state: routingState }, hyperState] = await Promise.all([
       readTelemetry(projectPath),
@@ -135,6 +161,12 @@ async function printAndRecordRouting(projectPath: string, task: KitTask): Promis
     ]);
     const suggestion = computeSuggestedTier({
       task,
+      cohort: routingCohortForTask({
+        host,
+        task,
+        modelId: target.modelId,
+        modelVersion: target.modelVersion
+      }),
       attempts: telemetry.attempts,
       routingState,
       sessionCount: Object.keys(hyperState.sessions).length

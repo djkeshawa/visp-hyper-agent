@@ -381,6 +381,17 @@ async function readArgvLog(path: string): Promise<string[][]> {
     .map((line) => JSON.parse(line) as string[]);
 }
 
+function withoutCanonicalRoutingPreflight(argv: string[][]): string[][] {
+  if (
+    argv[0]?.[0] === "status" &&
+    argv[1]?.[0] === "integration" &&
+    argv[2]?.[0] === "next"
+  ) {
+    return [argv[0], ...argv.slice(3)];
+  }
+  return argv;
+}
+
 async function expectNoSession(projectPath: string): Promise<void> {
   const state = await readState(projectPath);
   expect.soft(state.activeSessionId).toBeNull();
@@ -424,6 +435,10 @@ async function snapshotHyperTree(projectPath: string): Promise<HyperTreeEntry[]>
 
   await walk(root, "");
   return snapshot;
+}
+
+function withoutRoutingState(entries: HyperTreeEntry[]): HyperTreeEntry[] {
+  return entries.filter((entry) => entry.path !== "routing.json");
 }
 
 function expectNoLocalFallthrough(output: string): void {
@@ -1862,12 +1877,14 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     );
     expectConfiguredCheckpointHasNoLocalSemantics(output);
     expect.soft(process.exitCode).toBe(1);
-    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
+    expect.soft(withoutRoutingState(await snapshotHyperTree(projectPath))).toEqual(
+      withoutRoutingState(hyperBefore)
+    );
 
     const pipeline = activePipeline(await readState(projectPath));
     expect(pipeline.currentTaskId).toBe("T001");
     const argv = await readArgvLog(shim.argvLogPath);
-    expect.soft(argv.slice(argvBefore)).toEqual([
+    expect.soft(withoutCanonicalRoutingPreflight(argv.slice(argvBefore))).toEqual([
       ["status", "--json"],
       ["verify", "--task", "T001", "--json"],
       ["review", "--task", "T001", "--json"],
@@ -2298,9 +2315,15 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     );
     expectConfiguredCheckpointHasNoLocalSemantics(output);
     expect.soft(process.exitCode).toBe(1);
-    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
+    expect.soft(withoutRoutingState(await snapshotHyperTree(projectPath))).toEqual(
+      withoutRoutingState(hyperBefore)
+    );
 
-    expect.soft((await readArgvLog(shim.argvLogPath)).slice(argvBefore)).toEqual([
+    expect.soft(
+      withoutCanonicalRoutingPreflight(
+        (await readArgvLog(shim.argvLogPath)).slice(argvBefore)
+      )
+    ).toEqual([
       ["status", "--json"],
       ["verify", "--task", "T001", "--json"],
       ["review", "--task", "T001", "--json"],
@@ -2741,7 +2764,9 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expect.soft(process.exitCode).toBeFalsy();
     expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
 
-    expect.soft(await readArgvLog(checkpointShim.argvLogPath)).toEqual([
+    expect.soft(
+      withoutCanonicalRoutingPreflight(await readArgvLog(checkpointShim.argvLogPath))
+    ).toEqual([
       ["status", "--json"],
       ["verify", "--task", "T001", "--json"],
       ["review", "--task", "T001", "--json"],
@@ -2803,7 +2828,9 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     expectConfiguredCheckpointHasNoLocalSemantics(output);
     expect.soft(process.exitCode).toBeFalsy();
     expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
-    expect.soft(await readArgvLog(checkpointShim.argvLogPath)).toEqual([
+    expect.soft(
+      withoutCanonicalRoutingPreflight(await readArgvLog(checkpointShim.argvLogPath))
+    ).toEqual([
       ["status", "--json"],
       ["verify", "--task", "T001", "--json"],
       ["review", "--task", "T001", "--json"],
@@ -2864,8 +2891,12 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       expect.soft(renderedAction.action.verdict).toBe(actionVerdict);
       expectConfiguredCheckpointHasNoLocalSemantics(output);
       expect.soft(process.exitCode).toBe(1);
-      expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
-      expect.soft(await readArgvLog(checkpointShim.argvLogPath)).toEqual([
+      expect.soft(withoutRoutingState(await snapshotHyperTree(projectPath))).toEqual(
+        withoutRoutingState(hyperBefore)
+      );
+      expect.soft(
+        withoutCanonicalRoutingPreflight(await readArgvLog(checkpointShim.argvLogPath))
+      ).toEqual([
         ["status", "--json"],
         ["verify", "--task", "T001", "--json"],
         ["review", "--task", "T001", "--json"],
@@ -2906,7 +2937,9 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     );
     expectConfiguredCheckpointHasNoLocalSemantics(output);
     expect.soft(process.exitCode).toBe(1);
-    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
+    expect.soft(withoutRoutingState(await snapshotHyperTree(projectPath))).toEqual(
+      withoutRoutingState(hyperBefore)
+    );
   });
 
   it("FAIL_CLOSED: repeated failed Kit checkpoints never inject Hyper remediation or strict assurance", async () => {
@@ -3036,7 +3069,9 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       output.indexOf("BEGIN_VISP_HYPER_ACTION_V1")
     );
     expect.soft(process.exitCode).toBe(1);
-    expect.soft(await snapshotHyperTree(projectPath)).toEqual(hyperBefore);
+    expect.soft(withoutRoutingState(await snapshotHyperTree(projectPath))).toEqual(
+      withoutRoutingState(hyperBefore)
+    );
 
     const pipeline = activePipeline(await readState(projectPath));
     expect.soft(pipeline.currentTaskId).toBe("T001");

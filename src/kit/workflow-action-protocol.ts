@@ -109,6 +109,9 @@ export const taskClassSchema = z.enum(taskClassValues);
 export const riskLevelValues = ["low", "medium", "high"] as const;
 export const riskLevelSchema = z.enum(riskLevelValues);
 
+export const assuranceProfileValues = ["routine", "behavioral", "critical"] as const;
+export const assuranceProfileSchema = z.enum(assuranceProfileValues);
+
 export const riskFactorCodeValues = [
   "authentication",
   "authorization",
@@ -132,6 +135,7 @@ export const riskFactorsSchema = z.array(riskFactorSchema);
 
 export type TaskClass = z.infer<typeof taskClassSchema>;
 export type RiskLevel = z.infer<typeof riskLevelSchema>;
+export type AssuranceProfile = z.infer<typeof assuranceProfileSchema>;
 export type RiskFactorCode = z.infer<typeof riskFactorCodeSchema>;
 export type RiskFactor = z.infer<typeof riskFactorSchema>;
 const hashedReadSchema = z
@@ -237,7 +241,7 @@ export const workflowActionV3StrictSchema = z
     assurance: z
       .object({
         level: z.enum(["kit_strict", "advisory"]),
-        profile: declaredValueSchema(z.enum(["routine", "behavioral", "critical"])),
+        profile: declaredValueSchema(assuranceProfileSchema),
         workflowStrictness: declaredValueSchema(
           z.enum(["relaxed", "standard", "strict", "locked"])
         )

@@ -1,0 +1,74 @@
+{
+  "manifestVersion": "1.0",
+  "host": "claude-code",
+  "validatedAgainst": {
+    "asOf": "2026-07-25",
+    "hostVersion": null,
+    "surface": "Claude Code",
+    "documentation": [
+      "https://code.claude.com/docs/en/claude-directory",
+      "https://code.claude.com/docs/en/skills",
+      "https://code.claude.com/docs/en/hooks",
+      "https://code.claude.com/docs/en/sub-agents",
+      "https://code.claude.com/docs/en/model-config"
+    ]
+  },
+  "supports": {
+    "repoGuidance": "native",
+    "skills": "native",
+    "commands": "native",
+    "hooks": "native",
+    "mcp": "native",
+    "subagents": "native",
+    "verifierRole": "native",
+    "challengerRole": "native",
+    "automaticModelSelection": "surface_limited"
+  },
+  "fallbacks": {
+    "mechanicalEnforcement": "git_and_ci",
+    "orchestration": "native_subagents",
+    "modelSelection": "host_controlled"
+  },
+  "assets": [
+    {
+      "templatePath": "agents/coordinator.md",
+      "destination": ".claude/agents/coordinator.md"
+    },
+    {
+      "templatePath": "agents/scout.md",
+      "destination": ".claude/agents/scout.md"
+    },
+    {
+      "templatePath": "agents/implementer.md",
+      "destination": ".claude/agents/implementer.md"
+    },
+    {
+      "templatePath": "skills/visp-hyper/SKILL.md",
+      "destination": ".claude/skills/visp-hyper/SKILL.md"
+    },
+    {
+      "templatePath": "commands/hyper-run.md",
+      "destination": ".claude/commands/hyper-run.md"
+    },
+    {
+      "templatePath": "commands/hyper-next.md",
+      "destination": ".claude/commands/hyper-next.md"
+    },
+    {
+      "templatePath": "commands/hyper-checkpoint.md",
+      "destination": ".claude/commands/hyper-checkpoint.md"
+    },
+    {
+      "templatePath": "commands/hyper-review.md",
+      "destination": ".claude/commands/hyper-review.md"
+    },
+    {
+      "templatePath": "commands/hyper-remember.md",
+      "destination": ".claude/commands/hyper-remember.md"
+    },
+    {
+      "templatePath": "commands/hyper-fanout.md",
+      "destination": ".claude/commands/hyper-fanout.md"
+    }
+  ]
+}

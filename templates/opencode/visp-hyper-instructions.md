@@ -19,10 +19,9 @@ prints an Agent Handoff Protocol describing how to run a disciplined session.
 
 ## Role passes
 
-Tools with native subagent support (such as Claude Code) may run the scout pass in
-a dedicated subagent; here you run both passes sequentially in one session.
-
-Run each task as two sequential passes in the same session — one model can do both.
+Use a bounded read-only subagent for the scout or challenger pass when it adds
+useful parallelism. A sequential pass in the current session remains the safe
+fallback.
 
 1. **Scout pass (read-only).** Gather the files and evidence the task needs. Read
    every path under `required_reads`, inspect the files named in the action block,

@@ -1,6 +1,7 @@
 import { Command, Option } from "commander";
 import { packageVersion } from "../core/package-version.js";
 import { checkpointCommand } from "./commands/checkpoint.js";
+import { challengeCommand } from "./commands/challenge.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { guardCommand } from "./commands/guard.js";
 import { hooksCommand } from "./commands/hooks.js";
@@ -34,6 +35,7 @@ export async function runCli(argv: string[]): Promise<void> {
   program.addCommand(statusCommand());
   program.addCommand(doctorCommand());
   program.addCommand(checkpointCommand());
+  program.addCommand(challengeCommand());
   program.addCommand(guardCommand());
   program.addCommand(hooksCommand());
   program.addCommand(reviewCommand());
@@ -43,4 +45,3 @@ export async function runCli(argv: string[]): Promise<void> {
 
   await program.parseAsync(argv);
 }
-

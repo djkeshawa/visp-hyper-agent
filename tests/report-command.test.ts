@@ -56,20 +56,37 @@ async function writeRouting(projectPath: string, state: RoutingState): Promise<v
 }
 
 function attempt(overrides: Partial<TelemetryFile["attempts"][number]>): TelemetryFile["attempts"][number] {
-  return {
+  const record: TelemetryFile["attempts"][number] = {
     taskId: "T001",
     taskClass: "bounded_feature",
     riskLevel: "medium",
     riskFactors: [],
+    assuranceProfile: null,
+    host: "codex",
+    modelId: "implementer",
+    modelVersion: null,
+    projectPreset: "typescript",
+    protocolVersion: "local-checked/1.0",
+    kitVersion: "none",
+    hyperVersion: "0.3.0",
     tier: "implementer",
     attempt: 1,
     verifyPassed: true,
     reviewPassed: true,
+    verdict: "passed",
+    evidenceSource: "local",
     firstAttempt: true,
     sessionId: "vh_seed",
     at: "2026-06-11T00:00:00.000Z",
     ...overrides
   };
+  if (
+    overrides.verdict === undefined &&
+    (record.verifyPassed === false || record.reviewPassed === false)
+  ) {
+    record.verdict = "failed";
+  }
+  return record;
 }
 
 describe("report command (AC006)", () => {
@@ -146,6 +163,18 @@ describe("report command (AC006)", () => {
           firstAttempt: true,
           verifyPassed: true,
           reviewPassed: true
+        }),
+        // Inconclusive attempts remain visible but never enter the pass-rate denominator.
+        attempt({
+          taskId: "T006",
+          tier: "implementer",
+          taskClass: "documentation",
+          riskLevel: "low",
+          riskFactors: [],
+          firstAttempt: true,
+          verifyPassed: false,
+          reviewPassed: false,
+          verdict: "inconclusive"
         })
       ],
       usage: [
@@ -182,17 +211,18 @@ describe("report command (AC006)", () => {
     // 4 distinct first-attempt records: T001, T002, T003(first fail), T004, T005 pass → 4/5 first-attempts pass.
     // First-attempts: T001✓ T002✓ T003✗ T004✓ T005✓ → 4/5 = 80.0%
     expect(text).toContain("first_attempt_pass_rate: 80.0%");
+    expect(text).toContain("inconclusive_attempts: 1");
     expect(text).toContain("tokens: input=1500 output=200");
-    expect(text).toContain("implementer: attempts=4 pass_rate=75.0%");
-    expect(text).toContain("scout: attempts=2 pass_rate=100.0%");
-    expect(text).toContain("bounded_feature: attempts=2 pass_rate=100.0%");
-    expect(text).toContain("security: attempts=3 pass_rate=50.0%");
+    expect(text).toContain("implementer: attempts=5 inconclusive=1 pass_rate=75.0%");
+    expect(text).toContain("scout: attempts=2 inconclusive=0 pass_rate=100.0%");
+    expect(text).toContain("bounded_feature: attempts=2 inconclusive=0 pass_rate=100.0%");
+    expect(text).toContain("security: attempts=3 inconclusive=0 pass_rate=50.0%");
     expect(text).toContain("per_risk_level:");
-    expect(text).toContain("medium: attempts=2 pass_rate=100.0%");
-    expect(text).toContain("high: attempts=3 pass_rate=50.0%");
+    expect(text).toContain("medium: attempts=2 inconclusive=0 pass_rate=100.0%");
+    expect(text).toContain("high: attempts=3 inconclusive=0 pass_rate=50.0%");
     expect(text).toContain("per_risk_factor:");
-    expect(text).toContain("public_api: attempts=2 pass_rate=100.0%");
-    expect(text).toContain("authorization: attempts=3 pass_rate=50.0%");
+    expect(text).toContain("public_api: attempts=2 inconclusive=0 pass_rate=100.0%");
+    expect(text).toContain("authorization: attempts=3 inconclusive=0 pass_rate=50.0%");
 
     // Only the active quarantine appears.
     expect(text).toContain("security: until session 5");
@@ -208,8 +238,9 @@ describe("report command (AC006)", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "report", "--json"]);
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.totals.sessions).toBe(3);
-    expect(parsed.totals.tasks).toBe(5);
-    expect(parsed.totals.attempts).toBe(6);
+    expect(parsed.totals.tasks).toBe(6);
+    expect(parsed.totals.attempts).toBe(7);
+    expect(parsed.totals.inconclusive).toBe(1);
     expect(parsed.totals.firstAttemptPassRate).toBeCloseTo(0.8);
     expect(parsed.tokens).toEqual({ inputTokens: 1500, outputTokens: 200 });
     expect(parsed.perClass.map((entry: { taskClass: string | null }) => entry.taskClass)).toEqual([
@@ -230,6 +261,34 @@ describe("report command (AC006)", () => {
     expect(parsed.recentDecisions).toHaveLength(10);
     expect(parsed.recentDecisions[0].taskId).toBe("D002");
     expect(parsed.recentDecisions[9].taskId).toBe("D011");
+  });
+
+  it("counts feature-qualified work items independently when task IDs repeat", async () => {
+    const projectPath = await createProject();
+    await writeTelemetry(projectPath, {
+      attempts: [
+        attempt({
+          featureId: "002",
+          taskId: "T001",
+          workItemKey: "002:T001",
+          sessionId: "vh_feature_002"
+        }),
+        attempt({
+          featureId: "003",
+          taskId: "T001",
+          workItemKey: "003:T001",
+          sessionId: "vh_feature_003"
+        })
+      ],
+      usage: []
+    });
+
+    logs = [];
+    await runCli(["node", "visp-hyper", "--project", projectPath, "report", "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.totals.tasks).toBe(2);
+    expect(parsed.totals.attempts).toBe(2);
   });
 
   it("AC006b: empty project prints the frame with zeros and a no-telemetry note", async () => {

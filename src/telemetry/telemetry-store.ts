@@ -3,6 +3,7 @@ import { readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
 import { parseJsonStore } from "../core/json-store.js";
 import { withStoreLock } from "../core/store-lock.js";
 import {
+  assuranceProfileSchema,
   riskFactorsSchema,
   riskLevelSchema,
   riskLevelValues,
@@ -12,13 +13,25 @@ import {
 
 export const telemetryAttemptSchema = z.object({
   taskId: z.string(),
+  featureId: z.string().min(1).nullable().optional(),
+  workItemKey: z.string().min(1).optional(),
   taskClass: taskClassSchema.nullable(),
   riskLevel: riskLevelSchema.nullable(),
   riskFactors: riskFactorsSchema.nullable(),
+  assuranceProfile: assuranceProfileSchema.nullable(),
+  host: z.string().min(1),
+  modelId: z.string().min(1),
+  modelVersion: z.string().min(1).nullable(),
+  projectPreset: z.string().min(1),
+  protocolVersion: z.string().min(1),
+  kitVersion: z.string().min(1),
+  hyperVersion: z.string().min(1),
   tier: z.string(),
   attempt: z.number().int().positive(),
   verifyPassed: z.boolean(),
   reviewPassed: z.boolean(),
+  verdict: z.enum(["passed", "failed", "inconclusive"]),
+  evidenceSource: z.enum(["kit", "local"]),
   firstAttempt: z.boolean(),
   sessionId: z.string(),
   at: z.string()
@@ -59,9 +72,23 @@ function migrateTelemetryFile(value: unknown): unknown {
 
     return {
       ...entry,
+      featureId: entry.featureId ?? null,
+      workItemKey: entry.workItemKey ?? entry.taskId,
       taskClass,
       riskLevel: legacyRiskLevel ?? entry.riskLevel ?? null,
-      riskFactors: entry.riskFactors ?? null
+      riskFactors: entry.riskFactors ?? null,
+      assuranceProfile: entry.assuranceProfile ?? null,
+      host: entry.host ?? "unknown",
+      modelId: entry.modelId ?? entry.tier ?? "unknown",
+      modelVersion: entry.modelVersion ?? null,
+      projectPreset: entry.projectPreset ?? "unknown",
+      protocolVersion: entry.protocolVersion ?? "legacy",
+      kitVersion: entry.kitVersion ?? "unknown",
+      hyperVersion: entry.hyperVersion ?? "legacy",
+      verdict:
+        entry.verdict ??
+        (entry.verifyPassed === true && entry.reviewPassed === true ? "passed" : "inconclusive"),
+      evidenceSource: entry.evidenceSource ?? "local"
     };
   });
 
@@ -118,10 +145,16 @@ export async function appendAttempt(
 ): Promise<TelemetryAttempt> {
   return withStoreLock(projectPath, async () => {
     const { data } = await readTelemetry(projectPath);
-    const priorForTask = data.attempts.filter((entry) => entry.taskId === attempt.taskId).length;
+    const workItemKey =
+      attempt.workItemKey ??
+      `${attempt.featureId ?? "local"}:${attempt.sessionId}:${attempt.taskId}`;
+    const priorForTask = data.attempts.filter(
+      (entry) => (entry.workItemKey ?? entry.taskId) === workItemKey
+    ).length;
     const attemptNumber = priorForTask + 1;
     const record: TelemetryAttempt = {
       ...attempt,
+      workItemKey,
       attempt: attemptNumber,
       firstAttempt: attemptNumber === 1,
       at: new Date().toISOString()

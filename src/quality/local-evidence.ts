@@ -1,4 +1,5 @@
 import { analyzeChangedFiles } from "./diff-analyzer.js";
+import { isHyperOwnedPath } from "../governance/blocked-files.js";
 import { checkScope, collectChangedFiles, collectTrackedChangedFiles } from "../governance/scope-guard.js";
 import { ProjectValidationRunner } from "./validation-runner.js";
 import type { AssuranceLevel, EvidenceVerdict } from "../core/types.js";
@@ -92,12 +93,12 @@ export async function collectLocalEvidence(input: {
     warnings.push("tracked Git scope could not be read; canonical artifact review is inconclusive");
   }
   const changedFiles = diff.files.filter((file) =>
-    !isVispOwned(file) && (!isCanonicalVisp(file) || trackedChanges?.has(file) === true)
+    !isHyperOwnedPath(file) && (!isCanonicalVisp(file) || trackedChanges?.has(file) === true)
   );
 
   if (changedFiles.length === 0 && !gitFailed) {
     findings.push("no changes detected");
-    if ([...(input.task.allowedFiles ?? [])].some((file) => !isVispOwned(file))) {
+    if ([...(input.task.allowedFiles ?? [])].some((file) => !isHyperOwnedPath(file))) {
       findings.push("review inconclusive: task declares source scope but no source patch was detected");
       reviewVerdict = "inconclusive";
     }
@@ -144,17 +145,6 @@ export async function collectLocalEvidence(input: {
     findings,
     warnings
   };
-}
-
-/**
- * True for paths inside visp-hyper's own `.visp/` output tree, tolerant of both
- * separators so Windows backslash paths are matched too.
- */
-function isVispOwned(file: string): boolean {
-  const normalized = file.replace(/\\/gu, "/");
-  // Exclude only Hyper's generated runtime. Canonical Kit policy/spec/task
-  // artifacts remain visible to scope review and cannot be silently tampered.
-  return normalized === ".visp/hyper" || normalized.startsWith(".visp/hyper/");
 }
 
 function isCanonicalVisp(file: string): boolean {

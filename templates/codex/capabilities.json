@@ -1,0 +1,42 @@
+{
+  "manifestVersion": "1.0",
+  "host": "codex",
+  "validatedAgainst": {
+    "asOf": "2026-07-25",
+    "hostVersion": null,
+    "surface": "Codex CLI",
+    "documentation": [
+      "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
+      "https://learn.chatgpt.com/docs/build-skills",
+      "https://learn.chatgpt.com/docs/hooks",
+      "https://learn.chatgpt.com/docs/extend/mcp",
+      "https://learn.chatgpt.com/docs/agent-configuration/subagents"
+    ]
+  },
+  "supports": {
+    "repoGuidance": "native",
+    "skills": "native",
+    "commands": "manual",
+    "hooks": "native",
+    "mcp": "native",
+    "subagents": "native",
+    "verifierRole": "native",
+    "challengerRole": "native",
+    "automaticModelSelection": "unsupported"
+  },
+  "fallbacks": {
+    "mechanicalEnforcement": "git_and_ci",
+    "orchestration": "native_subagents",
+    "modelSelection": "host_controlled"
+  },
+  "assets": [
+    {
+      "templatePath": "AGENTS.visp-hyper.md",
+      "destination": "AGENTS.visp-hyper.md"
+    },
+    {
+      "templatePath": ".agents/skills/visp-hyper/SKILL.md",
+      "destination": ".agents/skills/visp-hyper/SKILL.md"
+    }
+  ]
+}

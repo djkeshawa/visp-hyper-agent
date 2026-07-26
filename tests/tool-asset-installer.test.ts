@@ -1,11 +1,12 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   installAssets,
   isKitOwnedDestination,
-  planInstall
+  planInstall,
+  readHostCapabilityManifest
 } from "../src/install/tool-asset-installer.js";
 
 // The real repo templates, resolved relative to the project root (vitest cwd).
@@ -35,9 +36,11 @@ describe("planInstall / installAssets (AC001)", () => {
     expect(destinations).toContain(".claude/agents/implementer.md");
     expect(destinations).toContain(".claude/commands/hyper-run.md");
     expect(destinations).toContain(".claude/commands/hyper-remember.md");
+    expect(destinations).toContain(".claude/skills/visp-hyper/SKILL.md");
     // model-map.json is data, never planned for install.
     expect(destinations.some((d) => d.includes("model-map.json"))).toBe(false);
     expect(plan.every((p) => p.exists === false)).toBe(true);
+    expect(plan.every((p) => p.integrity === "missing")).toBe(true);
 
     const report = await installAssets("claude-code", project, { templatesDir: REAL_TEMPLATES });
     expect(report.created).toEqual(expect.arrayContaining(destinations));
@@ -72,7 +75,8 @@ describe("non-claude installs (AC001b)", () => {
     const project = await makeProject();
     const report = await installAssets("copilot", project, { templatesDir: REAL_TEMPLATES });
     expect(report.created).toEqual([".github/instructions/visp-hyper.instructions.md"]);
-    expect(await pathExists(join(project, ".github/instructions/visp-hyper.instructions.md"))).toBe(true);
+    const body = await readFile(join(project, ".github/instructions/visp-hyper.instructions.md"), "utf8");
+    expect(body).toMatch(/^---\napplyTo: "\*\*"\n---\n/u);
   });
 
   it("writes generic destination", async () => {
@@ -87,9 +91,120 @@ describe("non-claude installs (AC001b)", () => {
   it("writes opencode destination", async () => {
     const project = await makeProject();
     const report = await installAssets("opencode", project, { templatesDir: REAL_TEMPLATES });
-    expect(report.created).toEqual(["visp-hyper-instructions.md"]);
+    expect(report.created).toEqual([
+      "visp-hyper-instructions.md",
+      ".agents/skills/visp-hyper/SKILL.md"
+    ]);
     expect(await pathExists(join(project, "visp-hyper-instructions.md"))).toBe(true);
+    expect(await pathExists(join(project, ".agents/skills/visp-hyper/SKILL.md"))).toBe(true);
   });
+});
+
+describe("host capability manifests", () => {
+  it("validates every bundled host manifest and preserves conservative fallbacks", async () => {
+    for (const tool of ["claude-code", "codex", "copilot", "generic", "opencode"] as const) {
+      const loaded = await readHostCapabilityManifest(tool, { templatesDir: REAL_TEMPLATES });
+      expect(loaded.manifest.host).toBe(tool);
+      expect(loaded.manifest.manifestVersion).toBe("1.0");
+      expect(loaded.manifest.fallbacks.mechanicalEnforcement).toBe("git_and_ci");
+      expect(loaded.manifest.validatedAgainst.documentation.length).toBeGreaterThan(0);
+      expect(loaded.sha256).toMatch(/^[a-f0-9]{64}$/u);
+    }
+  });
+
+  it("reports current and modified installed assets by rendered hash", async () => {
+    const project = await makeProject();
+    await installAssets("generic", project, { templatesDir: REAL_TEMPLATES });
+
+    expect(await planInstall("generic", project, { templatesDir: REAL_TEMPLATES })).toEqual([
+      expect.objectContaining({ destination: "visp-hyper-instructions.md", integrity: "current" })
+    ]);
+
+    await writeFile(join(project, "visp-hyper-instructions.md"), "modified locally\n", "utf8");
+    expect(await planInstall("generic", project, { templatesDir: REAL_TEMPLATES })).toEqual([
+      expect.objectContaining({
+        destination: "visp-hyper-instructions.md",
+        exists: true,
+        integrity: "modified",
+        actualSha256: expect.stringMatching(/^[a-f0-9]{64}$/u)
+      })
+    ]);
+  });
+
+  it("rejects a manifest that declares the wrong host before installation", async () => {
+    const templates = await mkdtemp(join(tmpdir(), "vh-invalid-manifest-"));
+    const toolDir = join(templates, "generic");
+    await mkdir(toolDir, { recursive: true });
+    await writeFile(join(toolDir, "asset.md"), "asset\n", "utf8");
+    const valid = JSON.parse(
+      await readFile(join(REAL_TEMPLATES, "generic", "capabilities.json"), "utf8")
+    ) as Record<string, unknown>;
+    await writeFile(
+      join(toolDir, "capabilities.json"),
+      JSON.stringify({ ...valid, host: "codex", assets: [{ templatePath: "asset.md", destination: "asset.md" }] }),
+      "utf8"
+    );
+
+    await expect(
+      installAssets("generic", await makeProject(), { templatesDir: templates })
+    ).rejects.toThrow(/declares codex; expected generic/u);
+  });
+
+  it("rejects unsafe and duplicate manifest destinations before installation", async () => {
+    const valid = JSON.parse(
+      await readFile(join(REAL_TEMPLATES, "generic", "capabilities.json"), "utf8")
+    ) as Record<string, unknown>;
+
+    for (const assets of [
+      [{ templatePath: "asset.md", destination: "../escape.md" }],
+      [
+        { templatePath: "asset.md", destination: "same.md" },
+        { templatePath: "asset.md", destination: "same.md" }
+      ]
+    ]) {
+      const templates = await mkdtemp(join(tmpdir(), "vh-invalid-destination-"));
+      const toolDir = join(templates, "generic");
+      await mkdir(toolDir, { recursive: true });
+      await writeFile(join(toolDir, "asset.md"), "asset\n", "utf8");
+      await writeFile(
+        join(toolDir, "capabilities.json"),
+        JSON.stringify({ ...valid, assets }),
+        "utf8"
+      );
+      await expect(
+        installAssets("generic", await makeProject(), { templatesDir: templates })
+      ).rejects.toThrow(/invalid|duplicate destination/u);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "refuses to overwrite a destination symlink and preserves its external target",
+    async () => {
+      const project = await makeProject();
+      const external = join(await mkdtemp(join(tmpdir(), "vh-external-file-")), "outside.md");
+      await writeFile(external, "external content\n", "utf8");
+      await symlink(external, join(project, "visp-hyper-instructions.md"));
+
+      await expect(
+        installAssets("generic", project, { templatesDir: REAL_TEMPLATES, force: true })
+      ).rejects.toThrow(/symlink or junction/u);
+      expect(await readFile(external, "utf8")).toBe("external content\n");
+    }
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "refuses to install through a symlinked ancestor outside the project",
+    async () => {
+      const project = await makeProject();
+      const external = await mkdtemp(join(tmpdir(), "vh-external-dir-"));
+      await symlink(external, join(project, ".agents"));
+
+      await expect(
+        installAssets("codex", project, { templatesDir: REAL_TEMPLATES })
+      ).rejects.toThrow(/symlink or junction/u);
+      expect(await pathExists(join(external, "skills/visp-hyper/SKILL.md"))).toBe(false);
+    }
+  );
 });
 
 describe("installed workflow authority wording", () => {

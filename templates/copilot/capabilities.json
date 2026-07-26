@@ -1,0 +1,38 @@
+{
+  "manifestVersion": "1.0",
+  "host": "copilot",
+  "validatedAgainst": {
+    "asOf": "2026-07-25",
+    "hostVersion": null,
+    "surface": "GitHub Copilot CLI, GitHub.com, and supported IDE surfaces",
+    "documentation": [
+      "https://docs.github.com/en/copilot/reference/customization-cheat-sheet",
+      "https://docs.github.com/en/copilot/concepts/agents/hooks",
+      "https://docs.github.com/en/copilot/reference/custom-agents-configuration",
+      "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference",
+      "https://docs.github.com/en/copilot/how-tos/configure-custom-instructions-in-your-ide/add-repository-instructions-in-your-ide"
+    ]
+  },
+  "supports": {
+    "repoGuidance": "native",
+    "skills": "native",
+    "commands": "surface_limited",
+    "hooks": "surface_limited",
+    "mcp": "native",
+    "subagents": "surface_limited",
+    "verifierRole": "surface_limited",
+    "challengerRole": "surface_limited",
+    "automaticModelSelection": "surface_limited"
+  },
+  "fallbacks": {
+    "mechanicalEnforcement": "git_and_ci",
+    "orchestration": "sequential",
+    "modelSelection": "host_controlled"
+  },
+  "assets": [
+    {
+      "templatePath": ".github/instructions/visp-hyper.instructions.md",
+      "destination": ".github/instructions/visp-hyper.instructions.md"
+    }
+  ]
+}

@@ -144,6 +144,30 @@ describe("hooks git", () => {
     expect(errors.join("\n")).toContain("error: not a git repository (run inside a project with .git).");
     expect(process.exitCode).toBe(1);
   });
+
+  it("installs into Git's effective hooks directory for a linked worktree with spaces", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "visp-hooks-main "));
+    const worktree = join(await mkdtemp(join(tmpdir(), "visp-hooks-parent ")), "linked worktree");
+    await gitInit(repository);
+    await writeFile(join(repository, "README.md"), "# Main\n", "utf8");
+    await execFileAsync("git", ["add", "."], { cwd: repository });
+    await commit(repository, "init");
+    await execFileAsync("git", ["worktree", "add", "-b", "linked-test", worktree], {
+      cwd: repository
+    });
+
+    await runCli(["node", "visp-hyper", "--project", worktree, "hooks", "git"]);
+
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--git-path", "hooks"], {
+      cwd: worktree
+    });
+    const hooksDir = stdout.trim();
+    const hookPath = join(
+      hooksDir.startsWith("/") ? hooksDir : join(worktree, hooksDir),
+      "pre-commit"
+    );
+    expect(await readFile(hookPath, "utf8")).toContain("# visp-hyper-guard hook");
+  });
 });
 
 describe("hooks ci", () => {
