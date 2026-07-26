@@ -33,3 +33,51 @@ jobs:
       - run: pnpm typecheck
 
       - run: pnpm test
+
+  # The Kit<->Hyper contract is the one thing neither repository can verify
+  # alone. `tests/visp-binary-contract.test.ts` self-skips unless a sibling Kit
+  # build and an initialized `.visp/` are both present, and neither exists in
+  # the `check` job -- so until this job, the real contract was never exercised
+  # automatically, only by hand.
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: visp-hyper-agent
+
+      - uses: actions/checkout@v4
+        with:
+          repository: djkeshawa/visp-kit
+          ref: develop
+          path: visp-kit
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The test resolves `../visp-kit/dist/index.js` relative to the Hyper
+      # checkout, so Kit must be built and sit beside it.
+      - name: Build Visp Kit
+        working-directory: visp-kit
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Build Visp Hyper Agent
+        working-directory: visp-hyper-agent
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      # `.visp/` is gitignored, so the contract test has no Kit artifacts to
+      # read until a project is initialized inside the checkout.
+      - name: Initialize a Visp project for the contract fixture
+        working-directory: visp-hyper-agent
+        run: node ../visp-kit/dist/index.js init . --agent none
+
+      - name: Run the live Kit contract test
+        working-directory: visp-hyper-agent
+        run: pnpm vitest run tests/visp-binary-contract.test.ts --reporter verbose
