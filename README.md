@@ -5,8 +5,13 @@ Local-first workflow controller for Codex, Claude Code, GitHub Copilot, OpenCode
 Visp Hyper Agent does not replace coding agents and never calls an LLM itself. It prepares task-scoped handoffs, enforces Visp Kit gates, records checkpoint evidence, and stores session memory for the coding tool you already use:
 
 - **Structured code flow** — drives the gated [Visp Kit](https://github.com/djkeshawa/visp-kit) workflow through its CLI, adopts task-scoped context packs, and presents Kit's exact ready action. Hyper checkpoints remain local evidence and never grant strict permission.
-- **Active memory** — recalls and persists project knowledge through [llm-memory](https://github.com/djkeshawa/llm-memory) (optional; file-based memory is the zero-dependency default).
-- **Claude Code subagent fleet (install-time)** — for the `claude-code` tool, `init` installs a coordinator/scout/implementer subagent set with per-role model tiers from a static `model-map.json`, and the installed `/hyper-run` command drives the coordinator to delegate the scout pass to the `scout` subagent and implementation to the `implementer` subagent through Claude Code's native Agent tool. Other tools have no dispatch mechanism and instead get an honest sequential scout-then-implement role framing. Across all tools, hyper emits evidence-gated model-routing advice that only downgrades tiers when local pass-rate data proves quality holds.
+- **Active memory** — uses zero-dependency file memory by default. The legacy
+  `llm-memory` HTTP mode remains for existing private migrations; new public
+  durable-memory integration waits for the versioned `visp-memory` contract.
+- **Capability-aware host integration** — `init` reads validated, versioned
+  manifests for Codex, Claude Code, GitHub Copilot, OpenCode, and the generic
+  fallback. Native assets are installed only where documented; Git/CI,
+  sequential, and advisory fallbacks remain explicit.
 - **Self-improvement** — harvests reusable skills your agent discovers during sessions and installs them as project skills.
 
 Everything is file-based under the target project's `.visp/` directory. No network calls (except to your own optional llm-memory server), no database, no embeddings, no new runtime dependencies.
@@ -48,17 +53,18 @@ visp-hyper remember --summary "Implemented offline note sync"
 | Command | What it does |
 |---|---|
 | `visp-hyper init [--tool <tool>] [--force-assets] [--with-hooks]` | Creates `.visp/hyper/` config and state. With `--tool` it also installs native assets for that coding tool (subagent fleet, slash commands, instructions) and, for `claude-code` projects with a real Visp Kit, surfaces or installs the `visp hooks claude` PreToolUse gate. |
-| `visp-hyper quick "<goal>" [--files <paths...>] [--tool <tool>]` | Starts a zero-configuration local task only when the project is genuinely Kit-less. A healthy or configured-but-unhealthy Kit stops the command before it creates Hyper state. |
-| `visp-hyper run "<goal>" [--tool <tool>]` | The one-command pipeline. In a Visp Kit project: checks the Kit integration contract, validates policy, evaluates gates, and prints either a per-task handoff + bounded action block, or a `BEGIN_VISP_PIPELINE_BLOCKED` block naming the exact next allowed `visp` command. Kit-less projects get the plain `start` behavior. |
+| `visp-hyper quick "<goal>" [--files <paths...>] [--tool <tool>] [--target-model <id>] [--target-model-version <v>]` | Starts a zero-configuration local task only when the project is genuinely Kit-less. A healthy or configured-but-unhealthy Kit stops the command before it creates Hyper state. |
+| `visp-hyper run "<goal>" [--tool <tool>] [--target-model <id>] [--target-model-version <v>]` | The one-command pipeline. In a Visp Kit project: checks the Kit integration contract, validates policy, evaluates gates, and prints either a per-task handoff + bounded action block, or a `BEGIN_VISP_PIPELINE_BLOCKED` block naming the exact next allowed `visp` command. Kit-less projects get the plain `start` behavior. |
 | `visp-hyper start "<goal>" [--tool <tool>]` | Starts a guided local session only when the project is genuinely Kit-less. A healthy or configured-but-unhealthy Kit stops the command before it creates Hyper state; use `run` for Kit-backed work. The local path writes the handoff and context files, uses the deterministic relevance scanner, and fuses recalled llm-memory entries when enabled. |
-| `visp-hyper next` | Prints the next bounded action: the current pipeline task's action block (with model-routing advice) when a task DAG is active, otherwise the generic next-step block. |
+| `visp-hyper next [--target-model <id>] [--target-model-version <v>]` | Prints the next bounded action: the current pipeline task's action block (with model-routing advice) when a task DAG is active, otherwise the generic next-step block. |
 | `visp-hyper resume [--json]` | Reprints the active handoff, current task action, context freshness, required read status, latest checkpoint, current git diff file list, and exact checkpoint-to-current file deltas after a context reset. |
-| `visp-hyper checkpoint [--task <id>] [--tier <tier>]` | Appends git diff evidence to `checkpoints.md`. With `--task`: runs Visp Kit verify + review through the bridge, confirms pinned Kit context and provenance artifacts have not changed since handoff, and records the attempt in telemetry. Its result is local evidence; strict progression and remediation come only from Kit's exact current ready action. |
-| `visp-hyper review` | Writes `review-report.md` and prints `BEGIN_VISP_REVIEW_RESULT` (deterministic path-based warnings from `git diff`). |
+| `visp-hyper checkpoint [--task <id>] [--tier <tier>] [--model <id>] [--model-version <v>]` | Appends git diff evidence to `checkpoints.md`. In genuine Kit-less mode, records cohort-safe local telemetry. Kit-backed evidence remains authoritative only when returned by Kit. |
+| `visp-hyper challenge [--json] [--response <path> \| --human-reviewer <id>] [--note <text>]` | Builds a bounded, read-only, unverified challenger request for behavioral/critical canonical work, or validates a bounded response against the active task/action/claims. It never calls an LLM or executes proposed commands. The optional human substitution writes a non-authoritative audit record. |
+| `visp-hyper review` | In a Kit-backed project, renders the current canonical Kit action without local mutation. In genuine Kit-less mode, writes `review-report.md` and labels deterministic path warnings `local_checked`. |
 | `visp-hyper remember [--summary <s>] [--decision <d>...] [--follow-up <f>...] [--used-skill <name>...] [--input-tokens <n>] [--output-tokens <n>] [--model <m>]` | Records session learnings: always writes `.visp/memory/session-history/`; additionally writes to llm-memory (session record, decisions, follow-ups) when enabled, records token usage in telemetry and forwards it to `visp budget`, harvests pending skill proposals, and tracks skill usage. It does not complete a Kit task. |
 | `visp-hyper report [--json]` | The cost/accuracy evidence view: first-attempt verify+review pass rates per model tier, task class, risk level, and risk factor; token totals; active routing quarantines; recent routing decisions; and skill usage with prune flags. |
-| `visp-hyper status` | Session metadata, generated files, context freshness, checkpoint/review state, and memory status. |
-| `visp-hyper doctor [--json]` | Read-only compatibility check for the Hyper + Visp Kit chain: detected Kit version, integration-contract version, selected WorkflowAction protocol and schema verification, canonical verdict, active context freshness, policy, next gate, context pack, git scope hook, and MCP surface manifest hash. |
+| `visp-hyper status` | Renders the canonical Kit action when Kit is configured; otherwise prints explicitly local session/context/checkpoint/memory status. |
+| `visp-hyper doctor [--json]` | Read-only compatibility check for trusted project config, selected host/version probe, capability manifest and installed-asset hashes, Kit contract/action, context freshness, policy/gate, hook, Memory reachability, and MCP surface integrity. |
 
 ## MCP Server
 
@@ -140,20 +146,22 @@ Set up once:
 visp-hyper init --tool claude-code
 ```
 
-This installs into the project:
+This installs the legacy commands plus current native skills:
 
 ```text
 .claude/agents/coordinator.md     # routes work, validates results (model: inherit)
 .claude/agents/scout.md           # scanning + mechanical work (model: sonnet)
 .claude/agents/implementer.md     # real logic (model: opus)
+.claude/skills/visp-hyper/SKILL.md
 .claude/commands/hyper-run.md     # /hyper-run, /hyper-next, /hyper-checkpoint,
 .claude/commands/hyper-*.md       # /hyper-review, /hyper-remember
 ```
 
-The per-role model tiers above are static assignments written at install time from
-`templates/claude-code/model-map.json` — this dispatch fleet is a Claude Code
-feature only. Other tools follow the sequential scout-then-implement role framing in
-their installed instructions instead.
+The per-role model tiers above are static assignments written at install time
+from `templates/claude-code/model-map.json`. Codex and OpenCode also expose
+native skill/subagent surfaces; Copilot capabilities are surface-limited, so its
+manifest keeps sequential fallback guidance. Generic mode assumes no native
+dispatch.
 
 Then, inside a Claude Code session:
 
@@ -172,7 +180,10 @@ Then, inside a Claude Code session:
 # → session memory, token telemetry, budget round-trip, skill harvest
 ```
 
-The same flow works tool-agnostically: `--tool codex` writes `AGENTS.visp-hyper.md` + `.agents/skills/`, `--tool copilot` writes `.github/instructions/`.
+The same flow works tool-agnostically: `--tool codex` writes
+`AGENTS.visp-hyper.md` plus `.agents/skills/`; `--tool copilot` writes an
+`applyTo`-scoped `.github/instructions/` file; and `--tool opencode` writes a
+native `.agents/skills/` entry.
 
 ## Output Blocks
 
@@ -194,8 +205,11 @@ Existing installs predating these blocks should re-run `visp-hyper init --tool <
 Routing advice is computed deterministically from local telemetry — visp-hyper never selects or calls a model:
 
 - **Baseline**: every task starts on the strong tier (`implementer`). A missing task class remains unclassified and never borrows evidence from its risk level.
-- **Downgrades must be earned**: an explicit task class is suggested for the cheap tier (`scout`) only after at least 30 comparable first-attempt records whose 95% Wilson lower bound is at least 85%.
-- **Risk remains separate**: task class, risk level, and versioned risk factors are recorded independently. High-risk tasks stay on the strong tier even when their class has downgrade evidence.
+- **Downgrades must be earned**: an explicit task class is suggested for the cheap tier (`scout`) only after at least 30 decided, comparable first-attempt records whose 95% Wilson lower bound is at least 85%.
+- **Cohorts do not leak**: downgrade evidence matches task class, risk level,
+  assurance profile, host, model ID/version, and project preset. Inconclusive
+  attempts are reported separately and excluded from pass-rate math.
+- **Risk remains separate**: task class, risk level, and versioned risk factors are recorded independently. High-risk and critical-assurance tasks stay on the strong tier even when their class has downgrade evidence.
 - **Quality recovers instantly**: any checkpoint failure escalates the suggestion to the strong tier and quarantines the task class from downgrades for 3 sessions.
 
 Legacy telemetry that used `low`, `medium`, or `high` as a task class is migrated
@@ -204,11 +218,11 @@ reporting but excluded from task-class downgrade evidence.
 
 `visp-hyper report` shows class, risk-level, and risk-factor pass-rate evidence behind decisions, so cost cuts that hurt accuracy are visible and reversible.
 
-## Active Memory (optional)
+## Legacy private Memory compatibility
 
 ```bash
-pipx install llm-memory
-llm-memory serve              # default http://localhost:8000
+# Existing migration environments only:
+llm-memory serve
 ```
 
 Enable in `.visp/hyper/config.json`:
@@ -217,7 +231,13 @@ Enable in `.visp/hyper/config.json`:
 { "memoryMode": "llm-memory", "memoryEndpoint": "http://localhost:8000" }
 ```
 
-- `start`/`run` recall memories relevant to the goal and render them in `memory-pack.md` with an exact per-record source URI and relevance-score tags, capped so memory never crowds out task context.
+- This mode is retained only for existing private migrations. It is not the
+  Phase 4 public Memory adapter.
+- The public adapter will target `visp-memory` only after its independent export
+  gates produce a stable versioned query/lifecycle contract.
+- File memory remains the supported zero-dependency public fallback.
+- Existing `start`/`run` calls render legacy recalled records with source URIs
+  and bounded relevance data; those records remain untrusted context.
 - Failed checkpoints are deduped into `.visp/hyper/failure-patterns.json`; future `start`/`run` handoffs surface related gotchas in `memory-pack.md`.
 - Kit-backed handoffs pin the adopted context artifact hash and Kit provenance hashes in `context-manifest.json`; `checkpoint --task` fails closed if the context pack or any grounded spec/task/plan/policy artifact changes before validation.
 - When Kit context packs include artifact provenance, Hyper copies those SHA-256 hashes into `context-manifest.json` so MCP clients can audit which spec/task/plan/policy artifacts grounded the handoff.

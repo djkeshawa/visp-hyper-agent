@@ -8,6 +8,7 @@ import type { KitTask } from "../../kit/kit-schemas.js";
 import { buildActionBlock } from "../../pipeline/pipeline-engine.js";
 import { ProjectValidationRunner } from "../../quality/validation-runner.js";
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
+import { routingCohortForTask } from "../../routing/routing-context.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { executeStart, renderDirectCommandKitStop } from "./start.js";
@@ -24,7 +25,18 @@ export function quickCommand(): Command {
       new Option("--tool <tool>", "Tool profile.")
         .choices(["generic", "codex", "claude-code", "copilot", "opencode"])
     )
-    .action(async function (this: Command, goal: string, options: { files?: string[]; tool?: ToolProfile }) {
+    .addOption(new Option("--target-model <model-id>", "Exact cheap-tier model ID to evaluate for advisory routing."))
+    .addOption(new Option("--target-model-version <version>", "Exact cheap-tier model version to evaluate for advisory routing."))
+    .action(async function (
+      this: Command,
+      goal: string,
+      options: {
+        files?: string[];
+        tool?: ToolProfile;
+        targetModel?: string;
+        targetModelVersion?: string;
+      }
+    ) {
       const projectPath = resolveProjectPath(this);
       const kit = await detectVisp(projectPath);
       if (kit.state !== "absent") {
@@ -66,7 +78,10 @@ export function quickCommand(): Command {
       console.log(handoff);
       console.log("");
       console.log(buildActionBlock(task, { sessionId: session.id }));
-      await printAndRecordRouting(projectPath, task);
+      await printAndRecordRouting(projectPath, task, session.tool, {
+        modelId: options.targetModel,
+        modelVersion: options.targetModelVersion
+      });
 
     });
 }
@@ -87,7 +102,12 @@ function normalizeFiles(files: string[], projectPath: string): string[] {
  * action block, and persist the decision. Best-effort: a routing failure must
  * never break the quick command, so errors are swallowed.
  */
-async function printAndRecordRouting(projectPath: string, task: KitTask): Promise<void> {
+async function printAndRecordRouting(
+  projectPath: string,
+  task: KitTask,
+  host: ToolProfile,
+  target: { modelId?: string; modelVersion?: string }
+): Promise<void> {
   try {
     const [{ data: telemetry }, { state: routingState }, hyperState] = await Promise.all([
       readTelemetry(projectPath),
@@ -96,6 +116,12 @@ async function printAndRecordRouting(projectPath: string, task: KitTask): Promis
     ]);
     const suggestion = computeSuggestedTier({
       task,
+      cohort: routingCohortForTask({
+        host,
+        task,
+        modelId: target.modelId,
+        modelVersion: target.modelVersion
+      }),
       attempts: telemetry.attempts,
       routingState,
       sessionCount: Object.keys(hyperState.sessions).length

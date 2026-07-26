@@ -19,6 +19,7 @@ import {
   toHyperActionEnvelope
 } from "../../kit/workflow-action-renderer.js";
 import { computeSuggestedTier, renderModelRouting } from "../../routing/routing-engine.js";
+import { routingCohortForTask } from "../../routing/routing-context.js";
 import { readRoutingState, recordRoutingDecision } from "../../routing/routing-state.js";
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { executeStart, prepareStrictKitAdoption } from "./start.js";
@@ -32,7 +33,13 @@ export function runCommand(): Command {
       new Option("--tool <tool>", "Tool profile.")
         .choices(["generic", "codex", "claude-code", "copilot", "opencode"])
     )
-    .action(async function (this: Command, goal: string, options: { tool?: ToolProfile }) {
+    .addOption(new Option("--target-model <model-id>", "Exact cheap-tier model ID to evaluate for advisory routing."))
+    .addOption(new Option("--target-model-version <version>", "Exact cheap-tier model version to evaluate for advisory routing."))
+    .action(async function (
+      this: Command,
+      goal: string,
+      options: { tool?: ToolProfile; targetModel?: string; targetModelVersion?: string }
+    ) {
       const projectPath = resolveProjectPath(this);
       const kit = await detectVisp(projectPath);
 
@@ -40,7 +47,7 @@ export function runCommand(): Command {
       // Kit that cannot be evaluated is an authority failure, not absence.
       if (kit.state === "absent") {
         const { handoff } = await executeStart(projectPath, goal, {
-          ...options,
+          tool: options.tool,
           authority: { mode: "local" }
         });
         console.log(handoff);
@@ -302,15 +309,18 @@ export function runCommand(): Command {
 
       // Create durable Hyper session state only after every required strict
       // precondition has produced a valid authoritative result.
-      const { handoff } = await executeStart(projectPath, action.goal, {
-        ...options,
+      const { handoff, session } = await executeStart(projectPath, action.goal, {
+        tool: options.tool,
         authority: { mode: "kit", adoption: strictKitAdoption }
       });
 
       console.log(handoff);
       console.log("");
       console.log(renderHyperActionFrame(toHyperActionEnvelope(action)));
-      await printAndRecordRouting(projectPath, action);
+      await printAndRecordRouting(projectPath, action, session.tool, {
+        modelId: options.targetModel,
+        modelVersion: options.targetModelVersion
+      });
     });
 }
 
@@ -321,7 +331,9 @@ export function runCommand(): Command {
  */
 async function printAndRecordRouting(
   projectPath: string,
-  action: NormalizedWorkflowAction
+  action: NormalizedWorkflowAction,
+  host: ToolProfile,
+  target: { modelId?: string; modelVersion?: string }
 ): Promise<void> {
   try {
     if (action.task === null) {
@@ -331,7 +343,12 @@ async function printAndRecordRouting(
       id: action.task.id,
       taskClass: action.taskClass.state === "available" ? action.taskClass.value : null,
       riskLevel: action.risk.level.state === "available" ? action.risk.level.value : null,
-      riskFactors: action.risk.factors.state === "available" ? action.risk.factors.value : null
+      riskFactors: action.risk.factors.state === "available" ? action.risk.factors.value : null,
+      assuranceProfile:
+        action.assurance.profile.state === "available"
+          ? action.assurance.profile.value
+          : null,
+      allowedFiles: action.scope.writablePaths
     };
     const [{ data: telemetry }, { state: routingState }, hyperState] = await Promise.all([
       readTelemetry(projectPath),
@@ -340,6 +357,12 @@ async function printAndRecordRouting(
     ]);
     const suggestion = computeSuggestedTier({
       task,
+      cohort: routingCohortForTask({
+        host,
+        task,
+        modelId: target.modelId,
+        modelVersion: target.modelVersion
+      }),
       attempts: telemetry.attempts,
       routingState,
       sessionCount: Object.keys(hyperState.sessions).length

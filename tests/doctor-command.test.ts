@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
+import { renderGitHookContent } from "../src/cli/commands/hooks.js";
+import { defaultConfig } from "../src/core/defaults.js";
 import { createWorkflowActionV3Id } from "../src/kit/workflow-action-adapter.js";
 import { TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES } from "../src/kit/workflow-action-protocol.js";
+import { createFakeHostBinaryDir } from "./helpers/fake-host-binary.js";
 import {
   createVispShim,
   gateResultFixture,
@@ -13,12 +18,18 @@ import {
 } from "./helpers/visp-shim.js";
 
 const originalPath = process.env.PATH;
+const execFileAsync = promisify(execFile);
 
 async function createProject(): Promise<string> {
   const projectPath = await mkdtemp(join(tmpdir(), "visp-doctor-"));
   await mkdir(join(projectPath, ".visp", "hyper"), { recursive: true });
-  await writeFile(join(projectPath, ".visp", "hyper", "config.json"), "{}\n", "utf8");
+  await writeFile(
+    join(projectPath, ".visp", "hyper", "config.json"),
+    `${JSON.stringify(defaultConfig, null, 2)}\n`,
+    "utf8"
+  );
   await writeFile(join(projectPath, ".visp", "hyper", "state.json"), "{}\n", "utf8");
+  await execFileAsync("git", ["init"], { cwd: projectPath });
   return projectPath;
 }
 
@@ -39,7 +50,9 @@ async function writeKitArtifacts(projectPath: string): Promise<void> {
 
 async function writeHyperGitHook(projectPath: string): Promise<void> {
   await mkdir(join(projectPath, ".git", "hooks"), { recursive: true });
-  await writeFile(join(projectPath, ".git", "hooks", "pre-commit"), "# visp-hyper-guard hook\n", "utf8");
+  const hookPath = join(projectPath, ".git", "hooks", "pre-commit");
+  await writeFile(hookPath, renderGitHookContent(), "utf8");
+  await chmod(hookPath, 0o755);
 }
 
 function kitReadContractArtifacts(): Array<Record<string, unknown>> {
@@ -432,6 +445,126 @@ describe("doctor command", () => {
     expect(summary.success).toBe(true);
     expect(summary.checks.find((check) => check.id === "kit-artifacts")?.status).toBe("warn");
     expect(summary.nextCommand).toContain("visp init");
+  });
+
+  it("validates the selected host manifest and detects modified installed assets", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-doctor-assets-"));
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "init",
+      "--tool",
+      "generic"
+    ]);
+    logs.length = 0;
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    let summary = JSON.parse(logs.join("")) as {
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    let assets = summary.checks.find((check) => check.id === "tool-assets");
+    expect(assets?.status).toBe("pass");
+    expect(assets?.detail).toContain("manifest 1.0");
+    expect(assets?.detail).toContain("validated 2026-07-25");
+
+    await writeFile(join(projectPath, "visp-hyper-instructions.md"), "tampered\n", "utf8");
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    summary = JSON.parse(logs.join("")) as {
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    assets = summary.checks.find((check) => check.id === "tool-assets");
+    expect(assets?.status).toBe("warn");
+    expect(assets?.detail).toContain("modified: visp-hyper-instructions.md");
+  });
+
+  it("fails when a visp-hyper-owned hook is marker-only or non-executable", async () => {
+    const projectPath = await createProject();
+    await mkdir(join(projectPath, ".git", "hooks"), { recursive: true });
+    const hookPath = join(projectPath, ".git", "hooks", "pre-commit");
+    await writeFile(hookPath, "# visp-hyper-guard hook\nexit 0\n", "utf8");
+    await chmod(hookPath, 0o755);
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+    let summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    expect(summary.success).toBe(false);
+    expect(summary.checks.find((check) => check.id === "git-hook")).toEqual(
+      expect.objectContaining({ status: "fail", detail: expect.stringContaining("modified") })
+    );
+
+    if (process.platform !== "win32") {
+      await writeFile(hookPath, renderGitHookContent(), "utf8");
+      await chmod(hookPath, 0o644);
+      logs.length = 0;
+      process.exitCode = undefined;
+      await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+      summary = JSON.parse(logs.join("")) as {
+        success: boolean;
+        checks: Array<{ id: string; status: string; detail: string }>;
+      };
+      expect(summary.success).toBe(false);
+      expect(summary.checks.find((check) => check.id === "git-hook")).toEqual(
+        expect.objectContaining({ status: "fail", detail: expect.stringContaining("not executable") })
+      );
+    }
+  });
+
+  it("reports selected host versions and a missing host binary without inventing compatibility", async () => {
+    const projectPath = await createProject();
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "config.json"),
+      `${JSON.stringify({ ...defaultConfig, defaultTool: "codex" })}\n`,
+      "utf8"
+    );
+    const hostBin = await createFakeHostBinaryDir("codex", "codex-cli 1.2.3");
+    prependToPath(hostBin);
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+    let summary = JSON.parse(logs.join("")) as {
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    let host = summary.checks.find((check) => check.id === "selected-host");
+    expect(host?.status).toBe("pass");
+    expect(host?.detail).toContain("codex-cli 1.2.3");
+    expect(host?.detail).toContain("no universal minimum host version");
+
+    process.env.PATH = await mkdtemp(join(tmpdir(), "visp-doctor-no-host-"));
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+    summary = JSON.parse(logs.join("")) as {
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    host = summary.checks.find((check) => check.id === "selected-host");
+    expect(host?.status).toBe("warn");
+    expect(host?.detail).toContain("codex is unavailable");
+  });
+
+  it("fails doctor when project configuration is malformed or drops mandatory blocked paths", async () => {
+    const projectPath = await createProject();
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "config.json"),
+      JSON.stringify({ ...defaultConfig, blockedPaths: [".git"] }),
+      "utf8"
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    const config = summary.checks.find((check) => check.id === "hyper-config");
+    expect(summary.success).toBe(false);
+    expect(config?.status).toBe("fail");
+    expect(config?.detail).toContain("blockedPaths must retain .env");
+    expect(config?.detail).toContain("blockedPaths must retain node_modules");
   });
 
   it("fails closed when the selected advertised WorkflowAction hash is untrusted", async () => {

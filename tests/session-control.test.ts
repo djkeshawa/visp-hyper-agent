@@ -53,6 +53,8 @@ describe("session control commands", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "status"]);
 
     const status = logs.join("\n");
+    expect(status).toContain("Authority: local");
+    expect(status).toContain("Assurance: local_checked");
     expect(status).toContain("Generated files: session.md");
     expect(status).toContain("context-manifest.json");
     expect(status).toContain("Context freshness: untracked");
@@ -88,6 +90,8 @@ describe("session control commands", () => {
     const stdout = logs.join("\n");
     const report = await readFile(join(projectPath, ".visp", "hyper", "current", "review-report.md"), "utf8");
     expect(stdout).toContain("BEGIN_VISP_REVIEW_RESULT");
+    expect(stdout).toContain("authority: local");
+    expect(stdout).toContain("assurance: local_checked");
     expect(stdout).toContain("warnings:");
     expect(stdout).toContain("END_VISP_REVIEW_RESULT");
     expect(report).toContain("No test changes detected for this diff.");

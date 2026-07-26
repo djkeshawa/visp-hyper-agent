@@ -1,0 +1,34 @@
+{
+  "manifestVersion": "1.0",
+  "host": "generic",
+  "validatedAgainst": {
+    "asOf": "2026-07-25",
+    "hostVersion": null,
+    "surface": "host-neutral manual integration",
+    "documentation": [
+      "https://github.com/djkeshawa/visp-hyper-agent"
+    ]
+  },
+  "supports": {
+    "repoGuidance": "manual",
+    "skills": "unsupported",
+    "commands": "unsupported",
+    "hooks": "unsupported",
+    "mcp": "unsupported",
+    "subagents": "unsupported",
+    "verifierRole": "manual",
+    "challengerRole": "manual",
+    "automaticModelSelection": "unsupported"
+  },
+  "fallbacks": {
+    "mechanicalEnforcement": "git_and_ci",
+    "orchestration": "sequential",
+    "modelSelection": "advisory"
+  },
+  "assets": [
+    {
+      "templatePath": "visp-hyper-instructions.md",
+      "destination": "visp-hyper-instructions.md"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  assuranceProfileSchema,
   riskFactorsSchema,
   riskLevelSchema,
   taskClassSchema
@@ -550,7 +551,8 @@ export const kitTaskSchema = z.object({
   parallelizable: z.boolean().optional(),
   taskClass: taskClassSchema.optional(),
   riskLevel: riskLevelSchema.optional(),
-  riskFactors: riskFactorsSchema.optional()
+  riskFactors: riskFactorsSchema.optional(),
+  assuranceProfile: assuranceProfileSchema.optional()
 });
 export type KitTask = z.infer<typeof kitTaskSchema>;
 

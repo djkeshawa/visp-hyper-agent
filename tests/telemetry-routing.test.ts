@@ -13,7 +13,7 @@ import type { TelemetryAttempt } from "../src/telemetry/telemetry-store.js";
 import {
   CHEAP_TIER,
   STRONGEST_TIER,
-  computeSuggestedTier,
+  computeSuggestedTier as computeSuggestedTierRaw,
   escalate
 } from "../src/routing/routing-engine.js";
 import type { RoutingState } from "../src/routing/routing-state.js";
@@ -307,9 +307,19 @@ describe("telemetry store and budget round-trip", () => {
       taskClass: "security",
       riskLevel: "high",
       riskFactors: [{ version: "1.0", code: "authorization" }],
+      assuranceProfile: "critical",
+      host: "codex",
+      modelId: "implementer",
+      modelVersion: null,
+      projectPreset: "typescript",
+      protocolVersion: "local-checked/1.0",
+      kitVersion: "none",
+      hyperVersion: "0.3.0",
       tier: "implementer",
       verifyPassed: true,
       reviewPassed: true,
+      verdict: "passed",
+      evidenceSource: "local",
       sessionId: "vh_test_1"
     });
     expect(first.attempt).toBe(1);
@@ -320,9 +330,19 @@ describe("telemetry store and budget round-trip", () => {
       taskClass: "security",
       riskLevel: "high",
       riskFactors: [{ version: "1.0", code: "authorization" }],
+      assuranceProfile: "critical",
+      host: "codex",
+      modelId: "implementer",
+      modelVersion: null,
+      projectPreset: "typescript",
+      protocolVersion: "local-checked/1.0",
+      kitVersion: "none",
+      hyperVersion: "0.3.0",
       tier: "implementer",
       verifyPassed: false,
       reviewPassed: true,
+      verdict: "failed",
+      evidenceSource: "local",
       sessionId: "vh_test_1"
     });
     expect(second.attempt).toBe(2);
@@ -357,9 +377,19 @@ describe("telemetry store and budget round-trip", () => {
       taskClass: null,
       riskLevel: null,
       riskFactors: [],
+      assuranceProfile: null,
+      host: "generic",
+      modelId: "implementer",
+      modelVersion: null,
+      projectPreset: "generic",
+      protocolVersion: "local-checked/1.0",
+      kitVersion: "none",
+      hyperVersion: "0.3.0",
       tier: "implementer",
       verifyPassed: true,
       reviewPassed: true,
+      verdict: "passed",
+      evidenceSource: "local",
       sessionId: "vh_test_2"
     });
     expect(record.attempt).toBe(1);
@@ -367,6 +397,43 @@ describe("telemetry store and budget round-trip", () => {
     const after = await readTelemetry(projectPath);
     expect(after.warnings).toEqual([]);
     expect(after.data.attempts).toHaveLength(1);
+  });
+
+  it("treats the same task ID in distinct Kit features as separate first attempts", async () => {
+    const projectPath = await createProject();
+    const base = {
+      taskId: "T001",
+      taskClass: "bounded_feature" as const,
+      riskLevel: "medium" as const,
+      riskFactors: [],
+      assuranceProfile: "behavioral" as const,
+      host: "codex",
+      modelId: "test-scout-model",
+      modelVersion: "2026-07",
+      projectPreset: "typescript",
+      protocolVersion: "3.2",
+      kitVersion: "0.4.0",
+      hyperVersion: "0.3.0",
+      tier: "scout",
+      verifyPassed: true,
+      reviewPassed: true,
+      verdict: "passed" as const,
+      evidenceSource: "kit" as const,
+      sessionId: "vh_feature_identity"
+    };
+    const first = await appendAttempt(projectPath, {
+      ...base,
+      featureId: "002",
+      workItemKey: "002:T001"
+    });
+    const second = await appendAttempt(projectPath, {
+      ...base,
+      featureId: "003",
+      workItemKey: "003:T001"
+    });
+
+    expect(first).toMatchObject({ attempt: 1, firstAttempt: true });
+    expect(second).toMatchObject({ attempt: 1, firstAttempt: true });
   });
 
   it("migrates legacy risk-named classes without treating them as task-class evidence", async () => {
@@ -387,6 +454,17 @@ describe("telemetry store and budget round-trip", () => {
             firstAttempt: true,
             sessionId: "vh_legacy",
             at: "2026-07-11T00:00:00.000Z"
+          },
+          {
+            taskId: "T002",
+            taskClass: "medium",
+            tier: "scout",
+            attempt: 1,
+            verifyPassed: false,
+            reviewPassed: false,
+            firstAttempt: true,
+            sessionId: "vh_legacy_ambiguous",
+            at: "2026-07-11T00:01:00.000Z"
           }
         ],
         usage: []
@@ -395,13 +473,23 @@ describe("telemetry store and budget round-trip", () => {
     );
 
     const { data } = await readTelemetry(projectPath);
-    expect(data.attempts).toEqual([
+    expect(data.attempts).toHaveLength(2);
+    expect(data.attempts[0]).toEqual(
       expect.objectContaining({
         taskClass: null,
         riskLevel: "medium",
-        riskFactors: null
+        riskFactors: null,
+        verdict: "passed"
       })
-    ]);
+    );
+    expect(data.attempts[1]).toEqual(
+      expect.objectContaining({
+        taskClass: null,
+        riskLevel: "medium",
+        riskFactors: null,
+        verdict: "inconclusive"
+      })
+    );
 
     const suggestion = computeSuggestedTier({
       task: {
@@ -520,21 +608,56 @@ function emptyRoutingState(): RoutingState {
   return { quarantines: [], decisions: [] };
 }
 
+const TEST_ROUTING_COHORT = {
+  assuranceProfile: "behavioral" as const,
+  host: "codex",
+  modelId: "test-scout-model",
+  modelVersion: "2026-07",
+  projectPreset: "typescript"
+};
+
+function computeSuggestedTier(
+  input: Parameters<typeof computeSuggestedTierRaw>[0]
+): ReturnType<typeof computeSuggestedTierRaw> {
+  return computeSuggestedTierRaw({
+    ...input,
+    task: { assuranceProfile: "behavioral", ...input.task },
+    cohort: { ...TEST_ROUTING_COHORT, ...input.cohort }
+  });
+}
+
 function scoutAttempt(overrides: Partial<TelemetryAttempt> = {}): TelemetryAttempt {
-  return {
+  const attempt: TelemetryAttempt = {
     taskId: "T001",
     taskClass: "bounded_feature",
     riskLevel: "medium",
     riskFactors: [],
+    assuranceProfile: TEST_ROUTING_COHORT.assuranceProfile,
+    host: TEST_ROUTING_COHORT.host,
+    modelId: TEST_ROUTING_COHORT.modelId,
+    modelVersion: TEST_ROUTING_COHORT.modelVersion,
+    projectPreset: TEST_ROUTING_COHORT.projectPreset,
+    protocolVersion: "local-checked/1.0",
+    kitVersion: "none",
+    hyperVersion: "0.3.0",
     tier: CHEAP_TIER,
     attempt: 1,
     verifyPassed: true,
     reviewPassed: true,
+    verdict: "passed",
+    evidenceSource: "local",
     firstAttempt: true,
     sessionId: "vh_test",
     at: new Date().toISOString(),
     ...overrides
   };
+  if (
+    overrides.verdict === undefined &&
+    (attempt.verifyPassed === false || attempt.reviewPassed === false)
+  ) {
+    attempt.verdict = "failed";
+  }
+  return attempt;
 }
 
 describe("routing engine (pure)", () => {
@@ -717,6 +840,110 @@ describe("routing CLI integration", () => {
     });
   });
 
+  it("uses explicit model identity for earned routing on strict run and next", async () => {
+    const projectPath = await createProject();
+    await writeTaskGraph(projectPath);
+    const action = await canonicalRunAction(projectPath, {
+      taskClass: available("bounded_feature"),
+      risk: { level: available("medium"), factors: available([]) },
+      assurance: {
+        level: "kit_strict",
+        profile: available("behavioral"),
+        workflowStrictness: available("strict")
+      }
+    });
+    const shim = await createVispShim(
+      await strictRunSpec(projectPath, {
+        next: { stdout: action },
+        verify: { stdout: { success: false } },
+        review: { stdout: { success: true } }
+      })
+    );
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
+    const telemetryPath = join(projectPath, ".visp", "hyper", "telemetry.json");
+    await writeFile(
+      telemetryPath,
+      JSON.stringify({
+        attempts: Array.from({ length: 30 }, (_, index) =>
+          scoutAttempt({
+            taskId: `HIST-${index}`,
+            assuranceProfile: "behavioral",
+            host: "codex",
+            modelId: "test-scout-model",
+            modelVersion: "2026-07",
+            projectPreset: "typescript",
+            evidenceSource: "kit"
+          })
+        ),
+        usage: []
+      }),
+      "utf8"
+    );
+
+    logs = [];
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "run",
+      "implement T001",
+      "--tool",
+      "codex",
+      "--target-model",
+      "test-scout-model",
+      "--target-model-version",
+      "2026-07"
+    ]);
+    expect(logs.join("\n")).toContain(`suggested_tier: ${CHEAP_TIER}`);
+
+    logs = [];
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "next",
+      "--target-model",
+      "test-scout-model",
+      "--target-model-version",
+      "2026-07"
+    ]);
+    expect(logs.join("\n")).toContain(`suggested_tier: ${CHEAP_TIER}`);
+
+    logs = [];
+    process.exitCode = undefined;
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "checkpoint",
+      "--task",
+      "T001",
+      "--tier",
+      "scout",
+      "--model",
+      "test-scout-model",
+      "--model-version",
+      "2026-07"
+    ]);
+    const recorded = (await readTelemetry(projectPath)).data.attempts.at(-1);
+    expect(recorded).toMatchObject({
+      taskId: "T001",
+      featureId: "001",
+      workItemKey: "001:T001",
+      firstAttempt: true,
+      host: "codex",
+      modelId: "test-scout-model",
+      modelVersion: "2026-07",
+      evidenceSource: "kit",
+      verdict: "failed"
+    });
+  });
+
   it("AC005a: unavailable canonical class stays null while explicit risk remains separate", async () => {
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
@@ -781,19 +1008,40 @@ describe("routing CLI integration", () => {
     await runCli(["node", "visp-hyper", "--project", projectPath, "init"]);
     await runCli(["node", "visp-hyper", "--project", projectPath, "run", "implement T001", "--tool", "codex"]);
     const routingPath = join(projectPath, ".visp", "hyper", "routing.json");
-    const routingBeforeCheckpoint = await readFile(routingPath, "utf8");
-
     logs = [];
     await runCli(["node", "visp-hyper", "--project", projectPath, "checkpoint", "--task", "T001"]);
     const kitOutput = logs.join("\n");
 
-    expect(await readFile(routingPath, "utf8")).toBe(routingBeforeCheckpoint);
+    const strictRouting = await readRoutingFile(projectPath);
+    expect(strictRouting.quarantines).toEqual([
+      { taskClass: null, untilSessionCount: 4 }
+    ]);
+    expect(strictRouting.decisions.at(-1)).toMatchObject({
+      taskId: "T001",
+      taskClass: null,
+      reason: "checkpoint failure escalation"
+    });
     expect((await readTelemetry(projectPath)).data.attempts).toEqual([]);
     expect(kitOutput).toContain("evidence_source: kit");
     expect(kitOutput).toContain("status: FAILED");
     expect(kitOutput).not.toContain("instruction:");
     expect(kitOutput).not.toContain("BEGIN_VISP_ADAPTATION");
     expect(kitOutput).not.toContain("BEGIN_VISP_TASK_ACTION");
+
+    logs = [];
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "next",
+      "--target-model",
+      "test-scout-model",
+      "--target-model-version",
+      "2026-07"
+    ]);
+    expect(logs.join("\n")).toContain(`suggested_tier: ${STRONGEST_TIER}`);
+    expect(logs.join("\n")).toContain("quarantined until session 4");
 
     // Exercise local routing in a separate project that has never carried Kit
     // policy, project, feature, or context artifacts. Quick creates an explicit

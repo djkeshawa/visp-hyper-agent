@@ -1,9 +1,15 @@
+import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  loadHostCapabilityManifest as loadManifest,
+  type LoadedHostCapabilityManifest,
+  type ToolName
+} from "./host-capability-manifest.js";
 
-export type ToolName = "generic" | "codex" | "claude-code" | "copilot" | "opencode";
+export type { ToolName } from "./host-capability-manifest.js";
 
 export type PlannedAsset = {
   /** Path to the source template, relative to the templates root. */
@@ -12,6 +18,12 @@ export type PlannedAsset = {
   destination: string;
   /** Whether a file already exists at the destination. */
   exists: boolean;
+  /** Whether an installed file matches the rendered bundled asset. */
+  integrity: "current" | "missing" | "modified";
+  /** Hash of the rendered bundled asset. */
+  expectedSha256: string;
+  /** Hash of the installed file, when present. */
+  actualSha256?: string;
 };
 
 export type InstallReport = {
@@ -22,45 +34,13 @@ export type InstallReport = {
   warnings: string[];
 };
 
-/** A single template-to-destination mapping for one tool. */
-type AssetSpec = {
-  /** Path under the tool's template directory. */
-  templatePath: string;
-  /** Path under the project root. */
-  destination: string;
-};
-
-/**
- * Per-tool destination manifest. Source paths are relative to the tool's template
- * directory (e.g. `templates/claude-code`); destinations are relative to the
- * project root. Data files such as `model-map.json` are intentionally absent —
- * they drive rendering but are never installed.
- */
-const MANIFEST: Record<ToolName, AssetSpec[]> = {
-  "claude-code": [
-    { templatePath: "agents/coordinator.md", destination: ".claude/agents/coordinator.md" },
-    { templatePath: "agents/scout.md", destination: ".claude/agents/scout.md" },
-    { templatePath: "agents/implementer.md", destination: ".claude/agents/implementer.md" },
-    { templatePath: "commands/hyper-run.md", destination: ".claude/commands/hyper-run.md" },
-    { templatePath: "commands/hyper-next.md", destination: ".claude/commands/hyper-next.md" },
-    { templatePath: "commands/hyper-checkpoint.md", destination: ".claude/commands/hyper-checkpoint.md" },
-    { templatePath: "commands/hyper-review.md", destination: ".claude/commands/hyper-review.md" },
-    { templatePath: "commands/hyper-remember.md", destination: ".claude/commands/hyper-remember.md" },
-    { templatePath: "commands/hyper-fanout.md", destination: ".claude/commands/hyper-fanout.md" }
-  ],
-  codex: [
-    { templatePath: "AGENTS.visp-hyper.md", destination: "AGENTS.visp-hyper.md" },
-    { templatePath: ".agents/skills/visp-hyper/SKILL.md", destination: ".agents/skills/visp-hyper/SKILL.md" }
-  ],
-  copilot: [
-    {
-      templatePath: ".github/instructions/visp-hyper.instructions.md",
-      destination: ".github/instructions/visp-hyper.instructions.md"
-    }
-  ],
-  generic: [{ templatePath: "visp-hyper-instructions.md", destination: "visp-hyper-instructions.md" }],
-  opencode: [{ templatePath: "visp-hyper-instructions.md", destination: "visp-hyper-instructions.md" }]
-};
+export async function readHostCapabilityManifest(
+  tool: ToolName,
+  options: { templatesDir?: string } = {}
+): Promise<LoadedHostCapabilityManifest> {
+  const toolDir = await resolveToolDir(tool, options.templatesDir);
+  return loadManifest(tool, toolDir);
+}
 
 /** Model-map token placeholders, keyed by the model-map role they fill. */
 const MODEL_TOKENS: Record<string, string> = {
@@ -143,11 +123,11 @@ export async function planInstall(
   projectPath: string,
   options: { templatesDir?: string } = {}
 ): Promise<PlannedAsset[]> {
-  // Validates the templates root and tool subdir exist (throws otherwise).
-  await resolveToolDir(tool, options.templatesDir);
-  const specs = MANIFEST[tool];
+  const toolDir = await resolveToolDir(tool, options.templatesDir);
+  const { manifest } = await loadManifest(tool, toolDir);
+  const models = await readModelMap(toolDir);
   const planned: PlannedAsset[] = [];
-  for (const spec of specs) {
+  for (const spec of manifest.assets) {
     // Consult the same denylist installAssets enforces so plan and install
     // agree: a kit-owned destination is never written, so it must never appear
     // in the plan.
@@ -155,10 +135,23 @@ export async function planInstall(
       continue;
     }
     const destAbsolute = join(projectPath, spec.destination);
+    await assertSafeDestination(projectPath, spec.destination);
+    const expected = render(await readFile(join(toolDir, spec.templatePath), "utf8"), models);
+    const actual = await readText(destAbsolute);
+    const expectedSha256 = hashText(expected);
+    const actualSha256 = actual === undefined ? undefined : hashText(actual);
     planned.push({
       templatePath: spec.templatePath,
       destination: spec.destination,
-      exists: await pathExists(destAbsolute)
+      exists: actual !== undefined,
+      integrity:
+        actual === undefined
+          ? "missing"
+          : actualSha256 === expectedSha256
+            ? "current"
+            : "modified",
+      expectedSha256,
+      ...(actualSha256 ? { actualSha256 } : {})
     });
   }
   return planned;
@@ -170,17 +163,19 @@ export async function installAssets(
   options: { force?: boolean; templatesDir?: string } = {}
 ): Promise<InstallReport> {
   const toolDir = await resolveToolDir(tool, options.templatesDir);
+  const { manifest } = await loadManifest(tool, toolDir);
   const force = options.force ?? false;
   const report: InstallReport = { tool, created: [], skipped: [], overwritten: [], warnings: [] };
   const models = await readModelMap(toolDir);
 
-  for (const spec of MANIFEST[tool]) {
+  for (const spec of manifest.assets) {
     if (isKitOwnedDestination(spec.destination)) {
       report.warnings.push(`Refused to write kit-owned destination ${spec.destination}.`);
       continue;
     }
 
     const destAbsolute = join(projectPath, spec.destination);
+    await assertSafeDestination(projectPath, spec.destination);
     const exists = await pathExists(destAbsolute);
     if (exists && !force) {
       report.skipped.push(spec.destination);
@@ -191,6 +186,7 @@ export async function installAssets(
     const raw = await readFile(join(toolDir, spec.templatePath), "utf8");
     const rendered = render(raw, models);
     await mkdir(dirname(destAbsolute), { recursive: true });
+    await assertSafeDestination(projectPath, spec.destination);
     await writeFile(destAbsolute, rendered, "utf8");
 
     if (exists) {
@@ -250,12 +246,49 @@ function render(content: string, models: Record<string, string>): string {
   return out;
 }
 
+async function readText(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;
   } catch {
     return false;
+  }
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function assertSafeDestination(projectPath: string, destination: string): Promise<void> {
+  const projectReal = await realpath(projectPath);
+  const segments = destination.replace(/\\/gu, "/").split("/");
+  let candidate = projectPath;
+  for (const segment of segments) {
+    candidate = join(candidate, segment);
+    let info;
+    try {
+      info = await lstat(candidate);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") break;
+      throw error;
+    }
+    if (info.isSymbolicLink()) {
+      throw new Error(`Refused host asset destination through symlink or junction: ${destination}.`);
+    }
+    const resolved = await realpath(candidate);
+    const fromProject = relative(projectReal, resolved);
+    if (fromProject === ".." || fromProject.startsWith(`..${sep}`) || isAbsolute(fromProject)) {
+      throw new Error(`Refused host asset destination outside the project: ${destination}.`);
+    }
   }
 }
 

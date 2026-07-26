@@ -91,7 +91,7 @@ describe("canonical action cross-surface conformance", () => {
     );
   });
 
-  it("preserves one complete WorkflowAction 3.2 assurance view across all six surfaces", async () => {
+  it("preserves one complete WorkflowAction 3.2 assurance view across all eight surfaces", async () => {
     const projectPath = await createCanonicalProject();
     await execFileAsync("git", ["switch", "-c", WORKTREE_BRANCH], { cwd: projectPath });
     const projectBoundAction = await projectBoundV3Action(projectPath);
@@ -130,6 +130,8 @@ describe("canonical action cross-surface conformance", () => {
       kitReadContract: { readContractVersion: "0.1" }
     });
     const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
+    const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status"]));
+    const reviewEnvelope = framedEnvelope(await captureCli(projectPath, ["review"]));
     const resumeEnvelope = JSON.parse(
       await captureCli(projectPath, ["resume", "--json"])
     ) as Envelope;
@@ -144,6 +146,8 @@ describe("canonical action cross-surface conformance", () => {
     for (const envelope of [
       runEnvelope,
       nextEnvelope,
+      statusEnvelope,
+      reviewEnvelope,
       resumeEnvelope,
       guardEnvelope,
       checkpointEnvelope,
@@ -266,7 +270,7 @@ describe("canonical action cross-surface conformance", () => {
       createProject: createLinkedCanonicalWorktree,
       linkedWorktreeWithSpaces: true
     }
-  ])("preserves one complete v3 public action across all six surfaces in $label", async ({
+  ])("preserves one complete v3 public action across all eight surfaces in $label", async ({
     createProject,
     linkedWorktreeWithSpaces
   }) => {
@@ -289,6 +293,8 @@ describe("canonical action cross-surface conformance", () => {
       await captureCli(projectPath, ["run", "ignored raw goal", "--tool", "codex"])
     );
     const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
+    const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status"]));
+    const reviewEnvelope = framedEnvelope(await captureCli(projectPath, ["review"]));
     const resumeEnvelope = JSON.parse(
       await captureCli(projectPath, ["resume", "--json"])
     ) as Envelope;
@@ -303,6 +309,8 @@ describe("canonical action cross-surface conformance", () => {
     for (const envelope of [
       runEnvelope,
       nextEnvelope,
+      statusEnvelope,
+      reviewEnvelope,
       resumeEnvelope,
       guardEnvelope,
       checkpointEnvelope,
@@ -351,6 +359,8 @@ describe("canonical action cross-surface conformance", () => {
     const runEnvelope = framedEnvelope(runOutput);
     expect(runOutput).toContain("reason_code: strict_session_adoption_unavailable");
     const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
+    const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status"]));
+    const reviewEnvelope = framedEnvelope(await captureCli(projectPath, ["review"]));
     const resumeEnvelope = JSON.parse(
       await captureCli(projectPath, ["resume", "--json"])
     ) as Envelope;
@@ -363,7 +373,15 @@ describe("canonical action cross-surface conformance", () => {
     );
     const mcpEnvelope = await readMcpEnvelope(projectPath);
 
-    for (const envelope of [runEnvelope, resumeEnvelope, guardEnvelope, checkpointEnvelope, mcpEnvelope]) {
+    for (const envelope of [
+      runEnvelope,
+      statusEnvelope,
+      reviewEnvelope,
+      resumeEnvelope,
+      guardEnvelope,
+      checkpointEnvelope,
+      mcpEnvelope
+    ]) {
       expect(envelope.action).toEqual(nextEnvelope.action);
     }
     expect(nextEnvelope.action).toMatchObject({

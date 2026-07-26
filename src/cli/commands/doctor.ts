@@ -1,16 +1,26 @@
 import { createHash } from "node:crypto";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Command, Option } from "commander";
 import { checkContextFreshness } from "../../context/context-freshness.js";
+import { execFileResolved } from "../../core/executable-resolver.js";
 import { packageVersion } from "../../core/package-version.js";
 import { fileExists, readTextIfExists, vispPath } from "../../core/fs-utils.js";
-import { planInstall, type ToolName } from "../../install/tool-asset-installer.js";
+import { hyperConfigSchema } from "../../core/session-manager.js";
+import type { HyperConfig } from "../../core/types.js";
+import { resolveGitHooksDirectory } from "../../governance/git-hooks.js";
+import {
+  planInstall,
+  readHostCapabilityManifest,
+  type ToolName
+} from "../../install/tool-asset-installer.js";
 import { provenanceFreshnessContractWarning } from "../../kit/kit-contract-compat.js";
 import { detectVisp, hasKitArtifacts, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import type { KitIntegrationContract } from "../../kit/kit-schemas.js";
 import { handleMessage } from "../../mcp/mcp-server.js";
 import { createToolContext } from "../../mcp/tool-bridge.js";
 import { contextPackPathIfExists, resolveProjectPath } from "./shared.js";
+import { GIT_HOOK_MARKER, renderGitHookContent } from "./hooks.js";
 
 type DoctorStatus = "pass" | "warn" | "fail";
 
@@ -29,8 +39,6 @@ type DoctorSummary = {
   checks: DoctorCheck[];
   nextCommand: string;
 };
-
-const GIT_HOOK_MARKER = "# visp-hyper-guard hook";
 
 export function doctorCommand(): Command {
   return new Command("doctor")
@@ -54,10 +62,12 @@ export function doctorCommand(): Command {
 
 export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
   const checks: DoctorCheck[] = [];
-  const config = await readHyperConfigSnapshot(projectPath);
+  const configInspection = await readHyperConfigSnapshot(projectPath);
+  const config = configInspection.config;
 
   checks.push(checkPackageVersion());
   checks.push(await checkHyperInitialized(projectPath));
+  checks.push(checkTrustedConfig(configInspection));
   checks.push(await checkActiveContextFreshness(projectPath));
 
   const kitArtifactsPresent = await hasKitArtifacts(projectPath);
@@ -76,6 +86,7 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
   }
 
   checks.push(await checkGitHook(projectPath));
+  checks.push(await checkSelectedHost(projectPath, config));
   checks.push(await checkToolAssets(projectPath, config));
   checks.push(await checkMemory(projectPath, config));
   checks.push(await checkMcp(projectPath));
@@ -314,26 +325,125 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
   });
 }
 
-type HyperConfigSnapshot = {
-  defaultTool?: string;
-  memoryMode?: string;
-  memoryEndpoint?: string;
+type HyperConfigInspection = {
+  config: HyperConfig | null;
+  problems: string[];
 };
 
-async function readHyperConfigSnapshot(projectPath: string): Promise<HyperConfigSnapshot | null> {
+async function readHyperConfigSnapshot(projectPath: string): Promise<HyperConfigInspection> {
   const raw = await readTextIfExists(vispPath(projectPath, "hyper", "config.json"));
   if (!raw) {
-    return null;
+    return { config: null, problems: ["config.json is missing"] };
   }
   try {
-    const parsed = JSON.parse(raw) as HyperConfigSnapshot;
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
+    const parsed = hyperConfigSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) {
+      return {
+        config: null,
+        problems: parsed.error.issues.map(
+          (issue) => `${issue.path.join(".") || "<root>"} ${issue.message}`
+        )
+      };
+    }
+    const problems = trustedConfigProblems(parsed.data);
+    return { config: parsed.data, problems };
+  } catch (error) {
+    return {
+      config: null,
+      problems: [`config.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`]
+    };
   }
 }
 
-async function checkToolAssets(projectPath: string, config: HyperConfigSnapshot | null): Promise<DoctorCheck> {
+function checkTrustedConfig(inspection: HyperConfigInspection): DoctorCheck {
+  if (!inspection.config || inspection.problems.length > 0) {
+    return {
+      id: "hyper-config",
+      label: "Trusted project configuration",
+      status: "fail",
+      detail: inspection.problems.join("; ") || "The Hyper configuration is invalid.",
+      recovery: "Review .visp/hyper/config.json and re-run `visp-hyper init --force` only if replacing it is intended."
+    };
+  }
+  return {
+    id: "hyper-config",
+    label: "Trusted project configuration",
+    status: "pass",
+    detail: `Configuration is valid; default host ${inspection.config.defaultTool}; skill mode ${inspection.config.skillMode}.`
+  };
+}
+
+function trustedConfigProblems(config: HyperConfig): string[] {
+  const requiredBlockedPaths = [".env", "node_modules", ".git"];
+  const problems = requiredBlockedPaths
+    .filter((path) => !config.blockedPaths.includes(path))
+    .map((path) => `blockedPaths must retain ${path}`);
+  if (config.validationCommands?.some((command) => command.trim() !== command || command.length === 0)) {
+    problems.push("validationCommands must contain non-empty, trimmed commands");
+  }
+  return problems;
+}
+
+async function checkSelectedHost(projectPath: string, config: HyperConfig | null): Promise<DoctorCheck> {
+  const tool = config?.defaultTool;
+  if (!tool) {
+    return {
+      id: "selected-host",
+      label: "Selected coding host",
+      status: "fail",
+      detail: "A trusted defaultTool is unavailable.",
+      recovery: "Fix .visp/hyper/config.json, then run `visp-hyper init --tool <tool>`."
+    };
+  }
+  if (tool === "generic") {
+    return {
+      id: "selected-host",
+      label: "Selected coding host",
+      status: "pass",
+      detail: "Generic manual host selected; no host binary is required. Sequential and Git/CI fallbacks apply."
+    };
+  }
+  const executable: Record<Exclude<ToolName, "generic">, string> = {
+    "claude-code": "claude",
+    codex: "codex",
+    copilot: "copilot",
+    opencode: "opencode"
+  };
+  const binary = executable[tool];
+  try {
+    const { stdout, stderr } = await execFileResolved(binary, ["--version"], {
+      cwd: projectPath,
+      timeout: 2_000,
+      maxBuffer: 64 * 1024
+    });
+    const version = `${stdout}\n${stderr}`.trim().split(/\r?\n/u)[0]?.trim();
+    if (!version) {
+      return {
+        id: "selected-host",
+        label: "Selected coding host",
+        status: "warn",
+        detail: `${tool} binary ${binary} is available but returned no version.`,
+        recovery: `Run \`${binary} --version\` and confirm the host matches the manifest's documented surface.`
+      };
+    }
+    return {
+      id: "selected-host",
+      label: "Selected coding host",
+      status: "pass",
+      detail: `${tool} binary ${binary} reports ${version}. Capability compatibility is surface-pinned because no universal minimum host version is documented.`
+    };
+  } catch (error) {
+    return {
+      id: "selected-host",
+      label: "Selected coding host",
+      status: "warn",
+      detail: `${tool} binary ${binary} is unavailable or failed its version probe: ${error instanceof Error ? error.message : String(error)}.`,
+      recovery: `Install ${tool}, or use the manifest's sequential and Git/CI fallbacks until \`${binary} --version\` succeeds.`
+    };
+  }
+}
+
+async function checkToolAssets(projectPath: string, config: HyperConfig | null): Promise<DoctorCheck> {
   const tool = config?.defaultTool;
   if (!isToolName(tool)) {
     return {
@@ -346,22 +456,38 @@ async function checkToolAssets(projectPath: string, config: HyperConfigSnapshot 
   }
 
   try {
-    const planned = await planInstall(tool, projectPath);
-    const missing = planned.filter((asset) => !asset.exists).map((asset) => asset.destination);
-    if (missing.length === 0) {
+    const [{ manifest, sha256 }, planned] = await Promise.all([
+      readHostCapabilityManifest(tool),
+      planInstall(tool, projectPath)
+    ]);
+    const missing = planned
+      .filter((asset) => asset.integrity === "missing")
+      .map((asset) => asset.destination);
+    const modified = planned
+      .filter((asset) => asset.integrity === "modified")
+      .map((asset) => asset.destination);
+    const manifestDetail =
+      `manifest ${manifest.manifestVersion} ${sha256.slice(0, 12)}; ` +
+      `surface ${manifest.validatedAgainst.surface}; ` +
+      `validated ${manifest.validatedAgainst.asOf}`;
+    if (missing.length === 0 && modified.length === 0) {
       return {
         id: "tool-assets",
         label: "Tool assets",
         status: "pass",
-        detail: `${tool} assets are installed.`
+        detail: `${tool} assets are installed and match ${manifestDetail}.`
       };
     }
+    const findings = [
+      missing.length > 0 ? `missing: ${missing.join(", ")}` : null,
+      modified.length > 0 ? `modified: ${modified.join(", ")}` : null
+    ].filter((finding): finding is string => finding !== null);
     return {
       id: "tool-assets",
       label: "Tool assets",
       status: "warn",
-      detail: `${tool} assets missing: ${missing.join(", ")}.`,
-      recovery: `Run \`visp-hyper init --tool ${tool}\`.`
+      detail: `${tool} asset integrity differs from ${manifestDetail}: ${findings.join("; ")}.`,
+      recovery: `Run \`visp-hyper init --tool ${tool} --force-assets\` after reviewing local customizations.`
     };
   } catch (error) {
     return {
@@ -375,7 +501,7 @@ async function checkToolAssets(projectPath: string, config: HyperConfigSnapshot 
 
 async function checkMemory(
   projectPath: string,
-  config: HyperConfigSnapshot | null
+  config: HyperConfig | null
 ): Promise<DoctorCheck> {
   const mode = config?.memoryMode;
   if (mode !== "llm-memory") {
@@ -629,8 +755,8 @@ function stableStringify(value: unknown): string {
 }
 
 async function checkGitHook(projectPath: string): Promise<DoctorCheck> {
-  const gitDir = join(projectPath, ".git");
-  if (!(await fileExists(gitDir))) {
+  const hooksDir = await resolveGitHooksDirectory(projectPath);
+  if (!hooksDir) {
     return {
       id: "git-hook",
       label: "Git scope hook",
@@ -640,13 +766,34 @@ async function checkGitHook(projectPath: string): Promise<DoctorCheck> {
     };
   }
 
-  const hook = await readTextIfExists(join(gitDir, "hooks", "pre-commit"));
-  if (hook?.includes(GIT_HOOK_MARKER)) {
+  const hookPath = join(hooksDir, "pre-commit");
+  const hook = await readTextIfExists(hookPath);
+  if (hook === renderGitHookContent()) {
+    const hookStat = await stat(hookPath);
+    if (process.platform !== "win32" && (hookStat.mode & 0o111) === 0) {
+      return {
+        id: "git-hook",
+        label: "Git scope hook",
+        status: "fail",
+        detail: "The visp-hyper pre-commit hook is not executable.",
+        recovery: "Run `visp-hyper hooks git` to restore the canonical executable hook."
+      };
+    }
     return {
       id: "git-hook",
       label: "Git scope hook",
       status: "pass",
-      detail: "visp-hyper guard is installed as the pre-commit hook."
+      detail: "The canonical executable visp-hyper guard is installed as the pre-commit hook."
+    };
+  }
+
+  if (hook?.includes(GIT_HOOK_MARKER)) {
+    return {
+      id: "git-hook",
+      label: "Git scope hook",
+      status: "fail",
+      detail: "The visp-hyper-owned pre-commit hook was modified and cannot be trusted to enforce scope.",
+      recovery: "Run `visp-hyper hooks git` to restore the canonical hook."
     };
   }
 

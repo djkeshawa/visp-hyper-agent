@@ -28,5 +28,6 @@ prints an Agent Handoff Protocol that governs the whole session.
 
 ## Cost routing
 
-Delegate scanning and mechanical edits to a cheaper context when supported; reserve
-the strongest model for real logic and design decisions.
+Follow Hyper's advisory model-routing block. A cheaper coding tier is allowed only
+after the matching evidence cohort earns it; critical assurance always uses the
+strongest coding tier. Read-only scouts do not grant permission or evidence.

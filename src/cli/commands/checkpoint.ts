@@ -2,11 +2,13 @@ import { Command, Option } from "commander";
 import { posix, win32 } from "node:path";
 import { checkContextFreshness } from "../../context/context-freshness.js";
 import { GitBranchSessionLocator } from "../../core/branch-session-locator.js";
-import { execFileResolved } from "../../core/executable-resolver.js";
+import { gitOutput } from "../../core/git.js";
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
+import { packageVersion } from "../../core/package-version.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
+import type { NormalizedWorkflowAction } from "../../kit/workflow-action-adapter.js";
 import {
   renderHyperActionFrame,
   toHyperActionEnvelope
@@ -33,7 +35,16 @@ import {
   escalate,
   renderModelRouting
 } from "../../routing/routing-engine.js";
-import { readRoutingState, updateRoutingState } from "../../routing/routing-state.js";
+import {
+  defaultModelId,
+  routingCohortForTask,
+  routingTaskFromAction,
+  type RoutingTaskDescriptor
+} from "../../routing/routing-context.js";
+import {
+  readRoutingState,
+  updateRoutingState
+} from "../../routing/routing-state.js";
 import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
 import { printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 import { collectChangedFiles } from "../../governance/scope-guard.js";
@@ -48,7 +59,17 @@ export function checkpointCommand(): Command {
     .description("Capture current progress and git diff summary.")
     .addOption(new Option("--task <task-id>", "Run pipeline verify/review for the active task and advance the pipeline."))
     .addOption(new Option("--tier <tier>", "Model tier that actually executed the task (recorded in telemetry)."))
-    .action(async function (this: Command, options: { task?: string; tier?: string }) {
+    .addOption(new Option("--model <model-id>", "Model ID that actually executed the task (recorded in telemetry)."))
+    .addOption(new Option("--model-version <version>", "Model version that actually executed the task (recorded in telemetry)."))
+    .action(async function (
+      this: Command,
+      options: {
+        task?: string;
+        tier?: string;
+        model?: string;
+        modelVersion?: string;
+      }
+    ) {
       const projectPath = resolveProjectPath(this);
       if (!options.task) {
         const session = await getActiveSession(projectPath);
@@ -80,7 +101,11 @@ export function checkpointCommand(): Command {
         return;
       }
       if (kit.state === "healthy") {
-        await runConfiguredKitCheckpoint(projectPath, taskId);
+        await runConfiguredKitCheckpoint(projectPath, taskId, {
+          tier: options.tier,
+          modelId: options.model,
+          modelVersion: options.modelVersion
+        });
         return;
       }
 
@@ -128,6 +153,7 @@ export function checkpointCommand(): Command {
       const taskClass = task?.taskClass ?? null;
       const riskLevel = task?.riskLevel ?? null;
       const riskFactors = task?.riskFactors ?? null;
+      const assuranceProfile = task?.assuranceProfile ?? null;
 
       // Only a genuinely Kit-absent project may use Hyper's local_checked path.
       const localConfig = await readConfig(projectPath);
@@ -166,15 +192,33 @@ export function checkpointCommand(): Command {
           ? "inconclusive"
           : "passed";
       const passed = verdict === "passed";
+      const tier = options.tier ?? DEFAULT_TIER;
+      const routingCohort = routingCohortForTask({
+        host: session.tool,
+        task: task ?? {},
+        assuranceProfile,
+        modelId: options.model ?? defaultModelId(session.tool, tier),
+        modelVersion: options.modelVersion ?? null
+      });
       try {
         await appendAttempt(projectPath, {
           taskId,
           taskClass,
           riskLevel,
           riskFactors,
-          tier: options.tier ?? DEFAULT_TIER,
+          assuranceProfile,
+          host: routingCohort.host,
+          modelId: routingCohort.modelId,
+          modelVersion: routingCohort.modelVersion,
+          projectPreset: routingCohort.projectPreset,
+          protocolVersion: "local-checked/1.0",
+          kitVersion: "none",
+          hyperVersion: packageVersion(),
+          tier,
           verifyPassed,
           reviewPassed,
+          verdict,
+          evidenceSource,
           sessionId: session.id
         });
       } catch (error) {
@@ -301,6 +345,10 @@ export function checkpointCommand(): Command {
             const hyperState = await readState(projectPath);
             const suggestion = computeSuggestedTier({
               task: nextTask,
+              cohort: routingCohortForTask({
+                host: session.tool,
+                task: nextTask
+              }),
               attempts: telemetry.attempts,
               routingState,
               sessionCount: Object.keys(hyperState.sessions).length
@@ -324,7 +372,8 @@ export function checkpointCommand(): Command {
 
 async function runConfiguredKitCheckpoint(
   projectPath: string,
-  taskId: string
+  taskId: string,
+  actualModel: { tier?: string; modelId?: string; modelVersion?: string }
 ): Promise<void> {
   const bridge = new KitCommandBridge({ projectPath });
   const binding = await validateStrictCheckpointBinding(projectPath, taskId);
@@ -340,13 +389,14 @@ async function runConfiguredKitCheckpoint(
         contextFreshness: binding.contextFreshness
       })
     );
-    const actionRendered = await renderFreshCheckpointAction(bridge);
-    if (actionRendered) {
+    const freshAction = await renderFreshCheckpointAction(bridge, taskId);
+    if (freshAction.rendered) {
       process.exitCode = 1;
     }
     return;
   }
 
+  const routingBinding = await readStrictRoutingBinding(bridge, taskId);
   const contextFreshness = await checkContextFreshness(projectPath);
   const verify = await bridge.verify(taskId);
   const review = await bridge.review(taskId);
@@ -375,6 +425,48 @@ async function runConfiguredKitCheckpoint(
     reconcile,
     blockingFindings
   });
+  if (routingBinding && actualModel.modelId && actualModel.modelVersion) {
+    const session = await getActiveSession(projectPath);
+    if (session) {
+      try {
+        const cohort = routingCohortForTask({
+          host: session.tool,
+          task: routingBinding.task,
+          modelId: actualModel.modelId,
+          modelVersion: actualModel.modelVersion
+        });
+        await appendAttempt(projectPath, {
+          taskId,
+          featureId: routingBinding.featureId,
+          workItemKey: `${routingBinding.featureId}:${taskId}`,
+          taskClass: routingBinding.task.taskClass,
+          riskLevel: routingBinding.task.riskLevel,
+          riskFactors:
+            routingBinding.task.riskFactors === null
+              ? null
+              : [...routingBinding.task.riskFactors],
+          assuranceProfile: routingBinding.task.assuranceProfile,
+          host: session.tool,
+          modelId: actualModel.modelId,
+          modelVersion: actualModel.modelVersion,
+          projectPreset: cohort.projectPreset,
+          protocolVersion: routingBinding.protocolVersion,
+          kitVersion: routingBinding.kitVersion,
+          hyperVersion: packageVersion(),
+          tier: actualModel.tier ?? DEFAULT_TIER,
+          verifyPassed: evidence.verifyVerdict === "passed",
+          reviewPassed: evidence.reviewVerdict === "passed",
+          verdict: evidence.verdict,
+          evidenceSource: "kit",
+          sessionId: session.id
+        });
+      } catch (error) {
+        console.log(
+          `warning: strict Kit telemetry attempt was not recorded: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+  }
   printWarnings(bridge.warnings);
   console.log(
     renderKitCheckpointEvidence({
@@ -384,15 +476,41 @@ async function runConfiguredKitCheckpoint(
       warnings: contextFreshness.warnings
     })
   );
-  const actionRendered = await renderFreshCheckpointAction(bridge);
-  if (actionRendered) {
+  const freshAction = await renderFreshCheckpointAction(bridge, taskId);
+  if (routingBinding && evidence.verdict === "failed") {
+    try {
+      const hyperState = await readState(projectPath);
+      await updateRoutingState(projectPath, (state) =>
+        escalate({
+          state,
+          taskId,
+          taskClass: routingBinding.task.taskClass,
+          riskLevel: routingBinding.task.riskLevel,
+          riskFactors: routingBinding.task.riskFactors,
+          sessionCount: Object.keys(hyperState.sessions).length,
+          now: new Date().toISOString()
+        })
+      );
+    } catch (error) {
+      console.log(
+        `warning: strict Kit routing quarantine was not recorded: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  if (freshAction.rendered) {
     process.exitCode = evidence.verdict === "passed" ? 0 : 1;
   }
 }
 
+type FreshCheckpointAction = {
+  rendered: boolean;
+  routingBinding: StrictRoutingBinding | null;
+};
+
 async function renderFreshCheckpointAction(
-  bridge: KitCommandBridge
-): Promise<boolean> {
+  bridge: KitCommandBridge,
+  taskId: string
+): Promise<FreshCheckpointAction> {
   const contractDiagnostic = await bridge.integrationContractDiagnostic();
   if (!contractDiagnostic.ok) {
     console.log("");
@@ -404,7 +522,7 @@ async function renderFreshCheckpointAction(
       })
     );
     process.exitCode = 1;
-    return false;
+    return { rendered: false, routingBinding: null };
   }
 
   const actionDiagnostic = await bridge.nextCanonicalActionDiagnostic(
@@ -421,14 +539,21 @@ async function renderFreshCheckpointAction(
       })
     );
     process.exitCode = 1;
-    return false;
+    return { rendered: false, routingBinding: null };
   }
 
   console.log("");
   console.log(
     renderHyperActionFrame(toHyperActionEnvelope(actionDiagnostic.value))
   );
-  return true;
+  return {
+    rendered: true,
+    routingBinding: routingBindingFromAction(
+      actionDiagnostic.value,
+      contractDiagnostic.value.kit.version,
+      taskId
+    )
+  };
 }
 
 type StrictCheckpointBinding =
@@ -578,6 +703,46 @@ async function validateStrictCheckpointBinding(
     );
   }
   return { ok: true };
+}
+
+type StrictRoutingBinding = {
+  featureId: string;
+  task: RoutingTaskDescriptor;
+  protocolVersion: string;
+  kitVersion: string;
+};
+
+async function readStrictRoutingBinding(
+  bridge: KitCommandBridge,
+  taskId: string
+): Promise<StrictRoutingBinding | null> {
+  const contract = await bridge.integrationContractDiagnostic();
+  if (!contract.ok) {
+    return null;
+  }
+  const action = await bridge.nextCanonicalActionDiagnostic("auto", contract.value);
+  if (!action.ok || action.value.verdict !== "ready") return null;
+  return routingBindingFromAction(action.value, contract.value.kit.version, taskId);
+}
+
+function routingBindingFromAction(
+  action: NormalizedWorkflowAction,
+  kitVersion: string,
+  taskId: string
+): StrictRoutingBinding | null {
+  if (
+    action.task?.id !== taskId ||
+    action.feature.state !== "available" ||
+    action.feature.value === null
+  ) return null;
+  const task = routingTaskFromAction(action);
+  if (!task) return null;
+  return {
+    featureId: action.feature.value.id,
+    task,
+    protocolVersion: action.source.protocolVersion,
+    kitVersion
+  };
 }
 
 function kitManifestBindingIssue(manifest: Record<string, unknown>): string | undefined {
@@ -772,10 +937,16 @@ async function writeCheckpointMarkdown(
   goal: string,
   taskId?: string
 ): Promise<void> {
-  const [{ stdout: stat }, snapshot] = await Promise.all([
-    execFileResolved("git", ["diff", "--stat", "HEAD"], { cwd: projectPath }),
+  // A project with no commits yet has no resolvable HEAD. That is an ordinary
+  // first-run state, so the diff stat degrades to a note instead of throwing
+  // out of the whole checkpoint.
+  const [stat, snapshot] = await Promise.all([
+    gitOutput(projectPath, ["diff", "--stat", "HEAD"]),
     createCheckpointSnapshot(projectPath, { sessionId, goal, taskId })
   ]);
+  const diffStat = stat.ok
+    ? stat.stdout.trim() || "_No diff._"
+    : `_Diff stat unavailable: ${stat.reason}._`;
   const files = snapshot.files.map((file) => file.path);
   const content = [
     `## Checkpoint ${snapshot.checkpointAt}`,
@@ -786,7 +957,7 @@ async function writeCheckpointMarkdown(
     "",
     "## Git Diff Stat",
     "",
-    stat.trim() || "_No diff._",
+    diffStat,
     "",
     "## Changed Files",
     "",

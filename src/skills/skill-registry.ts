@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { fileExists, readTextIfExists, vispPath, writeText } from "../core/fs-utils.js";
 import { parseJsonStore } from "../core/json-store.js";
+import { withStoreLock } from "../core/store-lock.js";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import type { SkillProposal } from "./skill-proposals.js";
@@ -14,12 +15,12 @@ export const skillEntrySchema = z.object({
   destinations: z.array(z.string()),
   usedCount: z.number().int().nonnegative(),
   lastUsedAt: z.string().nullable(),
-  lastUsedSessionCount: z.number().int().nonnegative().nullable()
-  ,source: z.string().optional()
-  ,contentHash: z.string().regex(/^[a-f0-9]{64}$/u).optional()
-  ,author: z.string().optional()
-  ,approvedBy: z.string().nullable().optional()
-  ,approvalExpiresAt: z.string().datetime().nullable().optional()
+  lastUsedSessionCount: z.number().int().nonnegative().nullable(),
+  source: z.string().optional(),
+  contentHash: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  author: z.string().optional(),
+  approvedBy: z.string().nullable().optional(),
+  approvalExpiresAt: z.string().datetime().nullable().optional()
 });
 
 export const skillRegistrySchema = z.object({
@@ -63,6 +64,26 @@ export async function writeSkillRegistry(
   await writeText(registryPath(projectPath), `${JSON.stringify(registry, null, 2)}\n`);
 }
 
+/**
+ * Locked read-modify-write over the skill registry, so concurrent visp-hyper
+ * invocations (fan-out subagents, MCP calls, a checkpoint harvesting while a
+ * remember records usage) cannot drop each other's updates. Mirrors
+ * `updateRoutingState`. Every mutation of `skills.json` must go through here:
+ * an unlocked read-then-write silently loses entries, and `report` prunes
+ * skills by `usedCount`, so a lost increment can retire a skill still in use.
+ */
+export async function updateSkillRegistry<T>(
+  projectPath: string,
+  updater: (registry: SkillRegistry) => { registry: SkillRegistry; result: T } | Promise<{ registry: SkillRegistry; result: T }>
+): Promise<T> {
+  return withStoreLock(projectPath, async () => {
+    const { registry } = await readSkillRegistry(projectPath);
+    const next = await updater(registry);
+    await writeSkillRegistry(projectPath, next.registry);
+    return next.result;
+  });
+}
+
 function normalizeDescription(description: string): string {
   return description.toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -95,12 +116,30 @@ export function destinationFor(tool: string, name: string): string {
       return `.agents/skills/hyper-${name}/SKILL.md`;
     case "copilot":
       return `.github/instructions/hyper-${name}.instructions.md`;
+    case "opencode":
+      return `.agents/skills/hyper-${name}/SKILL.md`;
     default:
       return `.visp/hyper/skills/hyper-${name}.md`;
   }
 }
 
-function renderSkill(proposal: SkillProposal): string {
+function renderSkill(proposal: SkillProposal, tool: string): string {
+  if (tool === "copilot") {
+    return [
+      "---",
+      'applyTo: "**"',
+      "---",
+      "",
+      `# hyper-${proposal.name}`,
+      "",
+      proposal.description,
+      "",
+      `Use when: ${proposal.whenToUse}`,
+      "",
+      proposal.body,
+      ""
+    ].join("\n");
+  }
   return [
     "---",
     `name: hyper-${proposal.name}`,
@@ -131,11 +170,13 @@ function proposalHash(proposal: SkillProposal): string {
  * registry change) and a warning is returned. Otherwise the rendered `SKILL.md`
  * is written and a registry entry is appended.
  */
+export type SkillInstallResult = { installed: boolean; destination: string; warning?: string };
+
 export async function installSkill(
   projectPath: string,
   proposal: SkillProposal,
   input: { tool: string; sessionId: string; sessionCount: number }
-): Promise<{ installed: boolean; destination: string; warning?: string }> {
+): Promise<SkillInstallResult> {
   const destination = destinationFor(input.tool, proposal.name);
   const destinationPath = join(projectPath, destination);
 
@@ -147,28 +188,48 @@ export async function installSkill(
     };
   }
 
-  await writeText(destinationPath, renderSkill(proposal));
+  await writeText(destinationPath, renderSkill(proposal, input.tool));
 
-  const { registry } = await readSkillRegistry(projectPath);
-  registry.skills.push({
-    name: proposal.name,
-    description: proposal.description,
-    whenToUse: proposal.whenToUse,
-    originSessionId: input.sessionId,
-    installedAtSessionCount: input.sessionCount,
-    destinations: [destination],
-    usedCount: 0,
-    lastUsedAt: null,
-    lastUsedSessionCount: null,
-    source: proposal.sourcePath,
-    contentHash: proposalHash(proposal),
-    author: "agent-proposal",
-    approvedBy: null,
-    approvalExpiresAt: null
+  // The existence probe above and this write are not one atomic step, so two
+  // concurrent harvests can both reach here for the same proposal. Re-check the
+  // name INSIDE the lock and make the registration idempotent, otherwise the
+  // registry gains a duplicate entry whose usage counts then diverge.
+  return updateSkillRegistry<SkillInstallResult>(projectPath, (registry) => {
+    if (registry.skills.some((entry) => entry.name === proposal.name)) {
+      return {
+        registry,
+        result: {
+          installed: false,
+          destination,
+          warning: `skill hyper-${proposal.name} was already registered by a concurrent run; skipped duplicate registration.`
+        }
+      };
+    }
+    return {
+      registry: {
+        skills: [
+          ...registry.skills,
+          {
+            name: proposal.name,
+            description: proposal.description,
+            whenToUse: proposal.whenToUse,
+            originSessionId: input.sessionId,
+            installedAtSessionCount: input.sessionCount,
+            destinations: [destination],
+            usedCount: 0,
+            lastUsedAt: null,
+            lastUsedSessionCount: null,
+            source: proposal.sourcePath,
+            contentHash: proposalHash(proposal),
+            author: "agent-proposal",
+            approvedBy: null,
+            approvalExpiresAt: null
+          }
+        ]
+      },
+      result: { installed: true, destination }
+    };
   });
-  await writeSkillRegistry(projectPath, registry);
-
-  return { installed: true, destination };
 }
 
 /**
@@ -181,15 +242,25 @@ export async function recordUsage(
   name: string,
   input: { sessionCount: number }
 ): Promise<boolean> {
-  const { registry } = await readSkillRegistry(projectPath);
-  const skill = registry.skills.find((entry) => entry.name === name);
-  if (!skill) {
-    return false;
-  }
-
-  skill.usedCount += 1;
-  skill.lastUsedAt = new Date().toISOString();
-  skill.lastUsedSessionCount = input.sessionCount;
-  await writeSkillRegistry(projectPath, registry);
-  return true;
+  return updateSkillRegistry(projectPath, (registry) => {
+    if (!registry.skills.some((entry) => entry.name === name)) {
+      return { registry, result: false };
+    }
+    const at = new Date().toISOString();
+    return {
+      registry: {
+        skills: registry.skills.map((entry) =>
+          entry.name === name
+            ? {
+                ...entry,
+                usedCount: entry.usedCount + 1,
+                lastUsedAt: at,
+                lastUsedSessionCount: input.sessionCount
+              }
+            : entry
+        )
+      },
+      result: true
+    };
+  });
 }

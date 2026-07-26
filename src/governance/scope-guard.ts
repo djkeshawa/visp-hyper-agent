@@ -80,9 +80,19 @@ export async function collectChangedFiles(
       return { files: [...new Set(files)], warnings: [] };
     }
 
+    // A ref beginning with `-` would be parsed by git as an option rather than
+    // a revision, so it is rejected before it reaches the argument vector. The
+    // trailing `--` then pins the remainder as "no pathspecs", so a ref that
+    // happens to match a filename cannot be reinterpreted as a path.
+    if (mode.baseRef.startsWith("-")) {
+      return {
+        files: [],
+        warnings: [`base ref "${mode.baseRef}" is not a valid revision; scope check was skipped`]
+      };
+    }
     const { stdout } = await execFileResolved(
       "git",
-      ["diff", "--name-only", `${mode.baseRef}...HEAD`],
+      ["diff", "--name-only", `${mode.baseRef}...HEAD`, "--"],
       { cwd: projectPath }
     );
     return { files: splitNames(stdout), warnings: [] };

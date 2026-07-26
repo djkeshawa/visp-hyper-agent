@@ -1,0 +1,43 @@
+{
+  "manifestVersion": "1.0",
+  "host": "opencode",
+  "validatedAgainst": {
+    "asOf": "2026-07-25",
+    "hostVersion": null,
+    "surface": "OpenCode CLI",
+    "documentation": [
+      "https://opencode.ai/docs/rules/",
+      "https://opencode.ai/docs/skills/",
+      "https://opencode.ai/docs/commands/",
+      "https://opencode.ai/docs/agents/",
+      "https://opencode.ai/docs/plugins/",
+      "https://opencode.ai/docs/mcp-servers/"
+    ]
+  },
+  "supports": {
+    "repoGuidance": "native",
+    "skills": "native",
+    "commands": "native",
+    "hooks": "native",
+    "mcp": "native",
+    "subagents": "native",
+    "verifierRole": "native",
+    "challengerRole": "native",
+    "automaticModelSelection": "unsupported"
+  },
+  "fallbacks": {
+    "mechanicalEnforcement": "git_and_ci",
+    "orchestration": "native_subagents",
+    "modelSelection": "host_controlled"
+  },
+  "assets": [
+    {
+      "templatePath": "visp-hyper-instructions.md",
+      "destination": "visp-hyper-instructions.md"
+    },
+    {
+      "templatePath": ".agents/skills/visp-hyper/SKILL.md",
+      "destination": ".agents/skills/visp-hyper/SKILL.md"
+    }
+  ]
+}

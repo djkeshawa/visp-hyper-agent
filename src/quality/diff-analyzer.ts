@@ -1,4 +1,4 @@
-import { execFileResolved } from "../core/executable-resolver.js";
+import { gitLines, gitOutput } from "../core/git.js";
 import { isBlockedPath } from "../governance/blocked-files.js";
 
 export type ReviewResult = {
@@ -9,16 +9,35 @@ export type ReviewResult = {
   publicApiFiles: string[];
   hasTestChanges: boolean;
   warnings: string[];
+  /**
+   * False when git could not report the diff at all (not a repository, no
+   * commits yet, unreadable index). An empty `changedFiles` then means "we do
+   * not know", NOT "nothing changed" — callers must degrade to inconclusive
+   * rather than reporting a clean review.
+   */
+  diffAvailable: boolean;
 };
 
+/**
+ * Read the working tree's diff against HEAD and analyze it. Never throws: a
+ * project with no commits yet has no resolvable `HEAD`, which is an ordinary
+ * state and must not take down the command.
+ */
 export async function analyzeDiff(input: {
   projectPath: string;
   relevantFiles: string[];
   blockedPaths: string[];
 }): Promise<ReviewResult> {
-  const { stdout } = await execFileResolved("git", ["diff", "--name-only", "HEAD"], { cwd: input.projectPath });
-  const changedFiles = stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  return analyzeChangedFiles({ ...input, changedFiles });
+  const diff = await gitOutput(input.projectPath, ["diff", "--name-only", "HEAD"]);
+  if (!diff.ok) {
+    const unavailable = analyzeChangedFiles({ ...input, changedFiles: [] });
+    return {
+      ...unavailable,
+      diffAvailable: false,
+      warnings: [`Changed files could not be read; review is inconclusive (${diff.reason}).`]
+    };
+  }
+  return analyzeChangedFiles({ ...input, changedFiles: gitLines(diff.stdout) });
 }
 
 export function analyzeChangedFiles(input: {
@@ -34,7 +53,8 @@ export function analyzeChangedFiles(input: {
     dependencyFiles: input.changedFiles.filter(isDependencyFile),
     publicApiFiles: input.changedFiles.filter(isPublicApiFile),
     hasTestChanges: input.changedFiles.some(isTestFile),
-    warnings: []
+    warnings: [],
+    diffAvailable: true
   };
   result.warnings = warningsFor(result);
   return result;

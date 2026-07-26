@@ -15,24 +15,28 @@ const PRUNE_THRESHOLD = 5;
 interface TierBreakdown {
   tier: string;
   attempts: number;
+  inconclusive: number;
   firstAttemptPassRate: number | null;
 }
 
 interface ClassBreakdown {
   taskClass: TaskClass | null;
   attempts: number;
+  inconclusive: number;
   firstAttemptPassRate: number | null;
 }
 
 interface RiskLevelBreakdown {
   riskLevel: RiskLevel | null;
   attempts: number;
+  inconclusive: number;
   firstAttemptPassRate: number | null;
 }
 
 interface RiskFactorBreakdown {
   riskFactor: RiskFactorCode;
   attempts: number;
+  inconclusive: number;
   firstAttemptPassRate: number | null;
 }
 
@@ -41,6 +45,7 @@ interface ReportAggregate {
     sessions: number;
     tasks: number;
     attempts: number;
+    inconclusive: number;
     firstAttemptPassRate: number | null;
   };
   perTier: TierBreakdown[];
@@ -88,7 +93,7 @@ async function buildReport(projectPath: string): Promise<ReportAggregate> {
   const sessionCount = Object.keys(state.sessions).length;
   const attempts = telemetry.attempts;
 
-  const taskIds = new Set(attempts.map((entry) => entry.taskId));
+  const taskIds = new Set(attempts.map((entry) => entry.workItemKey ?? entry.taskId));
 
   const tokens = telemetry.usage.reduce(
     (acc, entry) => ({
@@ -123,21 +128,25 @@ async function buildReport(projectPath: string): Promise<ReportAggregate> {
       sessions: sessionCount,
       tasks: taskIds.size,
       attempts: attempts.length,
+      inconclusive: inconclusiveCount(attempts),
       firstAttemptPassRate: firstAttemptPassRate(attempts)
     },
     perTier: groupBy(attempts, (entry) => entry.tier).map(([tier, rows]) => ({
       tier,
       attempts: rows.length,
+      inconclusive: inconclusiveCount(rows),
       firstAttemptPassRate: firstAttemptPassRate(rows)
     })),
     perClass: groupBy(attempts, (entry) => entry.taskClass).map(([taskClass, rows]) => ({
       taskClass,
       attempts: rows.length,
+      inconclusive: inconclusiveCount(rows),
       firstAttemptPassRate: firstAttemptPassRate(rows)
     })),
     perRiskLevel: groupBy(attempts, (entry) => entry.riskLevel).map(([riskLevel, rows]) => ({
       riskLevel,
       attempts: rows.length,
+      inconclusive: inconclusiveCount(rows),
       firstAttemptPassRate: firstAttemptPassRate(rows)
     })),
     perRiskFactor: groupBy(
@@ -149,6 +158,7 @@ async function buildReport(projectPath: string): Promise<ReportAggregate> {
     ).map(([riskFactor, rows]) => ({
       riskFactor,
       attempts: rows.length,
+      inconclusive: inconclusiveCount(rows.map((row) => row.attempt)),
       firstAttemptPassRate: firstAttemptPassRate(rows.map((row) => row.attempt))
     })),
     tokens,
@@ -158,16 +168,22 @@ async function buildReport(projectPath: string): Promise<ReportAggregate> {
   };
 }
 
+function inconclusiveCount(attempts: TelemetryAttempt[]): number {
+  return attempts.filter((entry) => entry.verdict === "inconclusive").length;
+}
+
 /**
  * First-attempt pass rate: the fraction of first-attempt records that passed
  * both verify and review. Returns null when there are no first-attempt records.
  */
 function firstAttemptPassRate(attempts: TelemetryAttempt[]): number | null {
-  const firstAttempts = attempts.filter((entry) => entry.firstAttempt);
+  const firstAttempts = attempts.filter(
+    (entry) => entry.firstAttempt && entry.verdict !== "inconclusive"
+  );
   if (firstAttempts.length === 0) {
     return null;
   }
-  const passed = firstAttempts.filter((entry) => entry.verifyPassed && entry.reviewPassed).length;
+  const passed = firstAttempts.filter((entry) => entry.verdict === "passed").length;
   return passed / firstAttempts.length;
 }
 
@@ -208,28 +224,29 @@ function renderReport(aggregate: ReportAggregate): string {
   const lines: string[] = [];
   lines.push("BEGIN_VISP_HYPER_REPORT");
   lines.push(`sessions: ${totals.sessions}    tasks: ${totals.tasks}    attempts: ${totals.attempts}`);
+  lines.push(`inconclusive_attempts: ${totals.inconclusive}`);
   lines.push(`first_attempt_pass_rate: ${formatRate(totals.firstAttemptPassRate)}`);
   lines.push(`tokens: input=${tokens.inputTokens} output=${tokens.outputTokens}`);
   lines.push("");
 
   lines.push("per_tier:");
   for (const tier of perTier) {
-    lines.push(`  - ${tier.tier}: attempts=${tier.attempts} pass_rate=${formatRate(tier.firstAttemptPassRate)}`);
+    lines.push(`  - ${tier.tier}: attempts=${tier.attempts} inconclusive=${tier.inconclusive} pass_rate=${formatRate(tier.firstAttemptPassRate)}`);
   }
 
   lines.push("per_class:");
   for (const taskClass of perClass) {
-    lines.push(`  - ${displayTaskClass(taskClass.taskClass)}: attempts=${taskClass.attempts} pass_rate=${formatRate(taskClass.firstAttemptPassRate)}`);
+    lines.push(`  - ${displayTaskClass(taskClass.taskClass)}: attempts=${taskClass.attempts} inconclusive=${taskClass.inconclusive} pass_rate=${formatRate(taskClass.firstAttemptPassRate)}`);
   }
 
   lines.push("per_risk_level:");
   for (const riskLevel of perRiskLevel) {
-    lines.push(`  - ${riskLevel.riskLevel ?? "unavailable"}: attempts=${riskLevel.attempts} pass_rate=${formatRate(riskLevel.firstAttemptPassRate)}`);
+    lines.push(`  - ${riskLevel.riskLevel ?? "unavailable"}: attempts=${riskLevel.attempts} inconclusive=${riskLevel.inconclusive} pass_rate=${formatRate(riskLevel.firstAttemptPassRate)}`);
   }
 
   lines.push("per_risk_factor:");
   for (const riskFactor of perRiskFactor) {
-    lines.push(`  - ${riskFactor.riskFactor}: attempts=${riskFactor.attempts} pass_rate=${formatRate(riskFactor.firstAttemptPassRate)}`);
+    lines.push(`  - ${riskFactor.riskFactor}: attempts=${riskFactor.attempts} inconclusive=${riskFactor.inconclusive} pass_rate=${formatRate(riskFactor.firstAttemptPassRate)}`);
   }
 
   lines.push("quarantines:");

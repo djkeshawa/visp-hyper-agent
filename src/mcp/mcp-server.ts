@@ -117,6 +117,15 @@ function result(id: number | string | null, value: object): object {
   return { jsonrpc: "2.0", id, result: value };
 }
 
+/**
+ * A JSON-RPC notification: the `notifications/` namespace, or any message with
+ * no id at all. Both are one-way and must never be answered — everything else
+ * is a request that owes the client exactly one response.
+ */
+function isNotification(msg: JsonRpcMessage): boolean {
+  return msg.method?.startsWith("notifications/") === true || msg.id === undefined;
+}
+
 function error(id: number | string | null, code: number, message: string): object {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
@@ -293,7 +302,8 @@ export async function runStdioServer(ctx: McpContext): Promise<void> {
         return;
       }
 
-      // Dispatch asynchronously; preserve write ordering by chaining writes.
+      // Dispatch asynchronously. Responses carry their request id, so they may
+      // complete out of order; JSON-RPC addresses them by id, not by position.
       void handleMessage(ctx, parsed)
         .then((response) => {
           if (response !== null) {
@@ -303,6 +313,14 @@ export async function runStdioServer(ctx: McpContext): Promise<void> {
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           process.stderr.write(`visp-hyper mcp: handler error: ${message}\n`);
+          // A request that carries an id MUST receive a result or an error.
+          // Logging alone leaves the client blocked on that id until its own
+          // timeout — a silent hang rather than a reported failure. Only
+          // notifications (no id, by definition) may go unanswered.
+          if (isNotification(parsed)) {
+            return;
+          }
+          writeProtocolMessage(error(parsed.id ?? null, -32603, `Internal error: ${message}`));
         });
     });
 

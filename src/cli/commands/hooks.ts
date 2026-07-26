@@ -4,10 +4,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
 import { readTextIfExists } from "../../core/fs-utils.js";
+import { resolveGitHooksDirectory } from "../../governance/git-hooks.js";
 import { resolveProjectPath } from "./shared.js";
 
 /** Marker identifying a visp-hyper-owned pre-commit hook. */
-const GIT_HOOK_MARKER = "# visp-hyper-guard hook";
+export const GIT_HOOK_MARKER = "# visp-hyper-guard hook";
 /** Marker identifying the visp-hyper-owned GitHub Actions workflow. */
 const CI_WORKFLOW_MARKER = "# visp-hyper-guard workflow";
 
@@ -44,13 +45,14 @@ function gitSubcommand(): Command {
     .action(async function (this: Command) {
       const projectPath = resolveProjectPath(this);
 
-      if (!(await isDir(join(projectPath, ".git")))) {
+      const hooksDir = await resolveGitHooksDirectory(projectPath);
+      if (!hooksDir) {
         console.error("error: not a git repository (run inside a project with .git).");
         process.exitCode = 1;
         return;
       }
 
-      const hookPath = join(projectPath, ".git", "hooks", "pre-commit");
+      const hookPath = join(hooksDir, "pre-commit");
       const existing = await readTextIfExists(hookPath);
 
       if (existing !== undefined && !existing.includes(GIT_HOOK_MARKER)) {
@@ -62,7 +64,7 @@ function gitSubcommand(): Command {
 
       const updating = existing !== undefined;
       await mkdir(dirname(hookPath), { recursive: true });
-      await writeFile(hookPath, gitHookContent(), "utf8");
+      await writeFile(hookPath, renderGitHookContent(), "utf8");
       await chmod(hookPath, 0o755);
       console.log(
         `hooks git: ${updating ? "updated" : "installed"} .git/hooks/pre-commit`
@@ -106,7 +108,7 @@ function ciSubcommand(): Command {
  * back to invoking the bundled `dist/index.js` directly so the hook works even
  * when the CLI is not globally installed.
  */
-function gitHookContent(): string {
+export function renderGitHookContent(): string {
   // Single-quote the baked-in path so a directory containing $(...) or backticks
   // cannot be command-substituted by the shell; embedded single quotes are
   // escaped the POSIX way ('\'').
@@ -144,14 +146,6 @@ function distIndexPath(): string {
   throw new Error(
     `Could not locate dist/index.js starting from ${start}. Run \`pnpm build\` first.`
   );
-}
-
-async function isDir(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 function existsSyncFile(path: string): boolean {

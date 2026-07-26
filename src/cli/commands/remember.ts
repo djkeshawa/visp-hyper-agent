@@ -1,8 +1,9 @@
 import { rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { Command } from "commander";
-import { execFileResolved } from "../../core/executable-resolver.js";
 import { readTextIfExists } from "../../core/fs-utils.js";
+import { isHyperOwnedPath } from "../../governance/blocked-files.js";
+import { collectChangedFiles } from "../../governance/scope-guard.js";
 import { getActiveSession, readConfig, readState, updateActiveSession } from "../../core/session-manager.js";
 import type { HyperConfig, MemoryRecord, SessionRecord } from "../../core/types.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
@@ -75,7 +76,17 @@ export function rememberCommand(): Command {
       for (const line of harvest.lines) {
         console.log(line);
       }
-      await writeBackRemoteMemory(projectPath, record, harvest.installed);
+      // Mirroring is best-effort in exactly the same sense as the local write
+      // above: the session record already exists on disk, so a provider or disk
+      // failure here must not abort the remaining steps — including the phase
+      // transition that marks this session remembered.
+      try {
+        await writeBackRemoteMemory(projectPath, record, harvest.installed);
+      } catch (error) {
+        console.warn(
+          `warning: session memory could not be mirrored to the configured provider: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
       await recordSkillUsage(projectPath, options.usedSkill);
       await recordTokenUsage(projectPath, session, options);
       await updateActiveSession(projectPath, (current) => ({ ...current, phase: "remembered" }));
@@ -299,13 +310,17 @@ async function writeBackRemoteMemory(
   }
 }
 
+/**
+ * Files this session touched, for the memory record. Uses the same union the
+ * evidence path uses (`mode: "all"`): a bare `git diff --name-only` sees only
+ * UNSTAGED tracked edits, so an agent that staged its work — the normal state
+ * just before a commit — would record a session that changed nothing. Hyper's
+ * own `.visp/hyper/` runtime is filtered out; it is regenerated every run and
+ * is not work the agent did.
+ */
 async function changedFiles(projectPath: string): Promise<string[]> {
-  try {
-    const { stdout } = await execFileResolved("git", ["diff", "--name-only"], { cwd: projectPath });
-    return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  } catch {
-    return [];
-  }
+  const { files } = await collectChangedFiles(projectPath, { mode: "all" });
+  return files.filter((file) => !isHyperOwnedPath(file));
 }
 
 function summarizeReview(report: string): string {
