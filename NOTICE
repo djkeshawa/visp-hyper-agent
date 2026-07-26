@@ -1,0 +1,37 @@
+Visp Hyper Agent
+Copyright 2026 Dineth Keshawa
+
+This product includes software developed as part of the Visp project.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License in the LICENSE file distributed with this work, or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+--------------------------------------------------------------------------------
+Third-party software redistributed with this package
+
+This package declares exactly two runtime dependencies. Neither has runtime
+dependencies of its own, so the list below is the complete third-party surface
+a user receives.
+
+commander
+Copyright (c) 2011 TJ Holowaychuk <tj@vision-media.ca>
+Licensed under the MIT License.
+
+zod
+Copyright (c) 2025 Colin McDonnell
+Licensed under the MIT License.
+
+The MIT License permits use, copying, modification, and distribution provided
+the copyright notice and permission notice are retained, which is the purpose of
+this file.
+
+Development dependencies build and test this package and are excluded from the
+published artifact by the "files" allowlist in package.json.

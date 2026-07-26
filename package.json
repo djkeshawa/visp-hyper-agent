@@ -28,10 +28,13 @@
     "visp-hyper": "dist/index.js"
   },
   "files": [
-    "dist",
-    "templates",
+    "LICENSE",
+    "NOTICE",
     "README.md",
-    "LICENSE"
+    "SECURITY.md",
+    "TRADEMARKS.md",
+    "dist",
+    "templates"
   ],
   "scripts": {
     "build": "tsup",
