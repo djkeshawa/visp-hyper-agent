@@ -1,6 +1,6 @@
 {
   "name": "visp-hyper-agent",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Deterministic, local-first workflow controller for AI coding tools: scoped edits, evidence-gated checkpoints, and advisory model routing. No LLM calls.",
   "type": "module",
   "license": "Apache-2.0",
