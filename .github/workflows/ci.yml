@@ -46,27 +46,50 @@ jobs:
         with:
           path: visp-hyper-agent
 
+      # visp-kit is a private repository, and the default GITHUB_TOKEN is
+      # scoped to this one, so the cross-repository checkout needs a PAT with
+      # `repo` scope stored as VISP_KIT_TOKEN. Without it the contract cannot
+      # be verified -- say so loudly rather than reporting a green tick for a
+      # check that never ran.
+      - name: Check for the cross-repository token
+        id: kit_token
+        env:
+          VISP_KIT_TOKEN: ${{ secrets.VISP_KIT_TOKEN }}
+        run: |
+          if [ -n "$VISP_KIT_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Kit contract NOT verified::VISP_KIT_TOKEN is not set, so the private visp-kit repository cannot be checked out. The Kit<->Hyper contract was not exercised in this run. Add a PAT with repo scope as the VISP_KIT_TOKEN secret to enable it."
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.kit_token.outputs.available == 'true'
         with:
           repository: djkeshawa/visp-kit
           ref: develop
+          token: ${{ secrets.VISP_KIT_TOKEN }}
           path: visp-kit
 
       - uses: pnpm/action-setup@v4
+        if: steps.kit_token.outputs.available == 'true'
 
       - uses: actions/setup-node@v4
+        if: steps.kit_token.outputs.available == 'true'
         with:
           node-version: 22
 
       # The test resolves `../visp-kit/dist/index.js` relative to the Hyper
       # checkout, so Kit must be built and sit beside it.
       - name: Build Visp Kit
+        if: steps.kit_token.outputs.available == 'true'
         working-directory: visp-kit
         run: |
           pnpm install --frozen-lockfile
           pnpm build
 
       - name: Build Visp Hyper Agent
+        if: steps.kit_token.outputs.available == 'true'
         working-directory: visp-hyper-agent
         run: |
           pnpm install --frozen-lockfile
@@ -75,9 +98,11 @@ jobs:
       # `.visp/` is gitignored, so the contract test has no Kit artifacts to
       # read until a project is initialized inside the checkout.
       - name: Initialize a Visp project for the contract fixture
+        if: steps.kit_token.outputs.available == 'true'
         working-directory: visp-hyper-agent
         run: node ../visp-kit/dist/index.js init . --agent none
 
       - name: Run the live Kit contract test
+        if: steps.kit_token.outputs.available == 'true'
         working-directory: visp-hyper-agent
         run: pnpm vitest run tests/visp-binary-contract.test.ts --reporter verbose
