@@ -28,6 +28,7 @@
     "visp-hyper": "dist/index.js"
   },
   "files": [
+    "CONTRIBUTING.md",
     "LICENSE",
     "NOTICE",
     "README.md",
