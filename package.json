@@ -1,28 +1,25 @@
 {
   "name": "visp-hyper-agent",
   "version": "0.4.0",
-  "description": "Deterministic, local-first workflow controller for AI coding tools: scoped edits, evidence-gated checkpoints, and advisory model routing. No LLM calls.",
+  "description": "Runs the Visp workflow inside Codex, Claude Code, and Copilot. Prepares scoped handoffs and records checkpoint evidence. Makes no LLM calls of its own.",
   "type": "module",
   "license": "Apache-2.0",
   "keywords": [
     "ai",
+    "ai-coding",
     "coding-agent",
     "claude-code",
     "codex",
     "copilot",
     "mcp",
-    "spec-driven",
     "workflow",
     "git-hooks",
-    "llm-memory"
+    "evidence",
+    "developer-tools"
   ],
-  "homepage": "https://github.com/djkeshawa/visp-hyper-agent#readme",
+  "homepage": "https://github.com/djkeshawa/visp-dev#readme",
   "bugs": {
-    "url": "https://github.com/djkeshawa/visp-hyper-agent/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/djkeshawa/visp-hyper-agent.git"
+    "url": "https://github.com/djkeshawa/visp-dev/issues"
   },
   "bin": {
     "visp-hyper": "dist/index.js"
