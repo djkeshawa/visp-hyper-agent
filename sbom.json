@@ -53,32 +53,36 @@
       ]
     },
     {
-      "bom-ref": "visp-hyper-agent@0.4.1",
+      "bom-ref": "visp-hyper-agent@0.4.2",
       "type": "library",
       "name": "visp-hyper-agent",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "scope": "required",
       "description": "Runs the Visp workflow inside Codex, Claude Code, and Copilot. Prepares scoped handoffs and records checkpoint evidence. Makes no LLM calls of its own.",
-      "purl": "pkg:npm/visp-hyper-agent@0.4.1",
+      "purl": "pkg:npm/visp-hyper-agent@0.4.2",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "file:visp-hyper-agent-0.4.1.tgz"
+          "url": "file:visp-hyper-agent-0.4.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/djkeshawa/visp-hyper-agent.git"
         },
         {
           "type": "website",
-          "url": "https://github.com/djkeshawa/visp-dev#readme"
+          "url": "https://github.com/djkeshawa/visp-hyper-agent#readme"
         },
         {
           "type": "issue-tracker",
-          "url": "https://github.com/djkeshawa/visp-dev/issues"
+          "url": "https://github.com/djkeshawa/visp-hyper-agent/issues"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "867981fbd13ae9bf5ecffac4b2a738b534c307d638ffff91e0d646ee8b0e00a795d2856360d8b04ac14a945cae651dee69f8675e74df0319b8814b88ff1ba989"
+          "content": "99c533cbb8fd4cd68cdcd46824c07a7a78b457c4a933d02df44aa6d7a8078d124dad200eacea27ddafd1231bd720a4c7d2a2af1acb777f142e514ee676d64adb"
         }
       ],
       "licenses": [
@@ -136,7 +140,7 @@
     {
       "ref": "sbom-host@1.0.0",
       "dependsOn": [
-        "visp-hyper-agent@0.4.1"
+        "visp-hyper-agent@0.4.2"
       ]
     },
     {
@@ -144,7 +148,7 @@
       "dependsOn": []
     },
     {
-      "ref": "visp-hyper-agent@0.4.1",
+      "ref": "visp-hyper-agent@0.4.2",
       "dependsOn": [
         "commander@12.1.0",
         "zod@3.25.76"

@@ -65,7 +65,9 @@ Records evidence for a task. **If the work does not meet the gate, this fails**
 
 ## Where to get help
 
-- **Documentation, compatibility evidence, and issues:**
+- **Source, issues, and pull requests:**
+  [visp-hyper-agent](https://github.com/djkeshawa/visp-hyper-agent)
+- **Compatibility evidence and conformance reports:**
   [visp-dev](https://github.com/djkeshawa/visp-dev)
 - **Security issues:** see `SECURITY.md`. Do not open a public issue.
 - **Contributing:** see `CONTRIBUTING.md`.

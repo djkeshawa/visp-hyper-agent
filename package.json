@@ -1,6 +1,6 @@
 {
   "name": "visp-hyper-agent",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Runs the Visp workflow inside Codex, Claude Code, and Copilot. Prepares scoped handoffs and records checkpoint evidence. Makes no LLM calls of its own.",
   "type": "module",
   "license": "Apache-2.0",
@@ -17,9 +17,9 @@
     "evidence",
     "developer-tools"
   ],
-  "homepage": "https://github.com/djkeshawa/visp-dev#readme",
+  "homepage": "https://github.com/djkeshawa/visp-hyper-agent#readme",
   "bugs": {
-    "url": "https://github.com/djkeshawa/visp-dev/issues"
+    "url": "https://github.com/djkeshawa/visp-hyper-agent/issues"
   },
   "bin": {
     "visp-hyper": "dist/index.js"
@@ -61,5 +61,9 @@
     "tsup": "^8.5.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/djkeshawa/visp-hyper-agent.git"
   }
 }
