@@ -1,10 +1,55 @@
+# Credentials — never commit these.
+#
+# .npmrc matters most: a project-level .npmrc holds the npm auth token, and
+# committing it to a public repository publishes a credential with push access
+# to every package this account owns.
+.npmrc
+.env
+.env.*
+*.pem
+*.p12
+*.key
+id_rsa
+id_ed25519
+
+# Build and dependency output
 node_modules/
 dist/
 coverage/
-.visp/
-.env
-.env.*
-.~lock.*#
-.llm-memory/
+*.tsbuildinfo
+
+# Package tarballs. `npm pack` writes these into the repository root and the
+# release tooling packs on every run, so one is easy to commit by accident.
+*.tgz
+
+# Visp's own working files, for when this repository is itself a target project.
+# Anchored to the repository root: these names also exist under templates/ as
+# the sources Visp installs, and an unanchored pattern silently ignores edits
+# to them.
+/.visp/
+/.local-plans/
+/AGENTS.visp.md
+/AGENTS.visp-hyper.md
+/visp-hyper-instructions.md
+
+# Agent and assistant scratch
 .claude/
+.llm-memory/
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.~lock.*#
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and local overrides
+*.log
+*.local
+
+# Personal planning documents that pre-date the planning workspace
 Visp-Hyper-Agent-Comprehensive-Implementation-Plan.docx
