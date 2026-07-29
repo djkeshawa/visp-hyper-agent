@@ -74,6 +74,7 @@ describe("npm pack smoke", () => {
       "docs/configuration.md",
       "docs/development.md",
       "docs/mcp.md",
+      "docs/quickstart.md",
       "docs/workflows.md"
     ]);
   });

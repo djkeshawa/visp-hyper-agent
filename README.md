@@ -72,7 +72,7 @@ Records evidence for a task. **If the work does not meet the gate, this fails**
 
 ---
 
-**New here? Follow the [five-minute quickstart](examples/quickstart.md) to see a commit get blocked and a task verified.**
+**New here? Follow the [five-minute quickstart](docs/quickstart.md) to see a commit get blocked and a task verified.**
 
 ## How it works
 
