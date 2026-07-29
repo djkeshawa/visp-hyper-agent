@@ -979,7 +979,10 @@ describe("handleMessage resources and prompts surface", () => {
       mimeType: "application/json",
       annotations: { audience: ["user", "assistant"], priority: 1 }
     });
-    expect(await readFile(join(packageRoot, "README.md"), "utf8")).toContain(
+    // The advertised resource must stay documented in a file that ships, so the
+    // MCP surface cannot drift away from its documentation unnoticed. This moved
+    // out of the README when the reference material moved into docs/.
+    expect(await readFile(join(packageRoot, "docs/mcp.md"), "utf8")).toContain(
       `- \`${CANONICAL_ACTION_RESOURCE_URI}\``
     );
 

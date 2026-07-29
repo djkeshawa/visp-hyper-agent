@@ -1,0 +1,38 @@
+# Visp Hyper commands
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `visp-hyper init [--tool <tool>] [--force-assets] [--with-hooks]` | Creates `.visp/hyper/` config and state. With `--tool` it also installs native assets for that coding tool (subagent fleet, slash commands, instructions) and, for `claude-code` projects with a real Visp Kit, surfaces or installs the `visp hooks claude` PreToolUse gate. |
+| `visp-hyper quick "<goal>" [--files <paths...>] [--tool <tool>] [--target-model <id>] [--target-model-version <v>]` | Starts a zero-configuration local task only when the project is genuinely Kit-less. A healthy or configured-but-unhealthy Kit stops the command before it creates Hyper state. |
+| `visp-hyper run "<goal>" [--tool <tool>] [--target-model <id>] [--target-model-version <v>]` | The one-command pipeline. In a Visp Kit project: checks the Kit integration contract, validates policy, evaluates gates, and prints either a per-task handoff + bounded action block, or a `BEGIN_VISP_PIPELINE_BLOCKED` block naming the exact next allowed `visp` command. Kit-less projects get the plain `start` behavior. |
+| `visp-hyper start "<goal>" [--tool <tool>]` | Starts a guided local session only when the project is genuinely Kit-less. A healthy or configured-but-unhealthy Kit stops the command before it creates Hyper state; use `run` for Kit-backed work. The local path writes the handoff and context files, uses the deterministic relevance scanner, and fuses recalled llm-memory entries when enabled. |
+| `visp-hyper next [--target-model <id>] [--target-model-version <v>]` | Prints the next bounded action: the current pipeline task's action block (with model-routing advice) when a task DAG is active, otherwise the generic next-step block. |
+| `visp-hyper resume [--json]` | Reprints the active handoff, current task action, context freshness, required read status, latest checkpoint, current git diff file list, and exact checkpoint-to-current file deltas after a context reset. |
+| `visp-hyper checkpoint [--task <id>] [--tier <tier>] [--model <id>] [--model-version <v>]` | Appends git diff evidence to `checkpoints.md`. In genuine Kit-less mode, records cohort-safe local telemetry. Kit-backed evidence remains authoritative only when returned by Kit. |
+| `visp-hyper challenge [--json] [--response <path> \| --human-reviewer <id>] [--note <text>]` | Builds a bounded, read-only, unverified challenger request for behavioral/critical canonical work, or validates a bounded response against the active task/action/claims. It never calls an LLM or executes proposed commands. The optional human substitution writes a non-authoritative audit record. |
+| `visp-hyper review` | In a Kit-backed project, renders the current canonical Kit action without local mutation. In genuine Kit-less mode, writes `review-report.md` and labels deterministic path warnings `local_checked`. |
+| `visp-hyper remember [--summary <s>] [--decision <d>...] [--follow-up <f>...] [--used-skill <name>...] [--input-tokens <n>] [--output-tokens <n>] [--model <m>]` | Records session learnings: always writes `.visp/memory/session-history/`; additionally writes to llm-memory (session record, decisions, follow-ups) when enabled, records token usage in telemetry and forwards it to `visp budget`, harvests pending skill proposals, and tracks skill usage. It does not complete a Kit task. |
+| `visp-hyper report [--json]` | The cost/accuracy evidence view: first-attempt verify+review pass rates per model tier, task class, risk level, and risk factor; token totals; active routing quarantines; recent routing decisions; and skill usage with prune flags. |
+| `visp-hyper status` | Renders the canonical Kit action when Kit is configured; otherwise prints explicitly local session/context/checkpoint/memory status. |
+| `visp-hyper doctor [--json]` | Read-only compatibility check for trusted project config, selected host/version probe, capability manifest and installed-asset hashes, Kit contract/action, context freshness, policy/gate, hook, Memory reachability, and MCP surface integrity. |
+## Output Blocks
+
+All orchestration output is deterministic, delimited text designed for LLM consumption:
+
+- `BEGIN_VISP_AGENT_HANDOFF` — session contract: required file reads, MCP resources including computed context freshness, workflow, hard rules, installed project skills, and the skill-proposal protocol.
+- `BEGIN_VISP_TASK_ACTION` — one bounded task: goal, allowed/forbidden files, acceptance criteria, validation commands, done criteria. When the current task is `parallelizable` and other ready sibling tasks (all dependencies completed, also parallelizable) exist, it also carries a `may_run_concurrently_with: <ids>` line naming that ready-set; the line is omitted otherwise.
+- `BEGIN_VISP_PIPELINE_BLOCKED` — a gate refused: failed rules and the exact next allowed `visp` command. Unparseable gate results fail closed.
+- `BEGIN_VISP_CHECKPOINT_RESULT` — verify/review outcomes and the next task (or `pipeline_complete`).
+- `BEGIN_VISP_MODEL_ROUTING` — advisory tier suggestion with its evidence (samples, pass rate).
+- `BEGIN_VISP_ADAPTATION` — deterministic reaction to repeated checkpoint failures: after 2 consecutive failures a scoped remediation task (`R-<task>-<n>`, findings verbatim, same file scope) is injected and made current; a failing remediation or a 3-failure streak issues an escalation directive instead. All rule-driven — no LLM.
+- `BEGIN_VISP_WORKFLOW_DIRECTIVE` — advisory fan-out plan, printed only when the remaining DAG has ≥ 2 independent `parallelizable` tasks with disjoint `allowedFiles` scopes. claude-code is told to dispatch parallel tasks to native subagents (see the `hyper-fanout` command); every other tool gets an explicitly sequential interpretation. Checkpoints always stay sequential.
+- `VISP_HYPER_REPORT` — the aggregate cost/accuracy report.
+
+Existing installs predating these blocks should re-run `visp-hyper init --tool <tool> --force-assets` to refresh the per-tool agent assets (installs never overwrite without `--force-assets`).
+## Tool Profiles
+
+Supported profiles: `generic`, `codex`, `claude-code`, `copilot`, `opencode`.
+
+`--tool` changes handoff metadata, profile wording, and asset install destinations while preserving the shared protocol structure. Unknown values are rejected by the CLI. Only `claude-code` ships a subagent fleet with a `templates/claude-code/model-map.json`; for that tool, new model assignments are a data update, not a code change. The other tools have no dispatch mechanism and use the sequential scout-then-implement role framing instead.

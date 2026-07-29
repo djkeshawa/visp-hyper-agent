@@ -32,6 +32,11 @@
     "SECURITY.md",
     "TRADEMARKS.md",
     "dist",
+    "docs/commands.md",
+    "docs/configuration.md",
+    "docs/development.md",
+    "docs/mcp.md",
+    "docs/workflows.md",
     "templates"
   ],
   "scripts": {

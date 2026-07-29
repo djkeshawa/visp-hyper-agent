@@ -52,11 +52,30 @@ describe("npm pack smoke", () => {
   });
 
   it("excludes source, tests, and local scaffolding", () => {
-    const forbiddenPrefixes = ["src/", "tests/", ".visp/", "examples/", "docs/"];
+    const forbiddenPrefixes = [
+      "src/",
+      "tests/",
+      ".visp/",
+      "examples/",
+      // Internal design records. User-facing docs under docs/ do ship, but
+      // these are working notes and would be noise on a package page.
+      "docs/adr/",
+      "docs/architecture/"
+    ];
     for (const prefix of forbiddenPrefixes) {
       const leaked = files.filter((path) => path.startsWith(prefix));
       expect(leaked, `expected no ${prefix} entries, got ${leaked.join(", ")}`).toEqual([]);
     }
+
+    // Only the reference material the README links to. Listing it exactly means
+    // a new internal document cannot start shipping by accident.
+    expect(files.filter((path) => path.startsWith("docs/")).sort()).toEqual([
+      "docs/commands.md",
+      "docs/configuration.md",
+      "docs/development.md",
+      "docs/mcp.md",
+      "docs/workflows.md"
+    ]);
   });
 
   it("advertises the MCP server version in sync with package.json", async () => {
