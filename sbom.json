@@ -53,18 +53,18 @@
       ]
     },
     {
-      "bom-ref": "visp-hyper-agent@0.4.0",
+      "bom-ref": "visp-hyper-agent@0.4.1",
       "type": "library",
       "name": "visp-hyper-agent",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "scope": "required",
       "description": "Runs the Visp workflow inside Codex, Claude Code, and Copilot. Prepares scoped handoffs and records checkpoint evidence. Makes no LLM calls of its own.",
-      "purl": "pkg:npm/visp-hyper-agent@0.4.0",
+      "purl": "pkg:npm/visp-hyper-agent@0.4.1",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "file:visp-hyper-agent-0.4.0.tgz"
+          "url": "file:visp-hyper-agent-0.4.1.tgz"
         },
         {
           "type": "website",
@@ -78,7 +78,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "9763eef32f837cf0cd25fd3b7ea777510bcad52546bdb945550c986f0a4430ed8a11eb066ce3556bd4002c70b5b24f30b1beff3c33a572f42c55f71a46f420f0"
+          "content": "1384cd87f7d8e929195f8d22cbdc9dcf2c3319d24131d9b70067f8d391262be68fa0849ebbc50a5f51a8c8eb2dc1a8bd24ef4fdc04b3909c13a79f346ee7feba"
         }
       ],
       "licenses": [
@@ -136,7 +136,7 @@
     {
       "ref": "sbom-host@1.0.0",
       "dependsOn": [
-        "visp-hyper-agent@0.4.0"
+        "visp-hyper-agent@0.4.1"
       ]
     },
     {
@@ -144,7 +144,7 @@
       "dependsOn": []
     },
     {
-      "ref": "visp-hyper-agent@0.4.0",
+      "ref": "visp-hyper-agent@0.4.1",
       "dependsOn": [
         "commander@12.1.0",
         "zod@3.25.76"
