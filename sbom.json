@@ -1,0 +1,158 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "lifecycles": [
+      {
+        "phase": "build"
+      }
+    ],
+    "tools": [
+      {
+        "vendor": "npm",
+        "name": "cli",
+        "version": "11.12.1"
+      }
+    ]
+  },
+  "components": [
+    {
+      "bom-ref": "commander@12.1.0",
+      "type": "library",
+      "name": "commander",
+      "version": "12.1.0",
+      "scope": "required",
+      "author": "TJ Holowaychuk <tj@vision-media.ca>",
+      "description": "the complete solution for node.js command-line programs",
+      "purl": "pkg:npm/commander@12.1.0",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/commander/-/commander-12.1.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/tj/commander.js.git"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "570f2a1caddb64cf72fcfd74bb75626fca3f0dd92f0363ad3ed66f0fcef540a8f2ef85a3d5648a1482cc3d13d27544b1e5114ad5aae527312d0383e41609dbb8"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "visp-hyper-agent@0.4.0",
+      "type": "library",
+      "name": "visp-hyper-agent",
+      "version": "0.4.0",
+      "scope": "required",
+      "description": "Runs the Visp workflow inside Codex, Claude Code, and Copilot. Prepares scoped handoffs and records checkpoint evidence. Makes no LLM calls of its own.",
+      "purl": "pkg:npm/visp-hyper-agent@0.4.0",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "file:visp-hyper-agent-0.4.0.tgz"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/djkeshawa/visp-dev#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/djkeshawa/visp-dev/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b521fb04fe8e49541a45c9bca5382dcca5bde3519e7fe14b6fb066b5cf70f1974d88abfc2362e90b3bddd1ae82691f534d961ce81719210807b516b5e9e8bbba"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "zod@3.25.76",
+      "type": "library",
+      "name": "zod",
+      "version": "3.25.76",
+      "scope": "required",
+      "author": "Colin McDonnell <zod@colinhacks.com>",
+      "description": "TypeScript-first schema declaration and validation library with static type inference",
+      "purl": "pkg:npm/zod@3.25.76",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/colinhacks/zod.git"
+        },
+        {
+          "type": "website",
+          "url": "https://zod.dev"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/colinhacks/zod/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "83352dfeab7cd675ec14628815c0b76277c4031e4d92e9c27e70e5bee0524854b4d9b717bb82e679ad001485306cb5b158fc7777da7c4b94286ae8ca70d43171"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "sbom-host@1.0.0",
+      "dependsOn": [
+        "visp-hyper-agent@0.4.0"
+      ]
+    },
+    {
+      "ref": "commander@12.1.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "visp-hyper-agent@0.4.0",
+      "dependsOn": [
+        "commander@12.1.0",
+        "zod@3.25.76"
+      ]
+    },
+    {
+      "ref": "zod@3.25.76",
+      "dependsOn": []
+    }
+  ]
+}
