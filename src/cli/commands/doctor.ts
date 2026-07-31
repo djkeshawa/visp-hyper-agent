@@ -263,8 +263,11 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
           id: "kit-policy",
           label: "Policy validation",
           status: "fail",
-          detail: "visp policy validate output could not be parsed.",
-          recovery: "Run `visp policy validate --json` and fix any invalid policy output."
+          // A null result can mean a timeout, a non-zero exit, a missing binary, or a
+          // genuine parse failure. Naming only the last one sent people to fix output
+          // that was never produced. The real reason is in the warning drained above.
+          detail: "visp policy validate did not return a usable result; see the warning above for why.",
+          recovery: "Run `visp policy validate --json` and check whether it completes, exits non-zero, or emits unexpected output."
         }
       : {
           id: "kit-policy",
@@ -284,8 +287,8 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
       id: "kit-next-gate",
       label: "Next gate",
       status: "fail",
-      detail: "visp gate next output could not be parsed.",
-      recovery: "Run `visp gate next --json` and inspect the output."
+      detail: "visp gate next did not return a usable result; see the warning above for why.",
+      recovery: "Run `visp gate next --json` and check whether it completes, exits non-zero, or emits unexpected output."
     });
   } else {
     checks.push({

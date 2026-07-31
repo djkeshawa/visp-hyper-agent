@@ -54,6 +54,33 @@ type OutputSchema<T> = ZodType<T, ZodTypeDef, unknown>;
 const DEFAULT_BINARY = "visp";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+// Kit's verification runner allows 120s per validation command and may run several
+// inside one process, so the 10s default kills `visp verify` on any repository with
+// a real test suite — the checkpoint then reports INCONCLUSIVE forever. Long-running
+// Kit commands get their own budget; status, next, gate and the integration contract
+// stay at the default because `guard` runs on the PreToolUse hot path, where a hung
+// Kit should surface in seconds rather than stalling every edit.
+export const KIT_DEFAULT_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
+export const KIT_LONG_COMMAND_TIMEOUT_MS = 600_000;
+
+/**
+ * Which budget a Kit command gets.
+ *
+ * `configuredMs` is whatever the caller passed to the bridge constructor. An
+ * explicit value is a deliberate choice and wins for every command — tests rely on
+ * this to force fast timeouts. Only when the bridge fell back to the default does a
+ * long-running command get the larger budget.
+ *
+ * Returns `undefined` to mean "use the bridge's own timeout".
+ */
+export function resolveKitCommandTimeout(input: {
+  configuredMs: number | undefined;
+  longRunning: boolean;
+}): number | undefined {
+  if (input.configuredMs !== undefined) return undefined;
+  return input.longRunning ? KIT_LONG_COMMAND_TIMEOUT_MS : undefined;
+}
+
 interface RunResult {
   exitCode: number;
   stdout: string;
@@ -149,11 +176,21 @@ export class KitCommandBridge {
   private readonly projectPath: string;
   private readonly binary: string;
   private readonly timeoutMs: number;
+  private readonly configuredTimeoutMs: number | undefined;
 
   constructor(input: { projectPath: string; binary?: string; timeoutMs?: number }) {
     this.projectPath = input.projectPath;
     this.binary = input.binary ?? DEFAULT_BINARY;
     this.timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.configuredTimeoutMs = input.timeoutMs;
+  }
+
+  /** Budget for a Kit command that runs a validation suite rather than reading artifacts. */
+  private longTimeout(): number | undefined {
+    return resolveKitCommandTimeout({
+      configuredMs: this.configuredTimeoutMs,
+      longRunning: true
+    });
   }
 
   async status(): Promise<KitStatus | null> {
@@ -289,13 +326,15 @@ export class KitCommandBridge {
 
   async verify(taskId?: string): Promise<KitVerifySummary | null> {
     return this.invoke(withTask(["verify"], taskId), kitVerifySummarySchema, {
-      rejectSuccessfulNonZero: true
+      rejectSuccessfulNonZero: true,
+      timeoutMs: this.longTimeout()
     });
   }
 
   async review(taskId?: string): Promise<KitReviewSummary | null> {
     return this.invoke(withTask(["review"], taskId), kitReviewSummarySchema, {
-      rejectSuccessfulNonZero: true
+      rejectSuccessfulNonZero: true,
+      timeoutMs: this.longTimeout()
     });
   }
 
@@ -303,7 +342,7 @@ export class KitCommandBridge {
     return this.invoke(
       [...withTask(["reconcile"], taskId), "--update-traceability"],
       kitReconcileSummarySchema,
-      { rejectSuccessfulNonZero: true }
+      { rejectSuccessfulNonZero: true, timeoutMs: this.longTimeout() }
     );
   }
 
@@ -471,9 +510,13 @@ export class KitCommandBridge {
   private async invoke<T>(
     args: string[],
     schema: OutputSchema<T>,
-    options: { allowNonZeroExit?: boolean; rejectSuccessfulNonZero?: boolean } = {}
+    options: {
+      allowNonZeroExit?: boolean;
+      rejectSuccessfulNonZero?: boolean;
+      timeoutMs?: number;
+    } = {}
   ): Promise<T | null> {
-    const result = await this.run(args);
+    const result = await this.run(args, { timeoutMs: options.timeoutMs });
     if (!result) {
       return null;
     }
@@ -506,12 +549,15 @@ export class KitCommandBridge {
     return parsed;
   }
 
-  private async run(args: string[]): Promise<RunResult | null> {
+  private async run(
+    args: string[],
+    options: { timeoutMs?: number } = {}
+  ): Promise<RunResult | null> {
     const result = await runCommand(
       this.binary,
       [...args, "--json"],
       this.projectPath,
-      this.timeoutMs
+      options.timeoutMs ?? this.timeoutMs
     );
     if (!result.ok) {
       this.warnings.push(result.reason);

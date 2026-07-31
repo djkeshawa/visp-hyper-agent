@@ -2,7 +2,13 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { detectVisp, KitCommandBridge } from "../src/kit/kit-command-bridge.js";
+import {
+  detectVisp,
+  KitCommandBridge,
+  KIT_DEFAULT_TIMEOUT_MS,
+  KIT_LONG_COMMAND_TIMEOUT_MS,
+  resolveKitCommandTimeout
+} from "../src/kit/kit-command-bridge.js";
 import { createWorkflowActionV3Id } from "../src/kit/workflow-action-adapter.js";
 import { TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES } from "../src/kit/workflow-action-protocol.js";
 import {
@@ -1430,6 +1436,55 @@ describe("kit-schemas tolerance (AC006)", () => {
       nextCommand: "visp policy validate"
     });
     expect(parsed.success).toBe(false);
+  });
+
+  it("gives long-running Kit commands a budget larger than the artifact-read default", () => {
+    // Kit allows 120s per validation command and may run several in one process, so
+    // the 10s default killed `visp verify` on any repository with a real test suite
+    // and the checkpoint reported INCONCLUSIVE forever.
+    expect(KIT_LONG_COMMAND_TIMEOUT_MS).toBeGreaterThan(KIT_DEFAULT_TIMEOUT_MS);
+    expect(KIT_LONG_COMMAND_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+
+    expect(resolveKitCommandTimeout({ configuredMs: undefined, longRunning: true })).toBe(
+      KIT_LONG_COMMAND_TIMEOUT_MS
+    );
+  });
+
+  it("leaves short Kit commands on the default budget so the guard hot path stays fast", () => {
+    // `guard` runs on the PreToolUse hook for every tool call. A hung Kit must surface
+    // in seconds there, not stall every edit for the long budget.
+    expect(resolveKitCommandTimeout({ configuredMs: undefined, longRunning: false })).toBeUndefined();
+  });
+
+  it("lets an explicitly configured timeout win, including for long-running commands", () => {
+    // Tests and callers that deliberately pass a short timeout must keep it; the
+    // per-command budget only applies when the bridge fell back to its default.
+    expect(resolveKitCommandTimeout({ configuredMs: 20, longRunning: true })).toBeUndefined();
+    expect(resolveKitCommandTimeout({ configuredMs: 20, longRunning: false })).toBeUndefined();
+  });
+
+  it("an explicit short timeout still times out a slow verify", async () => {
+    const shim = await createVispShim({
+      verify: { stdout: { success: true, warnings: [] }, delayMs: 250 }
+    });
+    const bridge = new KitCommandBridge({
+      projectPath: process.cwd(),
+      binary: shim.binary,
+      timeoutMs: 20
+    });
+
+    expect(await bridge.verify()).toBeNull();
+    expect(bridge.warnings.join(" ")).toMatch(/timed out/i);
+  });
+
+  it("a default bridge completes a verify that outlives a short explicit budget", async () => {
+    const shim = await createVispShim({
+      verify: { stdout: { success: true, warnings: ["slow but finished"] }, delayMs: 250 }
+    });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    expect((await bridge.verify())?.warnings).toEqual(["slow but finished"]);
+    expect(bridge.warnings).toEqual([]);
   });
 
   it("parses context packs with includedFiles and unknown fields", () => {
