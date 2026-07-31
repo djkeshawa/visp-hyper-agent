@@ -185,6 +185,8 @@ export type CheckpointEvidence = {
   verifyPassed: boolean;
   reviewPassed: boolean;
   detail?: string;
+  /** P8-03: fingerprint of the findings, recorded so a repeat can be detected. */
+  failureFingerprint?: string;
 };
 
 /**
@@ -214,7 +216,13 @@ export function advance(
       completed: [...state.completed],
       stepHistory: [
         ...state.stepHistory,
-        { taskId: current, action: "checkpoint-failed", at: now, detail: evidence.detail }
+        {
+          taskId: current,
+          action: "checkpoint-failed",
+          at: now,
+          detail: evidence.detail,
+          ...(evidence.failureFingerprint ? { failureFingerprint: evidence.failureFingerprint } : {})
+        }
       ]
     };
   }

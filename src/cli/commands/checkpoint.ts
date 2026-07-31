@@ -25,6 +25,7 @@ import { harvestSkillProposals } from "./remember.js";
 import {
   applyAdaptiveDecision,
   decideAdaptiveAction,
+  failureFingerprint,
   effectiveGraph,
   renderAdaptationBlock,
   type AdaptiveDecision
@@ -276,7 +277,14 @@ export function checkpointCommand(): Command {
       const nextState = advance(
         session.pipeline!,
         graph,
-        { verifyPassed, reviewPassed, detail: `${evidenceSource}-evidence` },
+        {
+          verifyPassed,
+          reviewPassed,
+          detail: `${evidenceSource}-evidence`,
+          // P8-03: recorded on failure so a later identical failure can be
+          // recognised and escalated instead of retried.
+          ...(verdict === "failed" ? { failureFingerprint: failureFingerprint(failureFindings) } : {})
+        },
         new Date().toISOString()
       );
       await updateActiveSession(projectPath, (current) => ({ ...current, pipeline: nextState }));

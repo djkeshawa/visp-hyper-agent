@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { KitTask, KitTaskGraph } from "../kit/kit-schemas.js";
 import type { AdaptiveDecisionRecord, PipelineState } from "../core/types.js";
 import type { FailurePattern } from "../memory/failure-patterns.js";
@@ -25,8 +26,51 @@ const REMEDIATION_PREFIX = "R-";
 
 export type AdaptiveDecision =
   | { action: "none" }
-  | { action: "inject-remediation"; rule: string; remediationTask: KitTask }
+  | {
+      action: "inject-remediation";
+      rule: string;
+      remediationTask: KitTask;
+      /**
+       * What differs from the previous attempt (P8-03). A remediation may only
+       * be injected when something actually changed; this names it so the
+       * record says why the retry was allowed.
+       */
+      changedInputs: string[];
+    }
   | { action: "escalation-directive"; rule: string; reason: string };
+
+/**
+ * Stable hash of what failed (P8-03).
+ *
+ * Normalised for whitespace, case, order, and duplicates, so two reports of the
+ * same defect that differ only in phrasing produce the same fingerprint. That
+ * normalisation is the point: without it, a reworded identical failure would
+ * read as new evidence and buy another attempt.
+ */
+export function failureFingerprint(findings: readonly string[]): string {
+  const normalized = [
+    ...new Set(
+      findings
+        .map((finding) => finding.replace(/\s+/gu, " ").trim().toLowerCase())
+        .filter((finding) => finding.length > 0)
+    )
+  ].sort();
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex").slice(0, 16);
+}
+
+/**
+ * Fingerprints of this task's failed checkpoints, oldest first. Entries written
+ * before P8-03 carry none and are reported as `null` rather than skipped, so a
+ * caller can tell "no failures" apart from "failures we cannot compare".
+ */
+export function failureFingerprintHistory(
+  state: PipelineState,
+  taskId: string
+): (string | null)[] {
+  return state.stepHistory
+    .filter((step) => step.taskId === taskId && step.action === "checkpoint-failed")
+    .map((step) => step.failureFingerprint ?? null);
+}
 
 /**
  * Trailing `checkpoint-failed` streak for `taskId`: counted from the end of
@@ -116,6 +160,29 @@ export function decideAdaptiveAction(input: {
     };
   }
 
+  // P8-03. A retry is only justified when the evidence changed. If this exact
+  // failure has been seen before on this task, another attempt would re-run the
+  // same command against the same defect and produce the same result — the
+  // degenerate loop the research calls integral windup. Escalate now rather than
+  // spending the remaining budget proving it again.
+  //
+  // This is checked BEFORE the count-based bounds because it is strictly
+  // stronger: it can escalate at the second failure where the counter would
+  // have allowed a third.
+  const history = failureFingerprintHistory(input.state, input.task.id);
+  const current = failureFingerprint(input.findings);
+  // The final entry is the failure being decided on now; earlier ones are its
+  // history. A null means the record predates P8-03 and cannot be compared,
+  // so it is not treated as a match.
+  const earlier = history.slice(0, -1);
+  if (earlier.includes(current)) {
+    return {
+      action: "escalation-directive",
+      rule: "unchanged-failure-fingerprint",
+      reason: `${input.task.id} failed with the same findings as a previous attempt (fingerprint ${current}); a retry would not change the evidence`
+    };
+  }
+
   const remediations = remediationCountFor(input.state, input.task.id);
   if (failures >= ESCALATION_AFTER_FAILURES || remediations >= MAX_REMEDIATIONS_PER_TASK) {
     return {
@@ -131,7 +198,14 @@ export function decideAdaptiveAction(input: {
   return {
     action: "inject-remediation",
     rule: `consecutive-failures>=${REMEDIATION_AFTER_FAILURES}`,
-    remediationTask: synthesizeRemediationTask(input.task, input.findings, remediations + 1)
+    remediationTask: synthesizeRemediationTask(input.task, input.findings, remediations + 1),
+    // Named rather than assumed: the retry is allowed because the evidence
+    // moved, and the record says how.
+    changedInputs: [
+      earlier.length === 0
+        ? "first comparable failure for this task"
+        : `findings changed (fingerprint ${current}, previously ${earlier.filter(Boolean).join(", ") || "unrecorded"})`
+    ]
   };
 }
 
@@ -158,7 +232,9 @@ export function applyAdaptiveDecision(
       taskId: failingTaskId,
       rule: decision.rule,
       action: "inject-remediation",
-      detail: remediationId
+      // The changed input is part of the audit trail, not just the decision:
+      // a reader asking "why was this retried?" gets the answer here.
+      detail: `${remediationId} (${decision.changedInputs.join("; ")})`
     };
     return {
       ...state,

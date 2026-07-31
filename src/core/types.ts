@@ -35,6 +35,16 @@ export type PipelineStepRecord = {
   action: "started" | "checkpoint-passed" | "checkpoint-failed" | "task-injected" | "escalation-issued";
   at: string;
   detail?: string;
+  /**
+   * Stable hash of the findings that failed this checkpoint (P8-03). Present
+   * only on `checkpoint-failed`, and only when findings were supplied.
+   *
+   * It exists so a retry can be refused when nothing has changed: the same
+   * failure seen twice escalates rather than being attempted again. Absent on
+   * records written before P8-03, which is why an unknown history falls back to
+   * the count-based bound rather than guessing.
+   */
+  failureFingerprint?: string;
 };
 
 /**
