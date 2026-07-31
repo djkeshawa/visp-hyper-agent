@@ -649,6 +649,7 @@ function scoutAttempt(overrides: Partial<TelemetryAttempt> = {}): TelemetryAttem
     firstAttempt: true,
     sessionId: "vh_test",
     at: new Date().toISOString(),
+    prediction: null,
     ...overrides
   };
   if (

@@ -78,6 +78,7 @@ function attempt(overrides: Partial<TelemetryFile["attempts"][number]>): Telemet
     firstAttempt: true,
     sessionId: "vh_seed",
     at: "2026-06-11T00:00:00.000Z",
+    prediction: null,
     ...overrides
   };
   if (

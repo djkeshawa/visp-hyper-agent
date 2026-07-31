@@ -4,7 +4,7 @@ import type {
   RiskLevel,
   TaskClass
 } from "../kit/workflow-action-protocol.js";
-import type { TelemetryAttempt } from "../telemetry/telemetry-store.js";
+import type { AttemptPrediction, TelemetryAttempt } from "../telemetry/telemetry-store.js";
 import type { RoutingDecision, RoutingState } from "./routing-state.js";
 
 export const DOWNGRADE_MIN_SAMPLES = 30;
@@ -52,6 +52,32 @@ export function wilsonLowerBound(passes: number, samples: number, z = 1.95996398
   const centre = p + z2 / (2 * samples);
   const margin = z * Math.sqrt((p * (1 - p) + z2 / (4 * samples)) / samples);
   return (centre - margin) / denominator;
+}
+
+/**
+ * Derive the calibration prediction from a routing suggestion (P8-01).
+ *
+ * The suggestion must have been computed from telemetry that does NOT yet
+ * contain the attempt being recorded — a prediction allowed to see its own
+ * outcome calibrates perfectly and means nothing.
+ *
+ * Pure and observational. It reads a suggestion and returns a record; it never
+ * alters one, and a recorded prediction never becomes an input to a later
+ * routing decision or widens any permission.
+ */
+export function predictionFromSuggestion(
+  suggestion: RoutingSuggestion,
+  tierUsed: string
+): AttemptPrediction {
+  return {
+    passRate: suggestion.evidence.passRate,
+    lowerConfidenceBound: suggestion.evidence.lowerConfidenceBound,
+    samples: suggestion.evidence.samples,
+    inconclusive: suggestion.evidence.inconclusive,
+    suggestedTier: suggestion.suggestedTier,
+    reason: suggestion.reason,
+    tierUsed
+  };
 }
 
 function downgradeEvidence(

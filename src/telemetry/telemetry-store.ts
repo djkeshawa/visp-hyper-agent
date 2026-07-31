@@ -11,6 +11,35 @@ import {
   taskClassValues
 } from "../kit/workflow-action-protocol.js";
 
+/**
+ * What routing predicted for this attempt's cohort, captured from the evidence
+ * that existed *before* the attempt was recorded. This is the prediction half of
+ * the calibration pair: the outcome half is `verdict` on the same record.
+ *
+ * P8-01. Calibration asks whether attempts predicted to pass at rate p actually
+ * pass at rate p. That question needs both halves stored together, on a
+ * prediction that could not see its own outcome.
+ *
+ * THIS IS OBSERVATIONAL ONLY. Nothing here feeds back into a routing decision,
+ * and a prediction never widens what an action may touch — Kit remains the sole
+ * authority for permission, scope, evidence sufficiency, and completion.
+ */
+export const attemptPredictionSchema = z.object({
+  /** Historical pass rate for the cohort at decision time; null when unknown. */
+  passRate: z.number().min(0).max(1).nullable(),
+  /** 95% Wilson lower bound behind that rate; null when unknown. */
+  lowerConfidenceBound: z.number().min(0).max(1).nullable(),
+  /** Decided samples backing the rate. Zero means the prediction was uninformed. */
+  samples: z.number().int().nonnegative(),
+  /** Attempts excluded from the denominator because they were inconclusive. */
+  inconclusive: z.number().int().nonnegative(),
+  /** Tier routing suggested, and the reason it gave. */
+  suggestedTier: z.string().min(1),
+  reason: z.string(),
+  /** Tier actually used. A mismatch is a real signal, so it is recorded. */
+  tierUsed: z.string().min(1)
+});
+
 export const telemetryAttemptSchema = z.object({
   taskId: z.string(),
   featureId: z.string().min(1).nullable().optional(),
@@ -34,7 +63,13 @@ export const telemetryAttemptSchema = z.object({
   evidenceSource: z.enum(["kit", "local"]),
   firstAttempt: z.boolean(),
   sessionId: z.string(),
-  at: z.string()
+  at: z.string(),
+  /**
+   * Null means this attempt cannot be calibrated — either it predates P8-01 or
+   * no prediction was available. It is never back-filled: inventing a prediction
+   * after the outcome is known is exactly the thing calibration exists to detect.
+   */
+  prediction: attemptPredictionSchema.nullable()
 });
 
 export const telemetryUsageSchema = z.object({
@@ -88,7 +123,11 @@ function migrateTelemetryFile(value: unknown): unknown {
       verdict:
         entry.verdict ??
         (entry.verifyPassed === true && entry.reviewPassed === true ? "passed" : "inconclusive"),
-      evidenceSource: entry.evidenceSource ?? "local"
+      evidenceSource: entry.evidenceSource ?? "local",
+      // Records written before P8-01 carry no prediction and stay readable as
+      // un-calibratable. Reconstructing one now would mean deriving it from
+      // history that already contains this attempt's own outcome.
+      prediction: entry.prediction ?? null
     };
   });
 
@@ -103,6 +142,7 @@ export const telemetryFileSchema = z.preprocess(
   })
 );
 
+export type AttemptPrediction = z.infer<typeof attemptPredictionSchema>;
 export type TelemetryAttempt = z.infer<typeof telemetryAttemptSchema>;
 export type TelemetryUsage = z.infer<typeof telemetryUsageSchema>;
 export type TelemetryFile = z.infer<typeof telemetryFileSchema>;
@@ -141,7 +181,9 @@ async function writeTelemetry(projectPath: string, data: TelemetryFile): Promise
  */
 export async function appendAttempt(
   projectPath: string,
-  attempt: Omit<TelemetryAttempt, "attempt" | "firstAttempt" | "at">
+  attempt: Omit<TelemetryAttempt, "attempt" | "firstAttempt" | "at" | "prediction"> & {
+    readonly prediction?: AttemptPrediction | null;
+  }
 ): Promise<TelemetryAttempt> {
   return withStoreLock(projectPath, async () => {
     const { data } = await readTelemetry(projectPath);
@@ -154,6 +196,7 @@ export async function appendAttempt(
     const attemptNumber = priorForTask + 1;
     const record: TelemetryAttempt = {
       ...attempt,
+      prediction: attempt.prediction ?? null,
       workItemKey,
       attempt: attemptNumber,
       firstAttempt: attemptNumber === 1,

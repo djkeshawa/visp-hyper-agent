@@ -33,6 +33,7 @@ import { advance, buildActionBlock, currentTask, loadTaskGraph } from "../../pip
 import {
   computeSuggestedTier,
   escalate,
+  predictionFromSuggestion,
   renderModelRouting
 } from "../../routing/routing-engine.js";
 import {
@@ -45,7 +46,11 @@ import {
   readRoutingState,
   updateRoutingState
 } from "../../routing/routing-state.js";
-import { appendAttempt, readTelemetry } from "../../telemetry/telemetry-store.js";
+import {
+  appendAttempt,
+  readTelemetry,
+  type AttemptPrediction
+} from "../../telemetry/telemetry-store.js";
 import { printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 import { collectChangedFiles } from "../../governance/scope-guard.js";
 import type { EvidenceVerdict } from "../../core/types.js";
@@ -53,6 +58,42 @@ import type { EvidenceVerdict } from "../../core/types.js";
 // Default tier recorded in telemetry when the orchestrator does not report
 // which tier actually executed the task via `--tier`.
 const DEFAULT_TIER = "implementer";
+
+/**
+ * Compute the calibration prediction for an attempt about to be recorded (P8-01).
+ *
+ * Reads telemetry BEFORE the append, so the prediction cannot see its own
+ * outcome — a prediction that can is trivially well calibrated and worthless.
+ *
+ * Returns null when routing cannot be computed. An absent prediction is recorded
+ * honestly as un-calibratable; it is never invented after the fact, which is the
+ * failure calibration exists to detect.
+ *
+ * Observational only: it never changes a routing decision and never widens what
+ * an action may touch.
+ */
+async function predictionForAttempt(input: {
+  projectPath: string;
+  task: Parameters<typeof computeSuggestedTier>[0]["task"];
+  cohort: Parameters<typeof computeSuggestedTier>[0]["cohort"];
+  tierUsed: string;
+}): Promise<AttemptPrediction | null> {
+  try {
+    const { data: telemetry } = await readTelemetry(input.projectPath);
+    const { state: routingState } = await readRoutingState(input.projectPath);
+    const hyperState = await readState(input.projectPath);
+    const suggestion = computeSuggestedTier({
+      task: input.task,
+      cohort: input.cohort,
+      attempts: telemetry.attempts,
+      routingState,
+      sessionCount: Object.keys(hyperState.sessions).length
+    });
+    return predictionFromSuggestion(suggestion, input.tierUsed);
+  } catch {
+    return null;
+  }
+}
 
 export function checkpointCommand(): Command {
   return new Command("checkpoint")
@@ -200,6 +241,12 @@ export function checkpointCommand(): Command {
         modelId: options.model ?? defaultModelId(session.tool, tier),
         modelVersion: options.modelVersion ?? null
       });
+      const localPrediction = await predictionForAttempt({
+        projectPath,
+        task: { id: taskId, taskClass, riskLevel, riskFactors, assuranceProfile },
+        cohort: routingCohort,
+        tierUsed: tier
+      });
       try {
         await appendAttempt(projectPath, {
           taskId,
@@ -207,6 +254,7 @@ export function checkpointCommand(): Command {
           riskLevel,
           riskFactors,
           assuranceProfile,
+          prediction: localPrediction,
           host: routingCohort.host,
           modelId: routingCohort.modelId,
           modelVersion: routingCohort.modelVersion,
@@ -435,10 +483,17 @@ async function runConfiguredKitCheckpoint(
           modelId: actualModel.modelId,
           modelVersion: actualModel.modelVersion
         });
+        const strictPrediction = await predictionForAttempt({
+          projectPath,
+          task: { ...routingBinding.task, id: taskId },
+          cohort,
+          tierUsed: actualModel.tier ?? DEFAULT_TIER
+        });
         await appendAttempt(projectPath, {
           taskId,
           featureId: routingBinding.featureId,
           workItemKey: `${routingBinding.featureId}:${taskId}`,
+          prediction: strictPrediction,
           taskClass: routingBinding.task.taskClass,
           riskLevel: routingBinding.task.riskLevel,
           riskFactors:

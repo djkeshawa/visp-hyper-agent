@@ -58,7 +58,8 @@ function scoutAttempts(
     evidenceSource: "local",
     firstAttempt: true,
     sessionId: `vh_${index}`,
-    at: "2026-07-11T00:00:00.000Z"
+    at: "2026-07-11T00:00:00.000Z",
+    prediction: null
   }));
 }
 
