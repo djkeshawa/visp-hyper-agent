@@ -552,7 +552,16 @@ export const kitTaskSchema = z.object({
   taskClass: taskClassSchema.optional(),
   riskLevel: riskLevelSchema.optional(),
   riskFactors: riskFactorsSchema.optional(),
-  assuranceProfile: assuranceProfileSchema.optional()
+  assuranceProfile: assuranceProfileSchema.optional(),
+  /**
+   * P8-05. Declared by Kit, enforced here. Hyper never derives `approvalClass`
+   * — computing it would make Hyper a second authority on permission, which the
+   * boundary forbids. Optional so a task graph written before P8-05 stays
+   * readable; absent is treated as the conservative case, not as consent.
+   */
+  reversibility: z.enum(["reversible", "compensable", "irreversible"]).optional(),
+  blastRadius: z.enum(["task", "project", "external"]).optional(),
+  approvalClass: z.enum(["autonomous", "checkpointed", "approval_required"]).optional()
 });
 export type KitTask = z.infer<typeof kitTaskSchema>;
 
