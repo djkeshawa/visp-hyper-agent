@@ -91,6 +91,7 @@ Kit withheld** — that separation is the point.
 | | |
 |---|---|
 | [Commands](docs/commands.md) | Every command, and the output blocks it prints |
+| [Cockpit](docs/cockpit.md) | Read-only local artifact screens, provenance, and transport boundaries |
 | [Working inside an agent](docs/workflows.md) | A full Claude Code session, skill harvesting, model routing |
 | [MCP server](docs/mcp.md) | Exposing Hyper over MCP |
 | [Configuration](docs/configuration.md) | File layout, memory modes, current limits |

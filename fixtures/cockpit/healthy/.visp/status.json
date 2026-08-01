@@ -1,0 +1,11 @@
+{
+  "initialized": true,
+  "activeFeatureId": "001",
+  "activeFeatureSlug": "cockpit",
+  "activeFeaturePath": ".visp/features/001-cockpit",
+  "activeTaskId": "T001",
+  "currentState": "verified",
+  "lastCommand": "verify",
+  "createdAt": "2026-08-01T00:00:00.000Z",
+  "updatedAt": "2026-08-01T00:10:00.000Z"
+}

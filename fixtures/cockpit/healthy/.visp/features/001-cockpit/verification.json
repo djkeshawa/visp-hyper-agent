@@ -1,0 +1,86 @@
+{
+  "id": "VER-001-T001",
+  "featureId": "001",
+  "featureSlug": "cockpit",
+  "taskId": "T001",
+  "mode": "targeted",
+  "startedAt": "2026-08-01T00:08:00.000Z",
+  "endedAt": "2026-08-01T00:09:00.000Z",
+  "durationMs": 60000,
+  "success": true,
+  "summary": {
+    "passed": true,
+    "failed": false,
+    "warnings": 0,
+    "commandsRun": 1,
+    "commandsPassed": 1,
+    "commandsFailed": 0,
+    "artifactsChecked": 1,
+    "artifactsFailed": 0,
+    "scopeViolations": 0,
+    "dependencyViolations": 0
+  },
+  "artifactValidation": {
+    "status": "passed",
+    "checked": [{
+      "path": ".visp/status.json",
+      "required": true,
+      "present": true,
+      "passed": true,
+      "errors": [],
+      "warnings": []
+    }],
+    "warnings": [],
+    "errors": []
+  },
+  "traceabilityValidation": {
+    "status": "passed",
+    "checkedTaskId": "T001",
+    "warnings": [],
+    "errors": []
+  },
+  "commandValidation": {
+    "status": "passed",
+    "commands": [{
+      "command": "fixture-check --opaque 7f3a",
+      "cwd": "/fixture/repository",
+      "exitCode": 0,
+      "success": true,
+      "durationMs": 60000,
+      "startedAt": "2026-08-01T00:08:00.000Z",
+      "endedAt": "2026-08-01T00:09:00.000Z",
+      "stdout": "ok",
+      "stderr": "",
+      "stdoutTruncated": false,
+      "stderrTruncated": false,
+      "skipped": false,
+      "skipReason": null,
+      "timedOut": false
+    }],
+    "warnings": [],
+    "errors": []
+  },
+  "scopeValidation": {
+    "status": "passed",
+    "changedFiles": ["src/cockpit/server.ts"],
+    "allowedFiles": ["src/cockpit/server.ts"],
+    "expectedFiles": ["tests/cockpit-host.test.ts"],
+    "forbiddenFiles": ["src/governance/**"],
+    "outOfScopeFiles": [],
+    "forbiddenChangedFiles": [],
+    "unmappedChangedFiles": [],
+    "warnings": [],
+    "errors": []
+  },
+  "dependencyValidation": {
+    "status": "passed",
+    "changedDependencyFiles": [],
+    "approvedByTaskScope": false,
+    "approvedByPlan": false,
+    "warnings": [],
+    "errors": []
+  },
+  "warnings": [],
+  "errors": [],
+  "nextCommand": "fixture-next --opaque 91c2"
+}

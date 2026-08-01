@@ -17,6 +17,7 @@
 | `visp-hyper report [--json]` | The cost/accuracy evidence view: first-attempt verify+review pass rates per model tier, task class, risk level, and risk factor; token totals; active routing quarantines; recent routing decisions; and skill usage with prune flags. |
 | `visp-hyper status` | Renders the canonical Kit action when Kit is configured; otherwise prints explicitly local session/context/checkpoint/memory status. |
 | `visp-hyper doctor [--json]` | Read-only compatibility check for trusted project config, selected host/version probe, capability manifest and installed-asset hashes, Kit contract/action, context freshness, policy/gate, hook, Memory reachability, and MCP surface integrity. |
+| `visp-hyper cockpit` | Serves the repository's read-only nine-screen Cockpit on an ephemeral `127.0.0.1` port. The printed URL contains a one-session token; the server displays only Kit-validated artifacts, makes no outbound request, executes no command, and stops on Ctrl-C. |
 ## Output Blocks
 
 All orchestration output is deterministic, delimited text designed for LLM consumption:

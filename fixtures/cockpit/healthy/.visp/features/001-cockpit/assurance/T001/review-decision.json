@@ -1,0 +1,9 @@
+{
+  "version": "1.0",
+  "featureId": "001",
+  "featureSlug": "cockpit",
+  "taskId": "T001",
+  "decisionPath": ".visp/features/001-cockpit/assurance/T001/review-decisions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+  "decisionHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "updatedAt": "2026-08-01T00:10:00.000Z"
+}

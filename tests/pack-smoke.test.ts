@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { execFileResolved } from "../src/core/executable-resolver.js";
 import { createToolContext } from "../src/mcp/tool-bridge.js";
+import "./cockpit-packed-pair-smoke.js";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const distIndex = join(packageRoot, "dist", "index.js");
@@ -20,8 +21,8 @@ async function fileExists(path: string): Promise<boolean> {
 /**
  * `npm pack` computes the tarball file list from `files` + disk. We skip the
  * `prepack` build with `--ignore-scripts` for speed, so the dist artifacts must
- * already exist on disk for the file-list assertions to be meaningful. `pnpm
- * test` does not build, so build on demand (mirrors hooks-command.test.ts).
+ * already exist on disk for the file-list assertions to be meaningful. The
+ * package test script builds first; direct Vitest runs still build on demand.
  */
 async function packFiles(): Promise<string[]> {
   const { stdout } = await execFileResolved(
@@ -70,6 +71,7 @@ describe("npm pack smoke", () => {
     // Only the reference material the README links to. Listing it exactly means
     // a new internal document cannot start shipping by accident.
     expect(files.filter((path) => path.startsWith("docs/")).sort()).toEqual([
+      "docs/cockpit.md",
       "docs/commands.md",
       "docs/configuration.md",
       "docs/development.md",
@@ -85,5 +87,21 @@ describe("npm pack smoke", () => {
     };
     const { serverInfo } = createToolContext("/tmp");
     expect(serverInfo.version).toBe(manifest.version);
+  });
+
+  it("declares the exact supported Kit package as an optional peer", async () => {
+    const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+      peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+    };
+
+    expect(manifest.peerDependencies?.["visp-kit"]).toBe("0.3.0");
+    expect(manifest.peerDependenciesMeta?.["visp-kit"]).toEqual({ optional: true });
+    expect(manifest.dependencies?.["visp-kit"]).toBeUndefined();
+    expect(manifest.devDependencies?.["visp-kit"]).toBeUndefined();
+    expect(manifest.optionalDependencies?.["visp-kit"]).toBeUndefined();
   });
 });

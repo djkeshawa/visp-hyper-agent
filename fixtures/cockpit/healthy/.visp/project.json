@@ -1,0 +1,17 @@
+{
+  "name": "cockpit-fixture",
+  "rootPath": "/fixture/repository",
+  "packageManager": "pnpm",
+  "languages": ["TypeScript"],
+  "frameworks": [],
+  "testFrameworks": ["Vitest"],
+  "buildCommands": ["fixture-build --opaque 25a8"],
+  "testCommands": ["fixture-check --opaque 7f3a"],
+  "lintCommands": [],
+  "typecheckCommands": ["fixture-typecheck --opaque 820d"],
+  "sourceRoots": ["src"],
+  "testRoots": ["tests"],
+  "ignoredPaths": ["node_modules", "dist"],
+  "createdAt": "2026-08-01T00:00:00.000Z",
+  "updatedAt": "2026-08-01T00:10:00.000Z"
+}

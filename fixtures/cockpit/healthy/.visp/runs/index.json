@@ -1,0 +1,29 @@
+{
+  "latestRunId": "run-0002",
+  "runs": [
+    {
+      "id": "run-0001",
+      "command": "fixture-check --opaque 7f3a",
+      "featureId": "001",
+      "featureSlug": "cockpit",
+      "taskId": "T001",
+      "startedAt": "2026-08-01T00:01:00.000Z",
+      "endedAt": "2026-08-01T00:02:00.000Z",
+      "success": true,
+      "result": "passed",
+      "runPath": ".visp/runs/run-0001/run.json"
+    },
+    {
+      "id": "run-0002",
+      "command": "fixture-next --opaque 91c2",
+      "featureId": "001",
+      "featureSlug": "cockpit",
+      "taskId": "T001",
+      "startedAt": "2026-08-01T00:03:00.000Z",
+      "endedAt": "2026-08-01T00:04:00.000Z",
+      "success": false,
+      "result": "failed",
+      "runPath": ".visp/runs/run-0002/run.json"
+    }
+  ]
+}

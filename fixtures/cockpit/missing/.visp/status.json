@@ -1,0 +1,11 @@
+{
+  "initialized": true,
+  "activeFeatureId": "001",
+  "activeFeatureSlug": "missing-feature",
+  "activeFeaturePath": ".visp/features/001-missing-feature",
+  "activeTaskId": "T001",
+  "currentState": "context_ready",
+  "lastCommand": "context",
+  "createdAt": "2026-08-01T00:00:00.000Z",
+  "updatedAt": "2026-08-01T00:10:00.000Z"
+}

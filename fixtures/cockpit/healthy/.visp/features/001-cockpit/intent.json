@@ -1,0 +1,11 @@
+{
+  "id": "001",
+  "slug": "cockpit",
+  "title": "Local Cockpit",
+  "status": "in_progress",
+  "budgetMode": "balanced",
+  "riskLevel": "medium",
+  "createdAt": "2026-08-01T00:00:00.000Z",
+  "updatedAt": "2026-08-01T00:10:00.000Z",
+  "rawUserRequest": "Expose the local read-only Cockpit over Kit artifacts."
+}

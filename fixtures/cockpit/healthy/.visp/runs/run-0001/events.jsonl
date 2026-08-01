@@ -1,0 +1,2 @@
+{"id":"evt-0001","runId":"run-0001","type":"command_started","command":"fixture-check --opaque 7f3a","message":"started 🧪","createdAt":"2026-08-01T00:01:00.000Z"}
+{"id":"evt-0002","runId":"run-0001","type":"command_completed","command":"fixture-check --opaque 7f3a","message":"complete","createdAt":"2026-08-01T00:02:00.000Z"}
