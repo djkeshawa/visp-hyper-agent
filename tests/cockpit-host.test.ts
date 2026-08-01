@@ -64,8 +64,6 @@ const PHASE_9_SCREEN_IDS = [
 ] as const;
 const openServers: CockpitServer[] = [];
 const temporaryDirectories = new Set<string>();
-const WINDOWS_RENAME_RETRY_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
-const WINDOWS_RENAME_RETRY_TIMEOUT_MS = 3_000;
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -81,27 +79,6 @@ async function copyFixture(name: string): Promise<string> {
   temporaryDirectories.add(projectPath);
   await cp(join(fixtureRoot, name), projectPath, { recursive: true, force: true });
   return projectPath;
-}
-
-async function renameTestDirectory(sourcePath: string, destinationPath: string): Promise<void> {
-  const deadline = Date.now() + WINDOWS_RENAME_RETRY_TIMEOUT_MS;
-  while (true) {
-    try {
-      await rename(sourcePath, destinationPath);
-      return;
-    } catch (error) {
-      const code = error instanceof Error && "code" in error ? error.code : undefined;
-      if (
-        process.platform !== "win32" ||
-        typeof code !== "string" ||
-        !WINDOWS_RENAME_RETRY_CODES.has(code) ||
-        Date.now() >= deadline
-      ) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
 }
 
 async function start(
@@ -618,62 +595,85 @@ describe("Cockpit loopback and request security (P9-03)", () => {
     }
   );
 
-  it("fails closed when the canonical project directory entry is replaced", async () => {
-    const parentPath = await mkdtemp(join(tmpdir(), "visp-cockpit-root-replace-"));
-    temporaryDirectories.add(parentPath);
-    const projectPath = join(parentPath, "project");
-    const displacedPath = join(parentPath, "displaced-project");
-    await cp(join(fixtureRoot, "healthy"), projectPath, { recursive: true, force: true });
-    const server = await start(projectPath);
-    expect((await httpRequest(server, "/api/state")).status).toBe(200);
+  it.runIf(process.platform === "win32")(
+    "keeps a running server's watched project root non-replaceable",
+    async () => {
+      const parentPath = await mkdtemp(join(tmpdir(), "visp-cockpit-root-windows-"));
+      temporaryDirectories.add(parentPath);
+      const projectPath = join(parentPath, "project");
+      const displacedPath = join(parentPath, "displaced-project");
+      await cp(join(fixtureRoot, "healthy"), projectPath, { recursive: true, force: true });
+      const server = await start(projectPath);
 
-    await renameTestDirectory(projectPath, displacedPath);
-    await cp(join(fixtureRoot, "corrupt"), projectPath, { recursive: true, force: true });
+      await expect(rename(projectPath, displacedPath)).rejects.toMatchObject({
+        code: expect.stringMatching(/^(?:EACCES|EBUSY|EPERM)$/u)
+      });
+      expect((await httpRequest(server, "/api/state")).status).toBe(200);
+    }
+  );
 
-    expect((await httpRequest(server, "/api/state")).status).toBe(500);
-    expect((await httpRequest(server, "/api/runs?offset=0&limit=1")).status).toBe(500);
-  });
+  it.skipIf(process.platform === "win32")(
+    "fails closed when the canonical project directory entry is replaced",
+    async () => {
+      const parentPath = await mkdtemp(join(tmpdir(), "visp-cockpit-root-replace-"));
+      temporaryDirectories.add(parentPath);
+      const projectPath = join(parentPath, "project");
+      const displacedPath = join(parentPath, "displaced-project");
+      await cp(join(fixtureRoot, "healthy"), projectPath, { recursive: true, force: true });
+      const server = await start(projectPath);
+      expect((await httpRequest(server, "/api/state")).status).toBe(200);
 
-  it("rechecks the pinned project root after an asynchronous state read", async () => {
-    const parentPath = await mkdtemp(join(tmpdir(), "visp-cockpit-root-read-race-"));
-    temporaryDirectories.add(parentPath);
-    const projectPath = join(parentPath, "project");
-    const displacedPath = join(parentPath, "displaced-project");
-    await cp(join(fixtureRoot, "healthy"), projectPath, { recursive: true, force: true });
-    const baseKit = await loadCockpitKitArtifacts(projectPath, async () => testKitArtifactsModule);
-    let signalEntered: () => void = () => undefined;
-    const entered = new Promise<void>((resolve) => {
-      signalEntered = resolve;
-    });
-    let releaseRead: () => void = () => undefined;
-    const readBarrier = new Promise<void>((resolve) => {
-      releaseRead = resolve;
-    });
-    const server = await startCockpitServer({
-      projectPath,
-      port: 0,
-      kitArtifacts: Object.freeze({
-        ...baseKit,
-        reader: Object.freeze({
-          ...baseKit.reader,
-          projectStatus: async (...args: Parameters<typeof baseKit.reader.projectStatus>) => {
-            signalEntered();
-            await readBarrier;
-            return baseKit.reader.projectStatus(...args);
-          }
+      await rename(projectPath, displacedPath);
+      await cp(join(fixtureRoot, "corrupt"), projectPath, { recursive: true, force: true });
+
+      expect((await httpRequest(server, "/api/state")).status).toBe(500);
+      expect((await httpRequest(server, "/api/runs?offset=0&limit=1")).status).toBe(500);
+    }
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rechecks the pinned project root after an asynchronous state read",
+    async () => {
+      const parentPath = await mkdtemp(join(tmpdir(), "visp-cockpit-root-read-race-"));
+      temporaryDirectories.add(parentPath);
+      const projectPath = join(parentPath, "project");
+      const displacedPath = join(parentPath, "displaced-project");
+      await cp(join(fixtureRoot, "healthy"), projectPath, { recursive: true, force: true });
+      const baseKit = await loadCockpitKitArtifacts(projectPath, async () => testKitArtifactsModule);
+      let signalEntered: () => void = () => undefined;
+      const entered = new Promise<void>((resolve) => {
+        signalEntered = resolve;
+      });
+      let releaseRead: () => void = () => undefined;
+      const readBarrier = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      const server = await startCockpitServer({
+        projectPath,
+        port: 0,
+        kitArtifacts: Object.freeze({
+          ...baseKit,
+          reader: Object.freeze({
+            ...baseKit.reader,
+            projectStatus: async (...args: Parameters<typeof baseKit.reader.projectStatus>) => {
+              signalEntered();
+              await readBarrier;
+              return baseKit.reader.projectStatus(...args);
+            }
+          })
         })
-      })
-    });
-    openServers.push(server);
+      });
+      openServers.push(server);
 
-    const pendingResponse = httpRequest(server, "/api/state");
-    await entered;
-    await renameTestDirectory(projectPath, displacedPath);
-    await cp(join(fixtureRoot, "corrupt"), projectPath, { recursive: true, force: true });
-    releaseRead();
+      const pendingResponse = httpRequest(server, "/api/state");
+      await entered;
+      await rename(projectPath, displacedPath);
+      await cp(join(fixtureRoot, "corrupt"), projectPath, { recursive: true, force: true });
+      releaseRead();
 
-    expect((await pendingResponse).status).toBe(500);
-  });
+      expect((await pendingResponse).status).toBe(500);
+    }
+  );
 
   it("uses a distinct token per server session and rejects another session's token", async () => {
     const projectPath = await copyFixture("healthy");
