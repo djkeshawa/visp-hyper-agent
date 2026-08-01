@@ -16,7 +16,7 @@ import {
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   COCKPIT_KIT_ARTIFACTS_MODULE_ID,
@@ -26,6 +26,11 @@ import {
   startCockpitServer,
   type StartCockpitServerOptions
 } from "../src/cockpit/server.js";
+import {
+  createTestArtifactReader,
+  createTestReviewDecisionHash,
+  testArtifactSchemas
+} from "./helpers/cockpit-kit-artifacts.js";
 
 type CockpitServer = Awaited<ReturnType<typeof startCockpitServer>>;
 
@@ -42,20 +47,10 @@ type RequestOptions = {
 };
 
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "cockpit");
-const kitArtifactsModuleUrl = pathToFileURL(
-  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "visp-kit", "src", "artifacts", "public.ts")
-).href;
-const kitReviewDecisionHashModuleUrl = pathToFileURL(
-  join(
-    dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "..",
-    "visp-kit",
-    "src",
-    "review",
-    "review-decision-hash.ts"
-  )
-).href;
+const testKitArtifactsModule = Object.freeze({
+  artifactSchemas: testArtifactSchemas,
+  createArtifactReader: createTestArtifactReader
+});
 const PHASE_9_SCREEN_IDS = [
   "now",
   "feature",
@@ -98,7 +93,7 @@ async function start(
     port: 0,
     loadKitModule: async (specifier) => {
       expect(specifier).toBe(COCKPIT_KIT_ARTIFACTS_MODULE_ID);
-      return import(kitArtifactsModuleUrl);
+      return testKitArtifactsModule;
     },
     ...input
   });
@@ -471,7 +466,7 @@ async function writeSchemaValidMismatchedReviewHistory(projectPath: string): Pro
     featureSlug: "cockpit",
     taskId: "T001",
     assuranceProfile: "behavioral",
-    reviewerId: "real-reader-regression",
+    reviewerId: "artifact-reader-regression",
     identityAssurance: "self_declared",
     decision: "accept",
     reason: "Schema-valid history deliberately has the wrong feature identity.",
@@ -492,10 +487,7 @@ async function writeSchemaValidMismatchedReviewHistory(projectPath: string): Pro
     supersedesDecisionHash: null,
     decidedAt
   } as const;
-  const hashModule = (await import(kitReviewDecisionHashModuleUrl)) as {
-    createReviewDecisionHash(value: typeof decision): string;
-  };
-  const decisionHash = hashModule.createReviewDecisionHash(decision);
+  const decisionHash = createTestReviewDecisionHash(decision);
   const digest = decisionHash.slice("sha256:".length);
   const decisionPath = `.visp/features/001-cockpit/assurance/T001/review-decisions/${digest}.json`;
 
@@ -625,7 +617,7 @@ describe("Cockpit loopback and request security (P9-03)", () => {
     const projectPath = join(parentPath, "project");
     const displacedPath = join(parentPath, "displaced-project");
     await cp(join(fixtureRoot, "healthy"), projectPath, { recursive: true, force: true });
-    const baseKit = await loadCockpitKitArtifacts(projectPath, () => import(kitArtifactsModuleUrl));
+    const baseKit = await loadCockpitKitArtifacts(projectPath, async () => testKitArtifactsModule);
     let signalEntered: () => void = () => undefined;
     const entered = new Promise<void>((resolve) => {
       signalEntered = resolve;
@@ -1126,7 +1118,7 @@ describe("Cockpit runs and byte-tail APIs (P9-03/P9-05)", () => {
 });
 
 describe("Cockpit degraded-state and non-authority conformance (P9-05)", () => {
-  it("fails a schema-valid real-reader pointer identity mismatch closed", async () => {
+  it("fails a schema-valid artifact-reader pointer identity mismatch closed", async () => {
     const projectPath = await copyFixture("healthy");
     const pointerPath = join(
       projectPath,
@@ -1155,7 +1147,7 @@ describe("Cockpit degraded-state and non-authority conformance (P9-05)", () => {
     });
   });
 
-  it("fails schema-valid real-reader history identity mismatch closed", async () => {
+  it("fails schema-valid artifact-reader history identity mismatch closed", async () => {
     const projectPath = await copyFixture("healthy");
     await writeSchemaValidMismatchedReviewHistory(projectPath);
     const response = await httpRequest(await start(projectPath), "/api/state");
