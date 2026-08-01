@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -70,7 +70,7 @@ describe("Cockpit resolved path containment", () => {
       ".visp/runs/run-0001/events.jsonl",
       "file"
     );
-    expect(result.absolutePath).toBe(filePath);
+    expect(result.absolutePath).toBe(await realpath(filePath));
     expect(result.relativePath).toBe(".visp/runs/run-0001/events.jsonl");
     expect(result.relativePath).not.toContain("\\");
   });

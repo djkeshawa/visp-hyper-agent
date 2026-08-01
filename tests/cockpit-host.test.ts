@@ -64,6 +64,8 @@ const PHASE_9_SCREEN_IDS = [
 ] as const;
 const openServers: CockpitServer[] = [];
 const temporaryDirectories = new Set<string>();
+const WINDOWS_RENAME_RETRY_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+const WINDOWS_RENAME_RETRY_TIMEOUT_MS = 3_000;
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -79,6 +81,27 @@ async function copyFixture(name: string): Promise<string> {
   temporaryDirectories.add(projectPath);
   await cp(join(fixtureRoot, name), projectPath, { recursive: true, force: true });
   return projectPath;
+}
+
+async function renameTestDirectory(sourcePath: string, destinationPath: string): Promise<void> {
+  const deadline = Date.now() + WINDOWS_RENAME_RETRY_TIMEOUT_MS;
+  while (true) {
+    try {
+      await rename(sourcePath, destinationPath);
+      return;
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? error.code : undefined;
+      if (
+        process.platform !== "win32" ||
+        typeof code !== "string" ||
+        !WINDOWS_RENAME_RETRY_CODES.has(code) ||
+        Date.now() >= deadline
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 }
 
 async function start(
@@ -604,7 +627,7 @@ describe("Cockpit loopback and request security (P9-03)", () => {
     const server = await start(projectPath);
     expect((await httpRequest(server, "/api/state")).status).toBe(200);
 
-    await rename(projectPath, displacedPath);
+    await renameTestDirectory(projectPath, displacedPath);
     await cp(join(fixtureRoot, "corrupt"), projectPath, { recursive: true, force: true });
 
     expect((await httpRequest(server, "/api/state")).status).toBe(500);
@@ -645,7 +668,7 @@ describe("Cockpit loopback and request security (P9-03)", () => {
 
     const pendingResponse = httpRequest(server, "/api/state");
     await entered;
-    await rename(projectPath, displacedPath);
+    await renameTestDirectory(projectPath, displacedPath);
     await cp(join(fixtureRoot, "corrupt"), projectPath, { recursive: true, force: true });
     releaseRead();
 
