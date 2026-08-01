@@ -64,9 +64,10 @@ async function flushRealIo(): Promise<void> {
 async function waitForPredicate(
   predicate: () => boolean,
   description: string,
-  attempts = 100
+  timeoutMs = 3_000
 ): Promise<void> {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (predicate()) return;
     await flushRealIo();
   }
