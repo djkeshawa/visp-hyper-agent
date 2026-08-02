@@ -17,6 +17,11 @@ export type HyperConfig = {
    * holds: they run via execFile argument arrays like detected commands.
    */
   validationCommands?: string[];
+  /**
+   * P10-US-03: which Kit binary the bridge spawns. Unset means auto-resolve
+   * (VISP_KIT_BINARY env, then probe visp-kit, then fall back to visp).
+   */
+  kitBinary?: string;
 };
 
 export type HyperState = {

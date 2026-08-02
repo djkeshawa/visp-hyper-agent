@@ -20,6 +20,21 @@ npm install -g visp-hyper-agent
 
 Requires Node 22 or later, Git, and [`visp-kit`](https://www.npmjs.com/package/visp-kit).
 
+## Compatibility
+
+This package is the Visp coordinator. It provides the `visp-hyper` command; it
+decides nothing — Visp Kit is the engine.
+
+- **With Kit:** this bridge release drives Kit through either CLI identity —
+  `visp-kit` (Kit >= 0.4.0, after the rename) or `visp` (Kit <= 0.3.x, before
+  it). It probes `visp-kit` first and falls back to `visp`; override with the
+  `VISP_KIT_BINARY` environment variable or the `kitBinary` field in
+  `.visp/hyper/config.json`. Requires `visp-kit` >= 0.2.3.
+- **With Memory:** optional. `visp-hyper` works without visp-memory installed;
+  memory-backed features refuse visibly when it is absent.
+- **With Visp Dev:** not required for project work; machine setup and checks
+  live there.
+
 ## First run
 
 ```bash

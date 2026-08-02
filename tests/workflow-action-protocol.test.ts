@@ -30,6 +30,8 @@ const V31_HASH =
   "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d";
 const V32_HASH =
   "sha256:77dcaba51ef8e1a78064680077f8bcc48c081d8025596c6cc8df9ea7873d68e9";
+const V34_HASH =
+  "sha256:bee85bf783a3557c99c9feb716e967997595dfa228380be71815da531f055ca5";
 const V3_ACTION_ID =
   "sha256:f43debda81ad16a4cebb07c3f3ad149538a531b09dac991a284fb62219f50fce";
 
@@ -176,12 +178,13 @@ function advertisedSelection(
 
 describe("WorkflowAction protocol negotiation", () => {
   it("keeps immutable local preference and accepted schema-hash trust anchors", () => {
-    expect(WORKFLOW_ACTION_PROTOCOL_PREFERENCE).toEqual(["3.2", "3.1", "3.0", "2.0"]);
+    expect(WORKFLOW_ACTION_PROTOCOL_PREFERENCE).toEqual(["3.4", "3.2", "3.1", "3.0", "2.0"]);
     expect(TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES).toEqual({
       "2.0": V2_HASH,
       "3.0": V3_HASH,
       "3.1": V31_HASH,
-      "3.2": V32_HASH
+      "3.2": V32_HASH,
+      "3.4": V34_HASH
     });
     expect(Object.isFrozen(WORKFLOW_ACTION_PROTOCOL_PREFERENCE)).toBe(true);
     expect(Object.isFrozen(TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)).toBe(true);

@@ -3,6 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { ZodType, ZodTypeDef } from "zod";
 import { execFileResolved } from "../core/executable-resolver.js";
+import { resolveKitBinary, type KitBinaryResolution } from "./kit-binary-resolver.js";
 import {
   classifyKitAvailability,
   type KitAvailability,
@@ -51,7 +52,6 @@ export type { KitAvailability } from "./kit-availability.js";
 // Schemas with `.transform()` have a different input than output type; allow any input.
 type OutputSchema<T> = ZodType<T, ZodTypeDef, unknown>;
 
-const DEFAULT_BINARY = "visp";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 // Kit's verification runner allows 120s per validation command and may run several
@@ -127,7 +127,17 @@ export async function detectVisp(
   projectPath: string,
   options: { timeoutMs?: number; binary?: string } = {}
 ): Promise<KitAvailability> {
-  const binary = options.binary ?? DEFAULT_BINARY;
+  let binary = options.binary;
+  if (binary === undefined) {
+    const resolution = await resolveKitBinary({ projectPath });
+    if (!resolution.ok) {
+      return classifyKitAvailability({
+        hasKitSignals: true,
+        probe: { kind: "failed", reasonCode: "binary_not_found", reason: resolution.reason }
+      });
+    }
+    binary = resolution.binary;
+  }
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const signalProbe = await probeKitArtifacts(projectPath);
   const hasKitSignals = signalProbe.state !== "absent";
@@ -174,15 +184,36 @@ export class KitCommandBridge {
   readonly warnings: string[] = [];
 
   private readonly projectPath: string;
-  private readonly binary: string;
+  private readonly explicitBinary: string | undefined;
+  private binaryResolution: Promise<KitBinaryResolution> | undefined;
   private readonly timeoutMs: number;
   private readonly configuredTimeoutMs: number | undefined;
 
   constructor(input: { projectPath: string; binary?: string; timeoutMs?: number }) {
     this.projectPath = input.projectPath;
-    this.binary = input.binary ?? DEFAULT_BINARY;
+    this.explicitBinary = input.binary;
     this.timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.configuredTimeoutMs = input.timeoutMs;
+  }
+
+  /**
+   * P10-US-03: resolve which Kit binary to spawn — env override, config
+   * field, `visp-kit` probe, `visp` fallback — with a self-invocation guard
+   * so Hyper never mistakes its own `visp` binary for Kit. Resolved once per
+   * bridge and cached; a self-invocation failure is a clean named warning,
+   * not a schema-parse surprise.
+   */
+  private async resolvedBinary(): Promise<string | null> {
+    if (this.explicitBinary !== undefined) return this.explicitBinary;
+    this.binaryResolution ??= resolveKitBinary({ projectPath: this.projectPath });
+    const resolution = await this.binaryResolution;
+    if (!resolution.ok) {
+      if (!this.warnings.includes(resolution.reason)) {
+        this.warnings.push(resolution.reason);
+      }
+      return null;
+    }
+    return resolution.binary;
   }
 
   /** Budget for a Kit command that runs a validation suite rather than reading artifacts. */
@@ -553,8 +584,10 @@ export class KitCommandBridge {
     args: string[],
     options: { timeoutMs?: number } = {}
   ): Promise<RunResult | null> {
+    const binary = await this.resolvedBinary();
+    if (binary === null) return null;
     const result = await runCommand(
-      this.binary,
+      binary,
       [...args, "--json"],
       this.projectPath,
       options.timeoutMs ?? this.timeoutMs

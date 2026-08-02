@@ -23,7 +23,10 @@ export const hyperConfigSchema = z.object({
     .array(z.string())
     .default([".env", ".env.*", "node_modules", "dist", "build", ".git"]),
   skillMode: z.enum(["auto", "review"]).default("review"),
-  validationCommands: z.array(z.string()).optional()
+  validationCommands: z.array(z.string()).optional(),
+  // P10-US-03: which Kit binary the bridge spawns. Unset means auto-resolve
+  // (VISP_KIT_BINARY env, then probe visp-kit, then fall back to visp).
+  kitBinary: z.string().min(1).optional()
 });
 
 const pipelineStepRecordSchema = z.object({

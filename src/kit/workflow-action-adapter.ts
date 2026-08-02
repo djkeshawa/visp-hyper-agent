@@ -3,12 +3,14 @@ import {
   isWorkflowActionProtocolSelection,
   workflowActionV31StrictSchema,
   workflowActionV32StrictSchema,
+  workflowActionV34StrictSchema,
   workflowActionV3StrictSchema,
   type WorkflowActionProtocolSelection,
   type WorkflowActionV2Wire,
   type WorkflowActionV31Wire,
   type WorkflowActionV32Wire,
   type WorkflowActionV3Wire,
+  type WorkflowActionV34Wire,
   type WorkflowActionWire
 } from "./workflow-action-protocol.js";
 
@@ -50,7 +52,7 @@ export type NormalizedWorkflowAction = DeepReadonly<{
     localSchemaHash: WorkflowActionProtocolSelection["localSchemaHash"];
     schemaHashVerification: WorkflowActionProtocolSelection["schemaHashVerification"];
   }>;
-  sourceCanonicalVersion: NormalizedDeclaredValue<"1.0" | "1.1" | "1.2">;
+  sourceCanonicalVersion: NormalizedDeclaredValue<"1.0" | "1.1" | "1.2" | "1.3">;
   actionId: NormalizedDeclaredValue<string>;
   phase: NormalizedDeclaredValue<WorkflowPhase>;
   sourcePhase: WorkflowActionWire["phase"];
@@ -153,6 +155,7 @@ const bareSha256Pattern = /^[a-f0-9]{64}$/u;
 const identityDomainV1 = "visp.workflow-action\0canonical-1.0\0";
 const identityDomainV1_1 = "visp.workflow-action\0canonical-1.1\0";
 const identityDomainV1_2 = "visp.workflow-action\0canonical-1.2\0";
+const identityDomainV1_3 = "visp.workflow-action\0canonical-1.3\0";
 
 export function normalizeWorkflowAction(
   action: WorkflowActionWire,
@@ -185,6 +188,37 @@ export function createWorkflowActionV31Id(action: unknown): `sha256:${string}` {
 export function createWorkflowActionV32Id(action: unknown): `sha256:${string}` {
   const parsed = workflowActionV32StrictSchema.parse(action);
   return createCanonicalWorkflowActionId(parsed, identityDomainV1_2);
+}
+
+/**
+ * 3.4 identity hashes a canonical-1.3 projection (D-119): `nextCommand`,
+ * `assuranceSummary` and per-finding wording (message/recommendation/evidence)
+ * are excluded, so command renames can never move an identity. Hyper mirrors
+ * Kit's projection independently — it verifies, it does not trust.
+ */
+export function createWorkflowActionV34Id(action: unknown): `sha256:${string}` {
+  const parsed = workflowActionV34StrictSchema.parse(action);
+  const {
+    protocolVersion: _protocolVersion,
+    actionId: _actionId,
+    nextCommand: _nextCommand,
+    assuranceSummary: _assuranceSummary,
+    findings,
+    ...identityInput
+  } = parsed;
+  const projected = {
+    ...identityInput,
+    findings: findings.map((finding) => ({
+      code: finding.code,
+      source: finding.source,
+      severity: finding.severity,
+      effect: finding.effect
+    }))
+  };
+  return `sha256:${createHash("sha256")
+    .update(identityDomainV1_3, "utf8")
+    .update(canonicalJsonV1(projected), "utf8")
+    .digest("hex")}`;
 }
 
 function normalizeWorkflowActionV2(
@@ -307,7 +341,7 @@ function normalizeWorkflowActionV2(
 }
 
 function normalizeCanonicalWorkflowAction(
-  action: WorkflowActionV3Wire | WorkflowActionV31Wire | WorkflowActionV32Wire,
+  action: WorkflowActionV3Wire | WorkflowActionV31Wire | WorkflowActionV32Wire | WorkflowActionV34Wire,
   selection: WorkflowActionProtocolSelection
 ): WorkflowActionAdapterResult {
   const expectedActionId =
@@ -315,7 +349,9 @@ function normalizeCanonicalWorkflowAction(
       ? createWorkflowActionV3Id(action)
       : action.protocolVersion === "3.1"
         ? createWorkflowActionV31Id(action)
-        : createWorkflowActionV32Id(action);
+        : action.protocolVersion === "3.2"
+          ? createWorkflowActionV32Id(action)
+          : createWorkflowActionV34Id(action);
   if (expectedActionId !== action.actionId) {
     return adapterFailure(
       "workflow_action_identity_invalid",

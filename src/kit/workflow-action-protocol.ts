@@ -1,6 +1,9 @@
 import { z } from "zod";
 
 export const WORKFLOW_ACTION_PROTOCOL_PREFERENCE = Object.freeze([
+  // 3.4 identity hashes a canonical-1.3 projection that excludes command
+  // wording (D-119); 3.3 is reserved by Kit ADR 0003 and never appears here.
+  "3.4",
   "3.2",
   "3.1",
   "3.0",
@@ -13,7 +16,8 @@ export const TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES = Object.freeze({
   "2.0": "sha256:c63b279b1ce89f047b2be696a47e845a57adda7f8437892e211e3a4cfad39ed6",
   "3.0": "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7",
   "3.1": "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d",
-  "3.2": "sha256:77dcaba51ef8e1a78064680077f8bcc48c081d8025596c6cc8df9ea7873d68e9"
+  "3.2": "sha256:77dcaba51ef8e1a78064680077f8bcc48c081d8025596c6cc8df9ea7873d68e9",
+  "3.4": "sha256:bee85bf783a3557c99c9feb716e967997595dfa228380be71815da531f055ca5"
 } as const satisfies Readonly<Record<WorkflowActionProtocol, `sha256:${string}`>>);
 
 const sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
@@ -493,15 +497,26 @@ export const workflowActionV32StrictSchema = workflowActionV31StrictSchema
   })
   .strict();
 
+// 3.4 carries the same fields as 3.2; only the identity computation changes.
+export const workflowActionV34StrictSchema = workflowActionV31StrictSchema
+  .extend({
+    protocolVersion: z.literal("3.4"),
+    canonicalVersion: z.literal("1.3"),
+    assuranceSummary: assuranceSummarySchema
+  })
+  .strict();
+
 export type WorkflowActionV2Wire = z.infer<typeof workflowActionV2StrictSchema>;
 export type WorkflowActionV3Wire = z.infer<typeof workflowActionV3StrictSchema>;
 export type WorkflowActionV31Wire = z.infer<typeof workflowActionV31StrictSchema>;
 export type WorkflowActionV32Wire = z.infer<typeof workflowActionV32StrictSchema>;
+export type WorkflowActionV34Wire = z.infer<typeof workflowActionV34StrictSchema>;
 export type WorkflowActionWire =
   | WorkflowActionV2Wire
   | WorkflowActionV3Wire
   | WorkflowActionV31Wire
-  | WorkflowActionV32Wire;
+  | WorkflowActionV32Wire
+  | WorkflowActionV34Wire;
 
 export type WorkflowActionProtocolSelection =
   | Readonly<{
@@ -545,6 +560,15 @@ export type WorkflowActionProtocolSelection =
         state: "advertised_verified";
         advertisedHash: (typeof TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)["3.2"];
       }>;
+    }>
+  | Readonly<{
+      protocolVersion: "3.4";
+      mode: "advertised";
+      localSchemaHash: (typeof TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)["3.4"];
+      schemaHashVerification: Readonly<{
+        state: "advertised_verified";
+        advertisedHash: (typeof TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES)["3.4"];
+      }>;
     }>;
 
 export type WorkflowActionProtocolReasonCode =
@@ -582,10 +606,12 @@ export function selectWorkflowActionProtocol(
     );
   }
   const kit = isRecord(contract.kit) ? contract.kit : undefined;
-  if (kit?.packageName !== "visp-kit" || kit.cliName !== "visp") {
+  // The bridge accepts both Kit CLI identities: `visp` before the rename and
+  // `visp-kit` after it (P10-US-03). Package identity stays exact.
+  if (kit?.packageName !== "visp-kit" || (kit.cliName !== "visp" && kit.cliName !== "visp-kit")) {
     return failure(
       "unsupported_integration_contract",
-      "WorkflowAction negotiation requires Kit identity visp-kit/visp."
+      "WorkflowAction negotiation requires Kit identity visp-kit with CLI visp or visp-kit."
     );
   }
 
@@ -678,7 +704,8 @@ export function isWorkflowActionProtocolSelection(
     protocolVersion !== "2.0" &&
     protocolVersion !== "3.0" &&
     protocolVersion !== "3.1" &&
-    protocolVersion !== "3.2"
+    protocolVersion !== "3.2" &&
+    protocolVersion !== "3.4"
   ) {
     return false;
   }
@@ -746,7 +773,9 @@ export function parseSelectedWorkflowAction(
         ? workflowActionV3StrictSchema
         : selection.protocolVersion === "3.1"
           ? workflowActionV31StrictSchema
-          : workflowActionV32StrictSchema;
+          : selection.protocolVersion === "3.2"
+            ? workflowActionV32StrictSchema
+            : workflowActionV34StrictSchema;
   const parsed = schema.safeParse(payload);
   if (!parsed.success) {
     return failure(

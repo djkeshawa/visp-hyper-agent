@@ -7,11 +7,13 @@ import { promisify } from "node:util";
 import {
   createWorkflowActionV31Id,
   createWorkflowActionV32Id,
+  createWorkflowActionV34Id,
   createWorkflowActionV3Id
 } from "../../src/kit/workflow-action-adapter.js";
 import type {
   WorkflowActionV31Wire,
   WorkflowActionV32Wire,
+  WorkflowActionV34Wire,
   WorkflowActionV3Wire
 } from "../../src/kit/workflow-action-protocol.js";
 import {
@@ -35,6 +37,8 @@ export const V31_SCHEMA_HASH =
   "sha256:41ffa28fcd4476ea1812ff307df67a7ab7edb5b2cf4d6c11955d34d4aad74d4d";
 export const V32_SCHEMA_HASH =
   "sha256:77dcaba51ef8e1a78064680077f8bcc48c081d8025596c6cc8df9ea7873d68e9";
+export const V34_SCHEMA_HASH =
+  "sha256:bee85bf783a3557c99c9feb716e967997595dfa228380be71815da531f055ca5";
 
 const FEATURE_DIR = "001-pipeline";
 const unavailable = (reasonCode = "not_in_source_artifact") => ({
@@ -260,6 +264,28 @@ export function workflowActionV32Fixture(
     ...draft,
     actionId: createWorkflowActionV32Id(draft)
   } as WorkflowActionV32Wire;
+}
+
+export function workflowActionV34Fixture(
+  overrides: Record<string, unknown> = {}
+): WorkflowActionV34Wire {
+  const {
+    protocolVersion: _protocolVersion,
+    canonicalVersion: _canonicalVersion,
+    actionId: _actionId,
+    ...v32Body
+  } = workflowActionV32Fixture();
+  const draft = {
+    ...v32Body,
+    protocolVersion: "3.4" as const,
+    canonicalVersion: "1.3" as const,
+    actionId: `sha256:${"0".repeat(64)}`,
+    ...overrides
+  };
+  return {
+    ...draft,
+    actionId: createWorkflowActionV34Id(draft)
+  } as WorkflowActionV34Wire;
 }
 
 export function integrationContractFixture(options: {

@@ -1145,7 +1145,12 @@ describe("KitCommandBridge", () => {
         workflowAction: {
           supported: ["2.0", "3.0", "3.1", "3.2"],
           default: "2.0",
-          schemaHashes: TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES
+          schemaHashes: {
+            "2.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["2.0"],
+            "3.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.0"],
+            "3.1": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.1"],
+            "3.2": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.2"]
+          }
         }
       }
     });

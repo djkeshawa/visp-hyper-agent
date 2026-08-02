@@ -89,7 +89,7 @@ describe("npm pack smoke", () => {
     expect(serverInfo.version).toBe(manifest.version);
   });
 
-  it("declares the exact supported Kit package as an optional peer", async () => {
+  it("declares the bridge-window Kit range as an optional peer", async () => {
     const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
@@ -98,7 +98,9 @@ describe("npm pack smoke", () => {
       peerDependenciesMeta?: Record<string, { optional?: boolean }>;
     };
 
-    expect(manifest.peerDependencies?.["visp-kit"]).toBe("0.3.0");
+    // P10-US-03 bridge window: both pre-rename (0.2.3/0.3.0) and renamed
+    // (0.4.x) Kit are drivable; 0.5 is fenced until a decision admits it.
+    expect(manifest.peerDependencies?.["visp-kit"]).toBe(">=0.2.3 <0.5.0");
     expect(manifest.peerDependenciesMeta?.["visp-kit"]).toEqual({ optional: true });
     expect(manifest.dependencies?.["visp-kit"]).toBeUndefined();
     expect(manifest.devDependencies?.["visp-kit"]).toBeUndefined();
