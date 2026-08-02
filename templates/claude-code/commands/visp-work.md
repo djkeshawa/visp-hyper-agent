@@ -1,11 +1,11 @@
 ---
-description: Start a visp-hyper session for a goal and coordinate scout/implementer subagents through the printed handoff.
+description: Drive the coding tool through the prepared task, coordinating scout/implementer subagents.
 ---
 
 Run the following via Bash:
 
 ```
-visp-hyper run "$ARGUMENTS"
+visp work "$ARGUMENTS"
 ```
 
 You are acting as the **coordinator** (see `.claude/agents/coordinator.md`). You do
@@ -50,12 +50,12 @@ Follow these steps in order. Do not skip ahead.
    `implementer` for the specific failure and re-run — do not checkpoint a result
    you have not verified.
 
-6. **Checkpoint.** Run `visp-hyper checkpoint --task <id>` (via Bash) to collect
+6. **Checkpoint.** Run `visp save --task <id>` (via Bash) to collect
    local validation evidence.
    Hyper checkpoint results are local evidence only.
    Strict progression and remediation require the exact current ready Kit action.
    In a genuinely Kit-less workflow, local evidence may guide local progression.
 
-7. **Record learnings.** Run `visp-hyper remember --summary "<learnings>"` when the
+7. **Record learnings.** Run `visp learn "<learnings>"` when the
    handoff requests it.
-   Remember records session learnings and does not complete a Kit task.
+   A learn proposal records session learnings and does not complete a Kit task.

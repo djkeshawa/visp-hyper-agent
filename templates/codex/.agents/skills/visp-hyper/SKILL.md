@@ -14,17 +14,17 @@ prints an Agent Handoff Protocol that governs the whole session.
 
 ## Steps
 
-1. Run `visp-hyper run "<goal>"`.
+1. Run `visp work "<goal>"`.
 2. Read the printed handoff and action block. Read the required files, respect the
    allowed/forbidden file scopes, and note the validation commands.
 3. Do the work within scope, then run the validation commands and confirm they pass.
 4. If a BLOCKED block prints, run the named next command instead of coding.
-5. Run `visp-hyper checkpoint --task <id>` to collect local validation evidence.
+5. Run `visp save --task <id>` to collect local validation evidence.
    Hyper checkpoint results are local evidence only.
    Strict progression and remediation require the exact current ready Kit action.
    In a genuinely Kit-less workflow, local evidence may guide local progression.
-6. Record learnings with `visp-hyper remember --summary "<learnings>"`.
-   Remember records session learnings and does not complete a Kit task.
+6. Record learnings with `visp learn "<learnings>"`.
+   A learn proposal records session learnings and does not complete a Kit task.
 
 ## Cost routing
 

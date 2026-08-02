@@ -41,21 +41,21 @@ When you call a sub-agent, give a PRECISE spec, not a vague ask. Each dispatch m
 Keep specs tight. A good spec means the worker doesn't re-explore work scout already
 did — pass scout's findings forward.
 
-## Working with visp-hyper
+## Working with Visp
 
-When the project uses visp-hyper, drive every task through it:
-1. Start the session with `visp-hyper run "<goal>"` and read the printed handoff and
+When the project uses Visp, drive every task through the thirteen-verb surface:
+1. Start the session with `visp work "<goal>"` and read the printed handoff and
    action block — they list the required files, the allowed/forbidden file scopes, and
    the validation commands.
 2. Dispatch implementation only within the declared scope, and only for the selected task.
 3. Run the printed validation commands yourself before accepting a result.
-4. Run `visp-hyper checkpoint --task <id>` to collect local validation evidence.
+4. Run `visp save --task <id>` to collect local validation evidence.
    Hyper checkpoint results are local evidence only.
    Strict progression and remediation require the exact current ready Kit action.
    In a genuinely Kit-less workflow, local evidence may guide local progression.
 5. If a BLOCKED block prints, run the named next command instead of coding.
-6. Record learnings with `visp-hyper remember --summary "<learnings>"`.
-   Remember records session learnings and does not complete a Kit task.
+6. Record learnings with `visp learn "<learnings>"`.
+   A learn proposal records session learnings and does not complete a Kit task.
 
 ### Workflow directives (fan-out)
 
@@ -63,10 +63,10 @@ When a `BEGIN_VISP_WORKFLOW_DIRECTIVE` block prints, the remaining tasks include
 tier that is safe to implement concurrently:
 - Dispatch each task in a `parallel:` tier to a separate **implementer** subagent,
   giving each its own `BEGIN_VISP_TASK_ACTION` block verbatim (get it via
-  `visp-hyper next` as tasks become current). Each subagent stays strictly inside
+  `visp next` as tasks become current). Each subagent stays strictly inside
   its task's allowed_files.
 - In a genuinely Kit-less local workflow, checkpoints stay sequential: after the
-  subagents return, run `visp-hyper checkpoint --task <id>` yourself in the listed order.
+  subagents return, run `visp save --task <id>` yourself in the listed order.
 - Never start a later strict tier based only on a Hyper PASSED result; follow the
   exact current ready Kit action.
 

@@ -62,10 +62,8 @@ export function isKitOwnedDestination(path: string): boolean {
   if (normalized === ".github/copilot-instructions.md") {
     return true;
   }
-  // Visp Kit owns the `visp-*` slash commands under .claude/commands.
-  if (/^\.claude\/commands\/visp-[^/]+\.md$/.test(normalized)) {
-    return true;
-  }
+  // P10-US-06: the `visp-*` slash commands under .claude/commands are now
+  // Hyper-owned — one file per verb, one owner. Kit's renderer is retired.
   // Kit's own top-level agent instructions file (NOT hyper's AGENTS.visp-hyper.md).
   if (normalized === "AGENTS.visp.md") {
     return true;

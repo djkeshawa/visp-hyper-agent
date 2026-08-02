@@ -34,8 +34,8 @@ describe("planInstall / installAssets (AC001)", () => {
     expect(destinations).toContain(".claude/agents/coordinator.md");
     expect(destinations).toContain(".claude/agents/scout.md");
     expect(destinations).toContain(".claude/agents/implementer.md");
-    expect(destinations).toContain(".claude/commands/hyper-run.md");
-    expect(destinations).toContain(".claude/commands/hyper-remember.md");
+    expect(destinations).toContain(".claude/commands/visp-work.md");
+    expect(destinations).toContain(".claude/commands/visp-learn.md");
     expect(destinations).toContain(".claude/skills/visp-hyper/SKILL.md");
     // model-map.json is data, never planned for install.
     expect(destinations.some((d) => d.includes("model-map.json"))).toBe(false);
@@ -210,14 +210,14 @@ describe("host capability manifests", () => {
 describe("installed workflow authority wording", () => {
   const localEvidence = "Hyper checkpoint results are local evidence only.";
   const kitAuthority = "Strict progression and remediation require the exact current ready Kit action.";
-  const remembrance = "Remember records session learnings and does not complete a Kit task.";
+  const remembrance = "A learn proposal records session learnings and does not complete a Kit task.";
 
   it.each([
     ["generic", ["visp-hyper-instructions.md"]],
     ["opencode", ["visp-hyper-instructions.md"]],
     ["copilot", [".github/instructions/visp-hyper.instructions.md"]],
     ["codex", ["AGENTS.visp-hyper.md", ".agents/skills/visp-hyper/SKILL.md"]],
-    ["claude-code", [".claude/agents/coordinator.md", ".claude/commands/hyper-run.md"]]
+    ["claude-code", [".claude/agents/coordinator.md", ".claude/commands/visp-work.md"]]
   ] as const)("keeps %s installed guidance mode-neutral", async (tool, paths) => {
     const project = await makeProject();
     await installAssets(tool, project, { templatesDir: REAL_TEMPLATES });
@@ -237,9 +237,9 @@ describe("installed workflow authority wording", () => {
     await installAssets("claude-code", project, { templatesDir: REAL_TEMPLATES });
 
     for (const path of [
-      ".claude/commands/hyper-next.md",
-      ".claude/commands/hyper-checkpoint.md",
-      ".claude/commands/hyper-fanout.md"
+      ".claude/commands/visp-next.md",
+      ".claude/commands/visp-save.md",
+      ".claude/commands/visp-check.md"
     ]) {
       const body = await readFile(join(project, path), "utf8");
       expect(body).toContain(localEvidence);
@@ -254,13 +254,13 @@ describe("installed workflow authority wording", () => {
     const project = await makeProject();
     await installAssets("claude-code", project, { templatesDir: REAL_TEMPLATES });
 
-    const review = await readFile(join(project, ".claude/commands/hyper-review.md"), "utf8");
-    expect(review).toContain("Hyper review warnings are local evidence only.");
-    expect(review).toContain(kitAuthority);
-    expect(review).not.toMatch(/address each warning it reports/iu);
+    const check = await readFile(join(project, ".claude/commands/visp-check.md"), "utf8");
+    expect(check).toContain("moves nothing");
+    expect(check).toContain(localEvidence);
+    expect(check).not.toMatch(/address each warning it reports/iu);
 
-    const remember = await readFile(join(project, ".claude/commands/hyper-remember.md"), "utf8");
-    expect(remember).toContain(remembrance);
+    const learn = await readFile(join(project, ".claude/commands/visp-learn.md"), "utf8");
+    expect(learn).toContain(remembrance);
   });
 });
 
@@ -304,7 +304,8 @@ describe("kit-owned denylist (AC003)", () => {
   it("flags denylisted destinations and clears safe ones", () => {
     expect(isKitOwnedDestination("AGENTS.md")).toBe(true);
     expect(isKitOwnedDestination("./AGENTS.md")).toBe(true);
-    expect(isKitOwnedDestination(".claude/commands/visp-foo.md")).toBe(true);
+    // P10-US-06: installed slash commands are Hyper-owned — one owner.
+    expect(isKitOwnedDestination(".claude/commands/visp-work.md")).toBe(false);
     expect(isKitOwnedDestination(".github/copilot-instructions.md")).toBe(true);
     expect(isKitOwnedDestination(".claude/commands/hyper-run.md")).toBe(false);
     expect(isKitOwnedDestination(".claude/agents/coordinator.md")).toBe(false);

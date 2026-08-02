@@ -47,28 +47,56 @@
       "destination": ".claude/skills/visp-hyper/SKILL.md"
     },
     {
-      "templatePath": "commands/hyper-run.md",
-      "destination": ".claude/commands/hyper-run.md"
+      "templatePath": "commands/visp-setup.md",
+      "destination": ".claude/commands/visp-setup.md"
     },
     {
-      "templatePath": "commands/hyper-next.md",
-      "destination": ".claude/commands/hyper-next.md"
+      "templatePath": "commands/visp-doctor.md",
+      "destination": ".claude/commands/visp-doctor.md"
     },
     {
-      "templatePath": "commands/hyper-checkpoint.md",
-      "destination": ".claude/commands/hyper-checkpoint.md"
+      "templatePath": "commands/visp-new.md",
+      "destination": ".claude/commands/visp-new.md"
     },
     {
-      "templatePath": "commands/hyper-review.md",
-      "destination": ".claude/commands/hyper-review.md"
+      "templatePath": "commands/visp-plan.md",
+      "destination": ".claude/commands/visp-plan.md"
     },
     {
-      "templatePath": "commands/hyper-remember.md",
-      "destination": ".claude/commands/hyper-remember.md"
+      "templatePath": "commands/visp-next.md",
+      "destination": ".claude/commands/visp-next.md"
     },
     {
-      "templatePath": "commands/hyper-fanout.md",
-      "destination": ".claude/commands/hyper-fanout.md"
+      "templatePath": "commands/visp-work.md",
+      "destination": ".claude/commands/visp-work.md"
+    },
+    {
+      "templatePath": "commands/visp-check.md",
+      "destination": ".claude/commands/visp-check.md"
+    },
+    {
+      "templatePath": "commands/visp-save.md",
+      "destination": ".claude/commands/visp-save.md"
+    },
+    {
+      "templatePath": "commands/visp-handoff.md",
+      "destination": ".claude/commands/visp-handoff.md"
+    },
+    {
+      "templatePath": "commands/visp-status.md",
+      "destination": ".claude/commands/visp-status.md"
+    },
+    {
+      "templatePath": "commands/visp-recall.md",
+      "destination": ".claude/commands/visp-recall.md"
+    },
+    {
+      "templatePath": "commands/visp-learn.md",
+      "destination": ".claude/commands/visp-learn.md"
+    },
+    {
+      "templatePath": "commands/visp-cockpit.md",
+      "destination": ".claude/commands/visp-cockpit.md"
     }
   ]
 }

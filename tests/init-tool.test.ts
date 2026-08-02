@@ -54,12 +54,13 @@ describe("init --tool asset installation and hook wiring", () => {
     for (const agent of agents) {
       expect(await fileExists(join(projectPath, ".claude", "agents", agent))).toBe(true);
     }
+    // P10-US-06: the thirteen visp-<verb> commands, one per verb, one owner.
     const commands = [
-      "hyper-run.md",
-      "hyper-next.md",
-      "hyper-checkpoint.md",
-      "hyper-review.md",
-      "hyper-remember.md"
+      "visp-work.md",
+      "visp-next.md",
+      "visp-save.md",
+      "visp-check.md",
+      "visp-learn.md"
     ];
     for (const command of commands) {
       expect(await fileExists(join(projectPath, ".claude", "commands", command))).toBe(true);
@@ -71,7 +72,7 @@ describe("init --tool asset installation and hook wiring", () => {
     const output = logs.join("\n");
     expect(output).toContain("Installed claude-code assets:");
     expect(output).toContain("created: .claude/agents/coordinator.md");
-    expect(output).toContain("created: .claude/commands/hyper-run.md");
+    expect(output).toContain("created: .claude/commands/visp-work.md");
 
     // Re-run: everything already exists, so all are skipped and contents are unchanged.
     logs = [];
