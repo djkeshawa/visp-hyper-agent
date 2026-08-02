@@ -72,3 +72,25 @@ describe("one installed command set (P10-US-06)", () => {
     }
   });
 });
+
+describe("machine-scope boundary (visp-dev ADR 0001)", () => {
+  // The Visp Dev machine-scope adapter may be resolved by setup (and later
+  // doctor) ONLY. If its specifier ever leaks into another module, a project
+  // verb could acquire machine authority — the exact erosion the ADR names.
+  it("only the machine-scope module references the adapter specifier", async () => {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const srcDir = fileURLToPath(new URL("../src", import.meta.url));
+    const { stdout } = await promisify(execFile)("grep", [
+      "-rl",
+      "visp-dev/machine-scope",
+      srcDir
+    ]);
+    const files = stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((file) => file.slice(srcDir.length + 1).replace(/\\/gu, "/"));
+    expect(files).toEqual(["cli/machine/machine-scope.ts"]);
+  });
+});
