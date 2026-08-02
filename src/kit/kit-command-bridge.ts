@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { z } from "zod";
 import type { ZodType, ZodTypeDef } from "zod";
 import { execFileResolved } from "../core/executable-resolver.js";
 import { resolveKitBinary, type KitBinaryResolution } from "./kit-binary-resolver.js";
@@ -367,6 +368,74 @@ export class KitCommandBridge {
       rejectSuccessfulNonZero: true,
       timeoutMs: this.longTimeout()
     });
+  }
+
+  /**
+   * P10-US-05 `check`: run the real checks and record evidence without moving
+   * workflow state (Kit P10-US-02 flags). Fails unless at least one validation
+   * command actually executed — the D-115 zero-command false pass stays closed.
+   */
+  async checkVerify(taskId?: string): Promise<KitVerifySummary | null> {
+    return this.invoke(
+      [...withTask(["verify"], taskId), "--no-status-update", "--require-command-evidence"],
+      kitVerifySummarySchema,
+      { allowNonZeroExit: true, rejectSuccessfulNonZero: true, timeoutMs: this.longTimeout() }
+    );
+  }
+
+  async checkReview(taskId?: string): Promise<KitReviewSummary | null> {
+    return this.invoke(
+      [...withTask(["review"], taskId), "--no-status-update"],
+      kitReviewSummarySchema,
+      { allowNonZeroExit: true, rejectSuccessfulNonZero: true, timeoutMs: this.longTimeout() }
+    );
+  }
+
+  /**
+   * P10-US-05 composites: execute the bare Kit command from Kit's own `next`
+   * answer. The allowlist is a safety boundary on unattended execution —
+   * mechanical preparation commands only — never an ordering: the order always
+   * comes from Kit's answer. Returns null (with a warning) for anything else.
+   */
+  async runMechanicalCommand(bareCommand: string): Promise<{ success: boolean } | null> {
+    const parts = bareCommand.trim().split(/\s+/u);
+    const [binary, subcommand, ...rest] = parts;
+    if (binary !== "visp" && binary !== "visp-kit") {
+      this.warnings.push(`Refusing non-Kit command from next answer: ${bareCommand}`);
+      return null;
+    }
+    const mechanical = new Set([
+      "init",
+      "scan",
+      "feature",
+      "clarify",
+      "spec",
+      "plan",
+      "tasks",
+      "context",
+      "policy",
+      "assurance",
+      "reconcile",
+      "verify",
+      "review"
+    ]);
+    if (subcommand === undefined || !mechanical.has(subcommand)) {
+      this.warnings.push(
+        `Refusing non-mechanical command from next answer: ${bareCommand}. A human runs it.`
+      );
+      return null;
+    }
+    // No shell interpolation: args pass to execFile as an array. Flags and
+    // simple values are allowed; anything with shell metacharacters is not.
+    if (rest.some((part) => /[;&|<>`$(){}\\]/u.test(part))) {
+      this.warnings.push(`Refusing command with shell metacharacters: ${bareCommand}`);
+      return null;
+    }
+    const result = await this.run([subcommand, ...rest], { timeoutMs: this.longTimeout() });
+    if (!result) return null;
+    const parsed = parseJson(result.stdout, z.object({ success: z.boolean() }).passthrough());
+    if (parsed !== null) return { success: parsed.success && result.exitCode === 0 };
+    return { success: result.exitCode === 0 };
   }
 
   async reconcile(taskId?: string): Promise<KitReconcileSummary | null> {

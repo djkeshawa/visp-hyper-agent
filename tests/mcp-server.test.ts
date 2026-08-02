@@ -281,11 +281,11 @@ describe("handleMessage tools surface (AC003)", () => {
       id: 1,
       method: "tools/list"
     })) as { result: { tools: Array<{ name: string; outputSchema?: { properties?: Record<string, unknown> } }> } };
-    const report = response.result.tools.find((tool) => tool.name === "hyper_report");
+    const status = response.result.tools.find((tool) => tool.name === "visp_status");
 
-    expect(report?.outputSchema?.properties).toHaveProperty("status");
-    expect(report?.outputSchema?.properties).toHaveProperty("frames");
-    expect(report?.outputSchema?.properties).toHaveProperty("resourceUris");
+    expect(status?.outputSchema?.properties).toHaveProperty("status");
+    expect(status?.outputSchema?.properties).toHaveProperty("frames");
+    expect(status?.outputSchema?.properties).toHaveProperty("resourceUris");
   });
 
   it("tools/list keeps direct-entry, checkpoint, and remembrance authority explicit", async () => {
@@ -297,9 +297,9 @@ describe("handleMessage tools surface (AC003)", () => {
     })) as { result: { tools: Array<{ name: string; description: string }> } };
     const descriptions = new Map(response.result.tools.map((tool) => [tool.name, tool.description]));
 
-    expect(descriptions.get("hyper_quick")).toContain("genuinely Kit-less");
-    expect(descriptions.get("hyper_checkpoint")).toContain("does not authorize strict Kit progression");
-    expect(descriptions.get("hyper_remember")).toContain("does not complete a Kit task");
+    expect(descriptions.get("visp_save")).toContain("does not authorize strict Kit progression");
+    expect(descriptions.get("visp_learn")).toContain("never a direct write");
+    expect(descriptions.get("visp_check")).toContain("without changing any workflow state");
   });
 
   it("tools/call routes name+arguments to execute and wraps the result", async () => {
@@ -325,7 +325,7 @@ describe("handleMessage tools surface (AC003)", () => {
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
-      params: { name: "hyper_report", arguments: { json: false } }
+      params: { name: "visp_status", arguments: {} }
     })) as {
       result: {
         content: Array<{ type: string; text: string }>;
@@ -341,15 +341,9 @@ describe("handleMessage tools surface (AC003)", () => {
     };
 
     expect(response.result.isError).toBe(false);
-    expect(response.result.content[0]?.text).toContain("VISP_HYPER_REPORT");
     expect(response.result.structuredContent).toMatchObject({
-      tool: "hyper_report",
-      isError: false,
-      status: "OK"
-    });
-    expect(response.result.structuredContent.frames).toContainEqual({
-      name: "VISP_HYPER_REPORT",
-      boundary: "begin"
+      tool: "visp_status",
+      isError: false
     });
     expect(response.result.structuredContent.text).toBe(response.result.content[0]?.text);
   });
@@ -1589,7 +1583,7 @@ describe("handleMessage resources and prompts surface", () => {
     expect(manifest.capabilities.dynamicToolRegistration).toBe(false);
     expect(manifest.safetyPosture.noLlmCalls).toBe(true);
     expect(manifest.safetyPosture.structuredToolResults).toContain("structuredContent");
-    expect(manifest.tools.map((tool: { name: string }) => tool.name)).toContain("hyper_checkpoint");
+    expect(manifest.tools.map((tool: { name: string }) => tool.name)).toContain("visp_save");
     expect(
       manifest.tools.every(
         (tool: { inputSchemaHash?: string; outputSchemaHash?: string }) =>
@@ -1657,7 +1651,7 @@ describe("handleMessage resources and prompts surface", () => {
       method: "prompts/get",
       params: { name: "hyper_run_goal", arguments: { goal: "ship the audit trail" } }
     })) as { result: { messages: Array<{ content: { text: string } }> } };
-    expect(prompt.result.messages[0]?.content.text).toContain("hyper_run");
+    expect(prompt.result.messages[0]?.content.text).toContain("visp_work");
     expect(prompt.result.messages[0]?.content.text).toContain("ship the audit trail");
 
     const resumePrompt = (await handleMessage(ctx, {
@@ -1677,20 +1671,16 @@ describe("tool bridge execution", () => {
     process.exitCode = undefined;
   });
 
-  it("hyper_guard blocks an out-of-scope staged file and restores console + exit code", async () => {
+  it("a failing verb reports isError and restores console + exit code", async () => {
     const projectPath = await createRepo();
-    await writeQuickSession(projectPath, { id: "Q001", allowedFiles: ["src"] });
-    await mkdir(join(projectPath, "lib"), { recursive: true });
-    await writeFile(join(projectPath, "lib", "rogue.ts"), "export const r = 1;\n", "utf8");
-    await execFileAsync("git", ["add", "lib/rogue.ts"], { cwd: projectPath });
 
     const originalLog = console.log;
     const ctx = createToolContext(projectPath);
-    const result = await ctx.execute("hyper_guard", {});
+    // No Kit is installed in this bare repo, so visp_new refuses visibly.
+    const result = await ctx.execute("visp_new", { goal: "add a thing" });
 
     expect(result.isError).toBe(true);
-    expect(result.text).toContain("status: BLOCKED");
-    expect(result.text).toContain("lib/rogue.ts");
+    expect(result.text).toContain("Visp Kit is not available");
     // console.log is restored and the host exit code is not left dirtied.
     expect(console.log).toBe(originalLog);
     expect(process.exitCode).toBeFalsy();
@@ -1703,43 +1693,41 @@ describe("tool bridge execution", () => {
     const ctxB = createToolContext(projectB);
 
     // Fire without awaiting the first; the serialization queue is shared.
-    const first = ctx.execute("hyper_report", {});
-    const second = ctxB.execute("hyper_report", {});
+    const first = ctx.execute("visp_doctor", { json: true });
+    const second = ctxB.execute("visp_doctor", { json: true });
     const [a, b] = await Promise.all([first, second]);
 
-    const countFrames = (text: string): number =>
-      (text.match(/VISP_HYPER_REPORT/g) ?? []).length;
-    // Each result contains exactly one report's begin+end markers (2 matches),
-    // proving the two captures never bled into one another.
-    expect(countFrames(a.text)).toBe(2);
-    expect(countFrames(b.text)).toBe(2);
-    expect(a.text).toContain("END_VISP_HYPER_REPORT");
-    expect(b.text).toContain("END_VISP_HYPER_REPORT");
+    // Each capture is one complete JSON document. Interleaved captures would
+    // not parse.
+    expect(() => JSON.parse(a.text) as unknown).not.toThrow();
+    expect(() => JSON.parse(b.text) as unknown).not.toThrow();
   });
 
-  it("hyper_quick without a goal is rejected without side effects", async () => {
+  it("visp_new without a goal is rejected without side effects", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-noargs-"));
     const ctx = createToolContext(projectPath);
-    const result = await ctx.execute("hyper_quick", {});
+    const result = await ctx.execute("visp_new", {});
     expect(result.isError).toBe(true);
     expect(result.text).toContain("invalid arguments");
     expect(await fileExists(join(projectPath, ".visp"))).toBe(false);
   });
 
-  it("AC006: the bridge advertises the hyper tools", async () => {
+  it("AC006: the bridge advertises exactly the thirteen visp_* verbs (D-106)", async () => {
     const tools = await createMcpBridge().listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
-      "hyper_quick",
-      "hyper_run",
-      "hyper_next",
-      "hyper_resume",
-      "hyper_status",
-      "hyper_doctor",
-      "hyper_checkpoint",
-      "hyper_guard",
-      "hyper_review",
-      "hyper_remember",
-      "hyper_report"
+      "visp_setup",
+      "visp_doctor",
+      "visp_new",
+      "visp_plan",
+      "visp_next",
+      "visp_work",
+      "visp_check",
+      "visp_save",
+      "visp_handoff",
+      "visp_status",
+      "visp_recall",
+      "visp_learn",
+      "visp_cockpit"
     ]);
     for (const tool of tools) {
       expect(tool.description.length).toBeGreaterThan(0);
@@ -1815,7 +1803,7 @@ describe("serve --mcp stdio integration (AC002/AC005)", () => {
     send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
     send({ jsonrpc: "2.0", method: "notifications/initialized" });
     send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-    send({ jsonrpc: "2.0", id: callId, method: "tools/call", params: { name: "hyper_report", arguments: {} } });
+    send({ jsonrpc: "2.0", id: callId, method: "tools/call", params: { name: "visp_status", arguments: {} } });
 
     await callArrived;
 
@@ -1829,7 +1817,7 @@ describe("serve --mcp stdio integration (AC002/AC005)", () => {
       result: { content: Array<{ text: string }>; isError: boolean };
     };
     expect(callResponse.result.isError).toBe(false);
-    expect(callResponse.result.content[0].text).toContain("VISP_HYPER_REPORT");
+    expect(callResponse.result.content[0].text.length).toBeGreaterThan(0);
 
     // notifications/initialized produced no addressed response (no id:null lines
     // and no extra error frames beyond the three request ids).

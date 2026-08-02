@@ -182,13 +182,18 @@ describe("cockpit command", () => {
     expect(startCockpitServerMock).not.toHaveBeenCalled();
   });
 
-  it("keeps the package binary scoped to visp-hyper", async () => {
+  it("owns the visp binary with visp-hyper as an alias (P10-US-05, ADR 0005)", async () => {
     const packagePath = fileURLToPath(new URL("../package.json", import.meta.url));
     const packageJson = JSON.parse(await readFile(packagePath, "utf8")) as {
       bin?: Record<string, string>;
     };
 
-    expect(packageJson.bin).toEqual({ "visp-hyper": "dist/index.js" });
-    expect(packageJson.bin).not.toHaveProperty("visp");
+    // The final dispatcher release: Kit released the `visp` name (Kit ADR
+    // 0005) and this package now provides it, with `visp-hyper` as an alias.
+    // Publication ordering (D-118) keeps the two from ever colliding on npm.
+    expect(packageJson.bin).toEqual({
+      visp: "dist/index.js",
+      "visp-hyper": "dist/index.js"
+    });
   });
 });

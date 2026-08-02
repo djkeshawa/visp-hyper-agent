@@ -89,35 +89,57 @@ function firstError(...checks: Array<string | null>): string | null {
   return checks.find((check) => check !== null) ?? null;
 }
 
+// P10-US-05 (D-106): exactly thirteen normally registered tools, mirroring the
+// thirteen verbs 1:1 — `visp_<verb>` for a model, `visp <verb>` for a human,
+// one vocabulary. Each tool maps to the fixed local dispatcher verb; the
+// dispatcher decides nothing. Memory's own larger MCP server remains an
+// explicit standalone escape hatch and is never co-registered here.
 const TOOL_SPECS: ToolSpec[] = [
   {
-    name: "hyper_quick",
-    description: "Start a local task only in a genuinely Kit-less project; configured Kit projects fail closed.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        goal: { type: "string" },
-        files: { type: "array", items: { type: "string" } },
-        tool: { type: "string" }
-      },
-      required: ["goal"]
-    },
-    validate: (args) =>
-      firstError(
-        requireString(args, "goal"),
-        optional(args, "files", isStringArray, "an array of strings"),
-        optional(args, "tool", isString, "a string")
-      ),
-    toArgv: (args) => {
-      const files = (args.files as string[] | undefined) ?? [];
-      const fileArgs = files.length > 0 ? ["--files", ...files] : [];
-      const toolArgs = isString(args.tool) ? ["--tool", args.tool] : [];
-      return ["quick", args.goal as string, ...fileArgs, ...toolArgs];
-    }
+    name: "visp_setup",
+    description: "Install and verify the matched Visp pair and host registration (machine scope).",
+    inputSchema: { type: "object", properties: {} },
+    validate: () => null,
+    toArgv: () => ["setup"]
   },
   {
-    name: "hyper_run",
-    description: "Run the pipeline-aware gated session; follow the printed handoff and action block.",
+    name: "visp_doctor",
+    description: "Check this machine and project: versions, pairing, generated assets, stale CI.",
+    inputSchema: {
+      type: "object",
+      properties: { json: { type: "boolean" } }
+    },
+    validate: (args) => optional(args, "json", (v) => typeof v === "boolean", "a boolean"),
+    toArgv: (args) => (args.json === false ? ["doctor"] : ["doctor", "--json"])
+  },
+  {
+    name: "visp_new",
+    description: "Start a piece of work: register the goal with Kit and prepare it as far as Kit allows.",
+    inputSchema: {
+      type: "object",
+      properties: { goal: { type: "string" } },
+      required: ["goal"]
+    },
+    validate: (args) => requireString(args, "goal"),
+    toArgv: (args) => ["new", args.goal as string]
+  },
+  {
+    name: "visp_plan",
+    description: "Drive Kit's preparation for the active feature until implementation is allowed.",
+    inputSchema: { type: "object", properties: {} },
+    validate: () => null,
+    toArgv: () => ["plan"]
+  },
+  {
+    name: "visp_next",
+    description: "Ask Kit for the single next action. Kit decides; this only relays.",
+    inputSchema: { type: "object", properties: {} },
+    validate: () => null,
+    toArgv: () => ["next"]
+  },
+  {
+    name: "visp_work",
+    description: "Drive the coding tool through the prepared task (gated session).",
     inputSchema: {
       type: "object",
       properties: {
@@ -129,50 +151,22 @@ const TOOL_SPECS: ToolSpec[] = [
     validate: (args) => firstError(requireString(args, "goal"), optional(args, "tool", isString, "a string")),
     toArgv: (args) => {
       const toolArgs = isString(args.tool) ? ["--tool", args.tool] : [];
-      return ["run", args.goal as string, ...toolArgs];
+      return ["work", args.goal as string, ...toolArgs];
     }
   },
   {
-    name: "hyper_next",
-    description: "Print the next recommended action for the active session.",
-    inputSchema: { type: "object", properties: {} },
-    validate: () => null,
-    toArgv: () => ["next"]
-  },
-  {
-    name: "hyper_resume",
-    description: "Reprint the active handoff plus current delta context after a context reset.",
+    name: "visp_check",
+    description: "Run the real checks and record evidence without changing any workflow state.",
     inputSchema: {
       type: "object",
-      properties: {
-        json: { type: "boolean" }
-      }
+      properties: { task: { type: "string" } }
     },
-    validate: (args) => optional(args, "json", (v) => typeof v === "boolean", "a boolean"),
-    toArgv: (args) => (args.json === false ? ["resume"] : ["resume", "--json"])
+    validate: (args) => optional(args, "task", isString, "a string"),
+    toArgv: (args) => (isString(args.task) ? ["check", "--task", args.task] : ["check"])
   },
   {
-    name: "hyper_status",
-    description: "Show the active Visp Hyper session status and generated artifact state.",
-    inputSchema: { type: "object", properties: {} },
-    validate: () => null,
-    toArgv: () => ["status"]
-  },
-  {
-    name: "hyper_doctor",
-    description: "Run the read-only Hyper + Kit integration health check.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        json: { type: "boolean" }
-      }
-    },
-    validate: (args) => optional(args, "json", (v) => typeof v === "boolean", "a boolean"),
-    toArgv: (args) => (args.json === false ? ["doctor"] : ["doctor", "--json"])
-  },
-  {
-    name: "hyper_checkpoint",
-    description: "Collect Hyper verify+review evidence; PASSED does not authorize strict Kit progression.",
+    name: "visp_save",
+    description: "Record a checkpoint of the current work; PASSED does not authorize strict Kit progression.",
     inputSchema: {
       type: "object",
       properties: {
@@ -184,105 +178,54 @@ const TOOL_SPECS: ToolSpec[] = [
     validate: (args) => firstError(requireString(args, "task"), optional(args, "tier", isString, "a string")),
     toArgv: (args) => {
       const tierArgs = isString(args.tier) ? ["--tier", args.tier] : [];
-      return ["checkpoint", "--task", args.task as string, ...tierArgs];
+      return ["save", "--task", args.task as string, ...tierArgs];
     }
   },
   {
-    name: "hyper_guard",
-    description: "Mechanically enforce task scope against changed files.",
+    name: "visp_handoff",
+    description: "Assemble the evidence for review: verify, review, assurance — as far as Kit allows.",
     inputSchema: {
       type: "object",
-      properties: {
-        mode: { type: "string", enum: ["staged", "all"] },
-        base: { type: "string" }
-      }
+      properties: { task: { type: "string" } }
     },
-    validate: (args) => {
-      if ("mode" in args && args.mode !== undefined && args.mode !== "staged" && args.mode !== "all") {
-        return '"mode" must be "staged" or "all"';
-      }
-      return optional(args, "base", isString, "a string");
-    },
-    toArgv: (args) => {
-      if (isString(args.base)) {
-        return ["guard", "--base", args.base];
-      }
-      if (args.mode === "all") {
-        return ["guard", "--all"];
-      }
-      return ["guard", "--staged"];
-    }
+    validate: (args) => optional(args, "task", isString, "a string"),
+    toArgv: (args) => (isString(args.task) ? ["handoff", "--task", args.task] : ["handoff"])
   },
   {
-    name: "hyper_review",
-    description: "Write a deterministic local diff review report.",
+    name: "visp_status",
+    description: "Show the current session and workflow state.",
     inputSchema: { type: "object", properties: {} },
     validate: () => null,
-    toArgv: () => ["review"]
+    toArgv: () => ["status"]
   },
   {
-    name: "hyper_remember",
-    description: "Record learnings for the active session; this does not complete a Kit task.",
+    name: "visp_recall",
+    description: "Retrieve relevant memory for the active work (requires visp-memory; refuses visibly when absent).",
     inputSchema: {
       type: "object",
-      properties: {
-        summary: { type: "string" },
-        decisions: { type: "array", items: { type: "string" } },
-        followUps: { type: "array", items: { type: "string" } },
-        usedSkills: { type: "array", items: { type: "string" } },
-        inputTokens: { type: "number" },
-        outputTokens: { type: "number" },
-        model: { type: "string" }
-      },
-      required: ["summary"]
+      properties: { query: { type: "string" } },
+      required: ["query"]
     },
-    validate: (args) =>
-      firstError(
-        requireString(args, "summary"),
-        optional(args, "decisions", isStringArray, "an array of strings"),
-        optional(args, "followUps", isStringArray, "an array of strings"),
-        optional(args, "usedSkills", isStringArray, "an array of strings"),
-        optional(args, "inputTokens", isNumber, "a number"),
-        optional(args, "outputTokens", isNumber, "a number"),
-        optional(args, "model", isString, "a string")
-      ),
-    toArgv: (args) => {
-      const argv = ["remember", "--summary", args.summary as string];
-      const decisions = (args.decisions as string[] | undefined) ?? [];
-      if (decisions.length > 0) {
-        argv.push("--decision", ...decisions);
-      }
-      const followUps = (args.followUps as string[] | undefined) ?? [];
-      if (followUps.length > 0) {
-        argv.push("--follow-up", ...followUps);
-      }
-      const usedSkills = (args.usedSkills as string[] | undefined) ?? [];
-      if (usedSkills.length > 0) {
-        argv.push("--used-skill", ...usedSkills);
-      }
-      if (isNumber(args.inputTokens)) {
-        argv.push("--input-tokens", String(args.inputTokens));
-      }
-      if (isNumber(args.outputTokens)) {
-        argv.push("--output-tokens", String(args.outputTokens));
-      }
-      if (isString(args.model)) {
-        argv.push("--model", args.model);
-      }
-      return argv;
-    }
+    validate: (args) => requireString(args, "query"),
+    toArgv: (args) => ["recall", args.query as string]
   },
   {
-    name: "hyper_report",
-    description: "Aggregate telemetry and routing state into a cost/accuracy evidence view.",
+    name: "visp_learn",
+    description: "Propose a durable memory through Memory's reviewed lifecycle; never a direct write.",
     inputSchema: {
       type: "object",
-      properties: {
-        json: { type: "boolean" }
-      }
+      properties: { note: { type: "string" } },
+      required: ["note"]
     },
-    validate: (args) => optional(args, "json", (v) => typeof v === "boolean", "a boolean"),
-    toArgv: (args) => (args.json === true ? ["report", "--json"] : ["report"])
+    validate: (args) => requireString(args, "note"),
+    toArgv: (args) => ["learn", args.note as string]
+  },
+  {
+    name: "visp_cockpit",
+    description: "Start the read-only local cockpit and print its address.",
+    inputSchema: { type: "object", properties: {} },
+    validate: () => null,
+    toArgv: () => ["cockpit"]
   }
 ];
 
@@ -879,7 +822,7 @@ async function getPrompt(
     const resources = await resourceDefs(projectPath);
     const resourceList = resources.length > 0
       ? resources.map((resource) => `- ${resource.uri} (${resource.title ?? resource.name})`).join("\n")
-      : "- No current Visp Hyper resources exist yet; call `hyper_status` or start with `hyper_run`.";
+      : "- No current Visp Hyper resources exist yet; call `visp_status` or start with `visp_work`.";
     return {
       description: "Resume the active Visp Hyper session.",
       messages: [
@@ -893,9 +836,9 @@ async function getPrompt(
               "First read the available MCP resources:",
               resourceList,
               "",
-              "Then call `hyper_next` to get the current bounded action before editing.",
+              "Then call `visp_next` to get the current bounded action before editing.",
               "Respect allowed and forbidden files from the context pack.",
-              "Run the relevant validation commands and use `hyper_checkpoint` or `hyper_review` only as local evidence.",
+              "Run the relevant validation commands and use `visp_save` or `visp_check` only as local evidence.",
               "A Hyper checkpoint is local evidence only; strict progression and remediation require the exact current ready Kit action."
             ].join("\n")
           }
@@ -917,7 +860,7 @@ async function getPrompt(
           content: {
             type: "text",
             text: [
-              `Use the MCP tool \`hyper_run\` with goal: ${goal.trim()}`,
+              `Use the MCP tool \`visp_work\` with goal: ${goal.trim()}`,
               "",
               "Follow only the printed Visp Hyper handoff and task action.",
               "Read the MCP resources produced by the run before inspecting source files.",

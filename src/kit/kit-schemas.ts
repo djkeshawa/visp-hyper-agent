@@ -393,7 +393,9 @@ export const kitNextSchema = z.object({
   nextCommand: z.string().optional(),
   state: z.string().optional(),
   reason: z.string().optional(),
-  allowed: z.boolean().optional()
+  allowed: z.boolean().optional(),
+  implementationAllowed: z.boolean().optional(),
+  prAllowed: z.boolean().optional()
 });
 export type KitNext = z.infer<typeof kitNextSchema>;
 
