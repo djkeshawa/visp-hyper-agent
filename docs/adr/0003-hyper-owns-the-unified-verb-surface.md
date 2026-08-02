@@ -1,9 +1,10 @@
 # ADR 0003: Hyper Owns the Unified `visp` Verb Surface
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Decision date:** 2026-07-31
 - **Scope:** The single developer- and agent-facing command vocabulary across Kit, Hyper, and Memory
 - **Extends:** `docs/adr/0001-kit-is-authoritative.md`, `docs/adr/0002-direct-entry-points-are-kitless-only.md`
+- **Accepted:** 2026-08-02 under D-116
 - **Workspace decision:** D-106
 
 ## Context
