@@ -21,6 +21,13 @@ export type KitBinaryResolution =
       readonly ok: true;
       readonly binary: string;
       readonly source: "env" | "config" | "probe" | "fallback";
+      /**
+       * Whether this binary was actually LOCATED, as opposed to guessed.
+       * `source: "fallback"` means visp-kit was not found and `visp` is being
+       * assumed — a guess must never be mistaken for evidence that an engine
+       * is installed.
+       */
+      readonly found: boolean;
     }
   | {
       readonly ok: false;
@@ -107,7 +114,12 @@ export async function resolveKitBinary(options: {
   const envOverride = process.env.VISP_KIT_BINARY?.trim();
   if (envOverride !== undefined && envOverride.length > 0) {
     if (await isSelfInvocation(envOverride)) return selfInvocationFailure(envOverride);
-    return { ok: true, binary: envOverride, source: "env" };
+    return {
+      ok: true,
+      binary: envOverride,
+      source: "env",
+      found: (await locateOnPath(envOverride)) !== null
+    };
   }
 
   const configured =
@@ -117,13 +129,25 @@ export async function resolveKitBinary(options: {
       : await configuredKitBinary(options.projectPath));
   if (configured !== undefined && configured.length > 0) {
     if (await isSelfInvocation(configured)) return selfInvocationFailure(configured);
-    return { ok: true, binary: configured, source: "config" };
+    return {
+      ok: true,
+      binary: configured,
+      source: "config",
+      found: (await locateOnPath(configured)) !== null
+    };
   }
 
   if ((await locateOnPath("visp-kit")) !== null) {
-    return { ok: true, binary: "visp-kit", source: "probe" };
+    return { ok: true, binary: "visp-kit", source: "probe", found: true };
   }
 
   if (await isSelfInvocation("visp")) return selfInvocationFailure("visp");
-  return { ok: true, binary: "visp", source: "fallback" };
+  // Pre-rename Kit provided `visp`, so this remains the right guess — but it is
+  // a guess, and `found` says whether anything is actually there.
+  return {
+    ok: true,
+    binary: "visp",
+    source: "fallback",
+    found: (await locateOnPath("visp")) !== null
+  };
 }

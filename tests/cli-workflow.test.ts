@@ -682,7 +682,13 @@ describe("CLI workflow", () => {
     expect(request.evidenceGaps[0].observedResults[0].providerId).toBe("static-analyzer");
   });
 
-  it("preserves exact Kit-less next and human/JSON resume output", async () => {
+  // P12: this used to pin `visp-hyper start "<goal>"` as the Kit-less advice.
+  // That was a dead end — it creates session files in a project with no engine,
+  // and every following command then fails. Worse, this fixture has no
+  // visp-kit on PATH at all, so advising `visp-kit init` would be equally
+  // wrong. The correct answer is to install the engine first, and this test
+  // now pins THAT rather than a fixed string.
+  it("sends a Kit-less project to install the engine, not to a dead end", async () => {
     const projectPath = await createProject();
     const logs: string[] = [];
     vi.spyOn(console, "log").mockImplementation((message?: unknown) =>
@@ -696,7 +702,7 @@ describe("CLI workflow", () => {
       [
         "BEGIN_VISP_NEXT_ACTION",
         "session_id: none",
-        'next: run `visp-hyper start "<goal>"`',
+        "next: run `visp setup`",
         "END_VISP_NEXT_ACTION"
       ].join("\n")
     );

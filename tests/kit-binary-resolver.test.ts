@@ -55,7 +55,7 @@ describe("resolveKitBinary", () => {
     process.env.PATH = binDir;
 
     const resolution = await resolveKitBinary({});
-    expect(resolution).toEqual({ ok: true, binary: "visp-kit", source: "probe" });
+    expect(resolution).toEqual({ ok: true, binary: "visp-kit", source: "probe", found: true });
   });
 
   it("falls back to visp when visp-kit is absent", async () => {
@@ -65,7 +65,7 @@ describe("resolveKitBinary", () => {
     process.env.PATH = binDir;
 
     const resolution = await resolveKitBinary({});
-    expect(resolution).toEqual({ ok: true, binary: "visp", source: "fallback" });
+    expect(resolution).toEqual({ ok: true, binary: "visp", source: "fallback", found: true });
   });
 
   it("VISP_KIT_BINARY overrides everything", async () => {
@@ -94,7 +94,7 @@ describe("resolveKitBinary", () => {
     );
 
     const resolution = await resolveKitBinary({ projectPath });
-    expect(resolution).toEqual({ ok: true, binary: custom, source: "config" });
+    expect(resolution).toEqual({ ok: true, binary: custom, source: "config", found: true });
   });
 
   // The trap the guard exists for: once `visp` is Hyper's own binary, an old
@@ -115,6 +115,41 @@ describe("resolveKitBinary", () => {
     expect(resolution).toMatchObject({ ok: false, reasonCode: "self_invocation" });
     if (!resolution.ok) {
       expect(resolution.reason).toContain("visp-hyper-agent itself");
+    }
+  });
+
+  // P12: the resolver returns ok:true with a GUESSED `visp` when nothing is
+  // installed. Treating that as evidence an engine exists is what sent a
+  // Kit-less user to `visp-kit init` and a command-not-found. `found` is the
+  // field that separates located from guessed, and these pin it.
+  it("reports found:false when nothing is installed and visp is only a guess", async () => {
+    const binDir = join(tempDir, "empty-bin");
+    await mkdir(binDir);
+    process.env.PATH = binDir;
+
+    const resolution = await resolveKitBinary({});
+    expect(resolution).toMatchObject({ ok: true, binary: "visp", source: "fallback" });
+    if (resolution.ok) {
+      expect(resolution.found).toBe(false);
+    }
+  });
+
+  it("reports found:false for a configured binary that does not exist", async () => {
+    const binDir = join(tempDir, "cfg-bin");
+    await mkdir(binDir);
+    process.env.PATH = binDir;
+    const projectPath = join(tempDir, "cfg-project");
+    await mkdir(join(projectPath, ".visp", "hyper"), { recursive: true });
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "config.json"),
+      JSON.stringify({ kitBinary: join(binDir, "does-not-exist") }),
+      "utf8"
+    );
+
+    const resolution = await resolveKitBinary({ projectPath });
+    expect(resolution).toMatchObject({ ok: true, source: "config" });
+    if (resolution.ok) {
+      expect(resolution.found).toBe(false);
     }
   });
 });

@@ -1680,7 +1680,8 @@ describe("tool bridge execution", () => {
     const result = await ctx.execute("visp_new", { goal: "add a thing" });
 
     expect(result.isError).toBe(true);
-    expect(result.text).toContain("Visp Kit is not available");
+    // The message now names ONE actionable command instead of offering two.
+    expect(result.text).toMatch(/visp setup|visp-kit init/u);
     // console.log is restored and the host exit code is not left dirtied.
     expect(console.log).toBe(originalLog);
     expect(process.exitCode).toBeFalsy();

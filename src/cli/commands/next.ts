@@ -15,6 +15,7 @@ import { readRoutingState, recordRoutingDecision } from "../../routing/routing-s
 import { readTelemetry } from "../../telemetry/telemetry-store.js";
 import { contextPackPathIfExists, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
+import { kitUnavailableGuidance } from "../../kit/kit-guidance.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
 import {
   renderHyperActionFrame,
@@ -75,11 +76,30 @@ export function nextCommand(): Command {
       }
       const session = await getActiveSession(projectPath);
       if (!session) {
+        // `next` is the one command whose entire job is answering "what do I do
+        // now", so wrong guidance here is maximally misleading. This branch used
+        // to suggest starting a Hyper session unconditionally — in a project
+        // with no Kit that creates session files and then every following
+        // command fails, which is a dead end reached by following instructions.
+        // Ask Kit whether it is even usable before recommending anything.
+        const availability = await detectVisp(projectPath);
+        const next =
+          availability.state === "healthy"
+            ? 'run `visp new "<goal>"`'
+            : `run \`${
+                (
+                  await kitUnavailableGuidance({
+                    projectPath,
+                    reasonCode: availability.reasonCode,
+                    reason: availability.reason
+                  })
+                ).nextCommand
+              }\``;
         console.log(
           [
             "BEGIN_VISP_NEXT_ACTION",
             "session_id: none",
-            "next: run `visp-hyper start \"<goal>\"`",
+            `next: ${next}`,
             "END_VISP_NEXT_ACTION"
           ].join("\n")
         );

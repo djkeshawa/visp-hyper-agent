@@ -15,6 +15,7 @@
 import { Command } from "commander";
 
 import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
+import { kitUnavailableGuidance } from "../../kit/kit-guidance.js";
 import { resolveProjectPath } from "./shared.js";
 
 /** Kit's next answer reduced to what the composite loop needs. */
@@ -34,7 +35,12 @@ const MAX_COMPOSITE_STEPS = 12;
 async function kitAvailable(projectPath: string): Promise<string | null> {
   const availability = await detectVisp(projectPath);
   if (availability.state === "healthy") return null;
-  return `Visp Kit is not available here (${availability.state}). Run visp setup, or visp-kit init for a new project.`;
+  const guidance = await kitUnavailableGuidance({
+    projectPath,
+    reasonCode: availability.reasonCode,
+    reason: availability.reason
+  });
+  return guidance.message;
 }
 
 /**
