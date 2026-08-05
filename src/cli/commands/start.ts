@@ -98,7 +98,7 @@ export function renderDirectCommandKitStop(
   return renderKitAuthorityStop({
     status: "BLOCKED",
     reasonCode: `direct_${command}_requires_kitless_project`,
-    reason: `Direct ${command} is local-only. This project has a healthy Kit; use visp-hyper run to consume its authoritative workflow.`
+    reason: `Direct ${command} is local-only. This project has a healthy Kit; use \`visp work\` to consume its authoritative workflow.`
   });
 }
 

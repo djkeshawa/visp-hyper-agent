@@ -375,7 +375,7 @@ export function buildActionBlock(
   lines.push("  1. All validation commands exit zero.");
   lines.push("  2. Only allowed or expected files changed.");
   lines.push(
-    `  3. Run \`visp-hyper checkpoint --task ${task.id}\` and proceed only if it reports PASSED.`
+    `  3. Run \`visp save --task ${task.id}\` and proceed only if it reports PASSED.`
   );
   lines.push("END_VISP_TASK_ACTION");
 

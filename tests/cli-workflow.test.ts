@@ -716,7 +716,7 @@ describe("CLI workflow", () => {
       [
         "BEGIN_VISP_RESUME",
         "session_id: none",
-        'next: visp-hyper run "<goal>"',
+        'next: visp work "<goal>"',
         "END_VISP_RESUME"
       ].join("\n")
     );
@@ -738,7 +738,7 @@ describe("CLI workflow", () => {
           changedFiles: [],
           checkpointDelta: emptyDelta(),
           warnings: ["No active Visp Hyper session."],
-          nextCommand: 'visp-hyper run "<goal>"'
+          nextCommand: 'visp work "<goal>"'
         },
         null,
         2
@@ -806,7 +806,7 @@ describe("CLI workflow", () => {
     });
     expect(summary.contextFreshness.finding).toContain("context artifact changed since handoff");
     expect(summary.warnings.join("\n")).toContain("context artifact changed since handoff");
-    expect(summary.nextCommand).toContain('visp-hyper run "implement feature"');
+    expect(summary.nextCommand).toContain('visp work "implement feature"');
   });
 
   it("reports exact file deltas since the latest checkpoint", async () => {

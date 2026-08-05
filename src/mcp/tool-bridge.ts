@@ -731,7 +731,7 @@ async function readKitReadContractResource(projectPath: string, uri: string): Pr
           version: "0.1",
           generatedAt,
           status: "unavailable",
-          reason: "context manifest is missing; run `visp-hyper run \"<goal>\"` to create the active handoff"
+          reason: "context manifest is missing; run `visp work \"<goal>\"` to create the active handoff"
         },
         null,
         2
@@ -751,7 +751,7 @@ async function readKitReadContractResource(projectPath: string, uri: string): Pr
           version: "0.1",
           generatedAt,
           status: "error",
-          reason: "context manifest is unreadable; regenerate with `visp-hyper run \"<goal>\"`"
+          reason: "context manifest is unreadable; regenerate with `visp work \"<goal>\"`"
         },
         null,
         2

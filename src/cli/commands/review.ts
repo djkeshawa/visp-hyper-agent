@@ -57,7 +57,7 @@ export function reviewCommand(): Command {
             "authority: local",
             "assurance: local_checked",
             "status: unavailable",
-            "reason: No active Visp Hyper session. Run `visp-hyper start` first.",
+            "reason: No active Visp Hyper session. Run `visp work <goal>` first.",
             "END_VISP_REVIEW_RESULT"
           ].join("\n")
         );

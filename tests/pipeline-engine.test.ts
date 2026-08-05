@@ -413,7 +413,7 @@ describe("buildActionBlock", () => {
   it("mentions the checkpoint command with the task id in done_criteria", () => {
     const block = buildActionBlock(fullTask);
     expect(block).toContain("done_criteria:");
-    expect(block).toContain("`visp-hyper checkpoint --task T002`");
+    expect(block).toContain("`visp save --task T002`");
   });
 
   const parallelTask: KitTask = graphFromTasks([

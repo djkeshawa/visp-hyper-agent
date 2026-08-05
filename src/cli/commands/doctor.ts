@@ -145,7 +145,7 @@ async function checkActiveContextFreshness(projectPath: string): Promise<DoctorC
       label: "Active context freshness",
       status: "fail",
       detail: `${freshness.finding ?? `Context freshness is ${freshness.status}.`}${warnings}`,
-      recovery: "Regenerate the handoff with `visp-hyper run \"<goal>\"`."
+      recovery: "Regenerate the handoff with `visp work \"<goal>\"`."
     };
   }
 
@@ -207,7 +207,7 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
       label: "Kit WorkflowAction protocol",
       status: "fail",
       detail: "integration_contract_unavailable: no supported Kit contract is available for WorkflowAction negotiation.",
-      recovery: "Upgrade or link a compatible Visp Kit, then re-run `visp-hyper doctor`."
+      recovery: "Upgrade or link a compatible Visp Kit, then re-run `visp doctor`."
     });
   } else {
     const provenanceWarning = provenanceFreshnessContractWarning(contract);
@@ -324,7 +324,7 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
     detail: pack
       ? `Read context for ${activeTaskId}${contextPath ? ` at ${contextPath}` : ""}.`
       : `No readable context pack found for active task ${activeTaskId}.`,
-    recovery: pack ? undefined : `Run \`visp context --task ${activeTaskId}\`, then re-run \`visp-hyper doctor\`.`
+    recovery: pack ? undefined : `Run \`visp context --task ${activeTaskId}\`, then re-run \`visp doctor\`.`
   });
 }
 
@@ -823,7 +823,7 @@ async function checkActiveKitReadContract(
     return null;
   }
 
-  const recovery = "Regenerate the active handoff with `visp-hyper run \"<goal>\"`.";
+  const recovery = "Regenerate the active handoff with `visp work \"<goal>\"`.";
   const manifestPath = vispPath(projectPath, "hyper", "current", "context-manifest.json");
   const manifestText = await readTextIfExists(manifestPath);
 
@@ -975,7 +975,7 @@ function nextCommand(checks: readonly DoctorCheck[]): string {
     return firstAction.recovery;
   }
   const firstWarning = checks.find((check) => check.status === "warn" && check.recovery);
-  return firstWarning?.recovery ?? "visp-hyper run \"<goal>\"";
+  return firstWarning?.recovery ?? "visp work \"<goal>\"";
 }
 
 function featureLabel(feature: { id: string; slug?: string } | null | undefined): string | undefined {

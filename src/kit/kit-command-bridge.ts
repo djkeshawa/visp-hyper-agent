@@ -181,6 +181,53 @@ export async function detectVisp(
   return classifyKitAvailability({ hasKitSignals, probe });
 }
 
+/**
+ * Split a command string into argv, honouring double quotes.
+ *
+ * This is deliberately NOT a shell parser: it understands quoting and nothing
+ * else — no expansion, no substitution, no operators. Anything resembling shell
+ * syntax is refused downstream rather than interpreted here.
+ */
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quoted = false;
+  let started = false;
+
+  let escaped = false;
+
+  for (const character of command.trim()) {
+    // A backslash-escaped quote is literal content, not a delimiter. Without
+    // this, a goal round-tripped through JSON.stringify loses its own quotes.
+    if (escaped) {
+      current += character;
+      started = true;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      started = true;
+      continue;
+    }
+    if (character === '"') {
+      quoted = !quoted;
+      started = true;
+      continue;
+    }
+    if (!quoted && /\s/u.test(character)) {
+      if (started || current.length > 0) tokens.push(current);
+      current = "";
+      started = false;
+      continue;
+    }
+    current += character;
+    started = true;
+  }
+  if (started || current.length > 0) tokens.push(current);
+  return tokens;
+}
+
 export class KitCommandBridge {
   readonly warnings: string[] = [];
 
@@ -398,12 +445,43 @@ export class KitCommandBridge {
    * comes from Kit's answer. Returns null (with a warning) for anything else.
    */
   async runMechanicalCommand(bareCommand: string): Promise<{ success: boolean } | null> {
-    const parts = bareCommand.trim().split(/\s+/u);
+    // Kit's `next` answer is genuinely a string, so it is tokenised here.
+    //
+    // Naive whitespace splitting was a defect, not a simplification: Kit emits
+    // next-commands containing quoted phrases (`visp-kit feature "<describe
+    // your feature>"`), and splitting shredded them into separate argv entries
+    // carrying literal quote characters. Callers that already HAVE structured
+    // arguments should use runMechanicalArgv and skip tokenising entirely.
+    const parts = tokenizeCommand(bareCommand);
     const [binary, subcommand, ...rest] = parts;
     if (binary !== "visp" && binary !== "visp-kit") {
       this.warnings.push(`Refusing non-Kit command from next answer: ${bareCommand}`);
       return null;
     }
+    if (subcommand === undefined) {
+      this.warnings.push(`Refusing malformed command from next answer: ${bareCommand}`);
+      return null;
+    }
+    return this.runMechanicalArgv(subcommand, rest);
+  }
+
+  /**
+   * Run a mechanical Kit command from arguments that are ALREADY separate.
+   *
+   * This exists because `visp new "add a login page"` used to be assembled into
+   * one string and re-split on whitespace, so Kit received the goal as four
+   * argv entries carrying literal quote characters — while Hyper printed the
+   * goal back correctly. Every multi-word goal was corrupted, which is to say
+   * every real one. Neither package's tests could see it: the damage happened
+   * at the process boundary between them.
+   *
+   * The safety boundary is unchanged and enforced here, so both entry points
+   * share exactly one allowlist rather than drifting apart.
+   */
+  async runMechanicalArgv(
+    subcommand: string,
+    args: readonly string[]
+  ): Promise<{ success: boolean } | null> {
     const mechanical = new Set([
       "init",
       "scan",
@@ -419,19 +497,20 @@ export class KitCommandBridge {
       "verify",
       "review"
     ]);
-    if (subcommand === undefined || !mechanical.has(subcommand)) {
+    if (!mechanical.has(subcommand)) {
       this.warnings.push(
-        `Refusing non-mechanical command from next answer: ${bareCommand}. A human runs it.`
+        `Refusing non-mechanical command from next answer: ${subcommand}. A human runs it.`
       );
       return null;
     }
-    // No shell interpolation: args pass to execFile as an array. Flags and
-    // simple values are allowed; anything with shell metacharacters is not.
-    if (rest.some((part) => /[;&|<>`$(){}\\]/u.test(part))) {
-      this.warnings.push(`Refusing command with shell metacharacters: ${bareCommand}`);
+    // Arguments reach execFile as an array, so there is no shell to interpolate
+    // into. Metacharacters are still refused: a goal is prose, and one that
+    // looks like a command line is a sign something upstream went wrong.
+    if (args.some((part) => /[;&|<>`$(){}\\]/u.test(part))) {
+      this.warnings.push(`Refusing command with shell metacharacters: ${subcommand} ${args.join(" ")}`);
       return null;
     }
-    const result = await this.run([subcommand, ...rest], { timeoutMs: this.longTimeout() });
+    const result = await this.run([subcommand, ...args], { timeoutMs: this.longTimeout() });
     if (!result) return null;
     const parsed = parseJson(result.stdout, z.object({ success: z.boolean() }).passthrough());
     if (parsed !== null) return { success: parsed.success && result.exitCode === 0 };

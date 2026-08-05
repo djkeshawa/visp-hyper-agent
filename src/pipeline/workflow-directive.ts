@@ -136,7 +136,7 @@ export function renderWorkflowDirective(input: {
   lines.push("execution_plan:");
   lines.push("  - Implement each parallel tier's tasks concurrently; every task stays strictly inside its allowed_files.");
   lines.push(
-    `  - Checkpoints remain sequential: run \`visp-hyper checkpoint --task <id>\` in this order only: ${checkpointOrder.join(", ")}.`
+    `  - Checkpoints remain sequential: run \`visp save --task <id>\` in this order only: ${checkpointOrder.join(", ")}.`
   );
   lines.push("  - Do not start a later tier until every earlier task reports PASSED.");
 

@@ -345,7 +345,7 @@ describe("doctor command", () => {
     expect(summary.success).toBe(true);
     expect(readContract?.status).toBe("warn");
     expect(readContract?.detail).toContain("no context manifest");
-    expect(summary.nextCommand).toContain("visp-hyper run");
+    expect(summary.nextCommand).toContain("visp work");
   });
 
   it("warns when the Kit contract lacks provenance freshness support", async () => {
@@ -657,7 +657,7 @@ describe("doctor command", () => {
     expect(summary.success).toBe(false);
     expect(context?.status).toBe("fail");
     expect(context?.detail).toContain("context artifact changed since handoff");
-    expect(summary.nextCommand).toContain("visp-hyper run");
+    expect(summary.nextCommand).toContain("visp work");
     expect(process.exitCode).toBe(1);
   });
 

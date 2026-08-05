@@ -149,7 +149,7 @@ export async function buildResumeSummary(projectPath: string): Promise<ResumeSum
       changedFiles: [],
       checkpointDelta: emptyDelta(),
       warnings: ["No active Visp Hyper session."],
-      nextCommand: "visp-hyper run \"<goal>\""
+      nextCommand: "visp work \"<goal>\""
     };
   }
 
@@ -166,13 +166,13 @@ export async function buildResumeSummary(projectPath: string): Promise<ResumeSum
   const warnings: string[] = [];
   const latest = latestCheckpoint(checkpointText);
   if (readStatuses.some((status) => !status.present)) {
-    warnings.push("One or more required read files are missing; run `visp-hyper run \"<goal>\"` to regenerate them.");
+    warnings.push("One or more required read files are missing; run `visp work \"<goal>\"` to regenerate them.");
   }
   if (!actionBlock && session.pipeline?.currentTaskId) {
     warnings.push("Pipeline state exists, but the current task graph could not be resolved.");
   }
   if (latest && !checkpointDelta.checkpointAt) {
-    warnings.push("Latest checkpoint has no machine-readable snapshot; run `visp-hyper checkpoint` again to enable exact resume deltas.");
+    warnings.push("Latest checkpoint has no machine-readable snapshot; run `visp save` again to enable exact resume deltas.");
   }
   if (contextFreshness.blocking) {
     warnings.push(contextFreshness.finding ?? `Context freshness is ${contextFreshness.status}; regenerate the handoff.`);
@@ -197,9 +197,9 @@ export async function buildResumeSummary(projectPath: string): Promise<ResumeSum
     checkpointDelta,
     warnings,
     nextCommand: contextFreshness.blocking
-      ? `visp-hyper run "${session.goal}"`
+      ? `visp work "${session.goal}"`
       : session.pipeline?.currentTaskId
-      ? `visp-hyper checkpoint --task ${session.pipeline.currentTaskId}`
+      ? `visp save --task ${session.pipeline.currentTaskId}`
       : "visp-hyper next",
     handoff,
     actionBlock: actionBlock ?? undefined

@@ -116,7 +116,7 @@ export function checkpointCommand(): Command {
       if (!options.task) {
         const session = await getActiveSession(projectPath);
         if (!session) {
-          throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
+          throw new Error("No active Visp Hyper session. Run `visp work <goal>` first.");
         }
         await writeCheckpointMarkdown(projectPath, session.id, session.goal);
         console.log("Checkpoint written to .visp/hyper/current/checkpoints.md");
@@ -153,7 +153,7 @@ export function checkpointCommand(): Command {
 
       const session = await getActiveSession(projectPath);
       if (!session) {
-        throw new Error("No active Visp Hyper session. Run `visp-hyper start` first.");
+        throw new Error("No active Visp Hyper session. Run `visp work <goal>` first.");
       }
       const contextFreshness = await checkContextFreshness(projectPath);
 

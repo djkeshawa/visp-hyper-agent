@@ -66,7 +66,7 @@ const workflow = [
   "Implement the smallest safe change.",
   "Add or update tests where appropriate.",
   "Run validation commands.",
-  "Use `visp-hyper checkpoint` or `visp-hyper review` only as local evidence; Kit alone authorizes strict progression.",
+  "Use `visp save` or `visp check` only as local evidence; Kit alone authorizes strict progression.",
   "Record session learnings with `visp-hyper remember`; it does not complete a Kit task."
 ];
 
@@ -88,7 +88,7 @@ const profileInstructions: Record<ToolProfile, { label: string; instructions: st
     label: "Generic coding agent",
     instructions: [
       "Open and read each file under required_reads with your file-read tool before writing any code.",
-      "Collect local validation evidence by running exactly: visp-hyper checkpoint --task T001 (substitute the real task id).",
+      "Collect local validation evidence by running exactly: visp save --task T001 (substitute the real task id).",
       "A Hyper checkpoint is local evidence only; strict progression and remediation require the exact current ready Kit action."
     ]
   },
@@ -96,7 +96,7 @@ const profileInstructions: Record<ToolProfile, { label: string; instructions: st
     label: "Codex",
     instructions: [
       "Use your repository read tool on every required_reads path, then make focused edits only inside the allowed file scope.",
-      "Collect local validation evidence by running exactly: visp-hyper checkpoint --task T001 (substitute the real task id).",
+      "Collect local validation evidence by running exactly: visp save --task T001 (substitute the real task id).",
       "A Hyper checkpoint is local evidence only; strict progression and remediation require the exact current ready Kit action."
     ]
   },
@@ -104,7 +104,7 @@ const profileInstructions: Record<ToolProfile, { label: string; instructions: st
     label: "Claude Code",
     instructions: [
       "Read every required_reads path with the Read tool first, then use Edit for narrow changes inside the allowed file scope.",
-      "Collect local validation evidence by running exactly: visp-hyper checkpoint --task T001 (substitute the real task id).",
+      "Collect local validation evidence by running exactly: visp save --task T001 (substitute the real task id).",
       "A Hyper checkpoint is local evidence only; strict progression and remediation require the exact current ready Kit action."
     ]
   },
@@ -112,7 +112,7 @@ const profileInstructions: Record<ToolProfile, { label: string; instructions: st
     label: "GitHub Copilot",
     instructions: [
       "Read the generated context files under required_reads before editing and stay inside the allowed file scope.",
-      "Collect local validation evidence by running exactly: visp-hyper checkpoint --task T001 (substitute the real task id).",
+      "Collect local validation evidence by running exactly: visp save --task T001 (substitute the real task id).",
       "A Hyper checkpoint is local evidence only; strict progression and remediation require the exact current ready Kit action."
     ]
   },
@@ -120,7 +120,7 @@ const profileInstructions: Record<ToolProfile, { label: string; instructions: st
     label: "OpenCode",
     instructions: [
       "Read each required_reads path with your file tool, keep edits inside the allowed file scope, and preserve the handoff block structure.",
-      "Collect local validation evidence by running exactly: visp-hyper checkpoint --task T001 (substitute the real task id).",
+      "Collect local validation evidence by running exactly: visp save --task T001 (substitute the real task id).",
       "A Hyper checkpoint is local evidence only; strict progression and remediation require the exact current ready Kit action."
     ]
   }

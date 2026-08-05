@@ -38,7 +38,7 @@ export async function checkContextFreshness(projectPath: string): Promise<Contex
     return {
       status: "error",
       blocking: true,
-      finding: "context manifest is unreadable; regenerate with `visp-hyper run \"<goal>\"`",
+      finding: "context manifest is unreadable; regenerate with `visp work \"<goal>\"`",
       warnings: []
     };
   }
@@ -48,7 +48,7 @@ export async function checkContextFreshness(projectPath: string): Promise<Contex
   if (manifest.contextArtifact) {
     const parsed = parseTarget(manifest.contextArtifact, {
       kind: "context artifact",
-      invalidFinding: "context manifest has invalid artifact freshness metadata; regenerate with `visp-hyper run \"<goal>\"`"
+      invalidFinding: "context manifest has invalid artifact freshness metadata; regenerate with `visp work \"<goal>\"`"
     });
     if ("error" in parsed) {
       return withWarnings(parsed.error, manifestWarnings);
@@ -61,14 +61,14 @@ export async function checkContextFreshness(projectPath: string): Promise<Contex
       return {
         status: "error",
         blocking: true,
-        finding: "context manifest has invalid artifact provenance metadata; regenerate with `visp-hyper run \"<goal>\"`",
+        finding: "context manifest has invalid artifact provenance metadata; regenerate with `visp work \"<goal>\"`",
         warnings: manifestWarnings
       };
     }
     for (const entry of manifest.artifactProvenance) {
       const parsed = parseTarget(entry, {
         kind: "context provenance",
-        invalidFinding: "context manifest has invalid artifact provenance metadata; regenerate with `visp-hyper run \"<goal>\"`"
+        invalidFinding: "context manifest has invalid artifact provenance metadata; regenerate with `visp work \"<goal>\"`"
       });
       if ("error" in parsed) {
         return withWarnings(parsed.error, manifestWarnings);
@@ -161,7 +161,7 @@ async function checkTarget(projectPath: string, target: FreshnessTarget): Promis
         blocking: true,
         artifactPath: target.path,
         expectedHash: target.hash,
-        finding: `${target.kind} is missing since handoff: ${describeTarget(target)}; regenerate with \`visp-hyper run "<goal>"\``,
+        finding: `${target.kind} is missing since handoff: ${describeTarget(target)}; regenerate with \`visp work "<goal>"\``,
         warnings: []
       };
     }
@@ -183,7 +183,7 @@ async function checkTarget(projectPath: string, target: FreshnessTarget): Promis
       artifactPath: target.path,
       expectedHash: target.hash,
       actualHash: actual,
-      finding: `${target.kind} changed since handoff: ${describeTarget(target)}; regenerate with \`visp-hyper run "<goal>"\``,
+      finding: `${target.kind} changed since handoff: ${describeTarget(target)}; regenerate with \`visp work "<goal>"\``,
       warnings: []
     };
   }

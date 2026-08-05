@@ -141,7 +141,9 @@ export function newVerbCommand(): Command {
         return;
       }
       const bridge = new KitCommandBridge({ projectPath });
-      const created = await bridge.runMechanicalCommand(`visp-kit feature ${JSON.stringify(goal)}`);
+      // The goal is passed as ONE argument. Assembling it into a string here and
+      // letting the bridge re-split on whitespace shredded every multi-word goal.
+      const created = await bridge.runMechanicalArgv("feature", [goal]);
       if (created === null || !created.success) {
         console.error(
           bridge.warnings.at(-1) ?? "Kit could not register the feature. Run visp-kit feature directly for detail."

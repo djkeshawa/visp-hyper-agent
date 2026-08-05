@@ -332,7 +332,7 @@ export function renderAdaptationBlock(failingTaskId: string, decision: AdaptiveD
     lines.push("action: escalation-directive");
     lines.push(`reason: ${decision.reason}`);
     lines.push(
-      `instruction: Have the strongest available tier re-attempt ${failingTaskId}, then re-run \`visp-hyper checkpoint --task ${failingTaskId}\`.`
+      `instruction: Have the strongest available tier re-attempt ${failingTaskId}, then re-run \`visp save --task ${failingTaskId}\`.`
     );
   }
   lines.push("END_VISP_ADAPTATION");
