@@ -182,6 +182,37 @@ export async function detectVisp(
 }
 
 /**
+ * What a mechanical Kit command tells us, beyond whether it worked.
+ *
+ * Kit's `--json` envelope already carries all of this; the bridge used to
+ * parse `{ success }` and discard the rest, so the composites could only ever
+ * say "reported failure. Run it directly for detail." — sending the user to a
+ * second command for information the first one had already handed over. A
+ * fresh spec produces 25 validation errors and every one of them was thrown
+ * away.
+ *
+ * Everything past `success` is optional so an older Kit still parses.
+ */
+const mechanicalResultSchema = z
+  .object({
+    success: z.boolean(),
+    validation: z.object({ errors: z.array(z.string()).default([]) }).optional(),
+    // Present on the HARD failure envelope only — a stage-aware repair Kit has
+    // already worked out, which beats anything the coordinator could invent.
+    recovery: z.string().optional(),
+    feature: z.object({ path: z.string() }).partial().optional()
+  })
+  .passthrough();
+
+export type MechanicalCommandResult = {
+  readonly success: boolean;
+  /** Empty when the command failed for a reason other than validation. */
+  readonly validationErrors: readonly string[];
+  readonly recovery?: string;
+  readonly featurePath?: string;
+};
+
+/**
  * Split a command string into argv, honouring double quotes.
  *
  * This is deliberately NOT a shell parser: it understands quoting and nothing
@@ -444,7 +475,7 @@ export class KitCommandBridge {
    * mechanical preparation commands only — never an ordering: the order always
    * comes from Kit's answer. Returns null (with a warning) for anything else.
    */
-  async runMechanicalCommand(bareCommand: string): Promise<{ success: boolean } | null> {
+  async runMechanicalCommand(bareCommand: string): Promise<MechanicalCommandResult | null> {
     // Kit's `next` answer is genuinely a string, so it is tokenised here.
     //
     // Naive whitespace splitting was a defect, not a simplification: Kit emits
@@ -481,7 +512,7 @@ export class KitCommandBridge {
   async runMechanicalArgv(
     subcommand: string,
     args: readonly string[]
-  ): Promise<{ success: boolean } | null> {
+  ): Promise<MechanicalCommandResult | null> {
     const mechanical = new Set([
       "init",
       "scan",
@@ -512,9 +543,16 @@ export class KitCommandBridge {
     }
     const result = await this.run([subcommand, ...args], { timeoutMs: this.longTimeout() });
     if (!result) return null;
-    const parsed = parseJson(result.stdout, z.object({ success: z.boolean() }).passthrough());
-    if (parsed !== null) return { success: parsed.success && result.exitCode === 0 };
-    return { success: result.exitCode === 0 };
+    const parsed = parseJson(result.stdout, mechanicalResultSchema);
+    if (parsed !== null) {
+      return {
+        success: parsed.success && result.exitCode === 0,
+        validationErrors: parsed.validation?.errors ?? [],
+        recovery: parsed.recovery,
+        featurePath: parsed.feature?.path
+      };
+    }
+    return { success: result.exitCode === 0, validationErrors: [] };
   }
 
   async reconcile(taskId?: string): Promise<KitReconcileSummary | null> {

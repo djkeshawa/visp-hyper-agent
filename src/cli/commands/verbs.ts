@@ -32,6 +32,35 @@ type CompositeStop =
 
 const MAX_COMPOSITE_STEPS = 12;
 
+/** Kit returns 25 errors for a fresh spec; a wall of them is its own failure. */
+const MAX_SHOWN_ERRORS = 5;
+
+/**
+ * The stop shown when a stage is waiting on the human to fill an artifact in.
+ *
+ * Three things, because the absence of each was the defect: the reasons
+ * verbatim, the file to edit, and which verb resumes. The resume verb is
+ * `visp plan` rather than whatever was just run — re-running `visp new` would
+ * try to register the feature a second time, while `plan` re-asks Kit what is
+ * next and picks up mid-chain.
+ */
+function composeValidationStop(input: {
+  readonly command: string;
+  readonly errors: readonly string[];
+  readonly featurePath?: string;
+}): string {
+  const shown = input.errors.slice(0, MAX_SHOWN_ERRORS);
+  const hidden = input.errors.length - shown.length;
+  const lines = [
+    `${input.command} needs more detail before it can pass:`,
+    ...shown.map((error) => `  - ${error}`),
+    ...(hidden > 0 ? [`  (+${hidden} more)`] : []),
+    ...(input.featurePath === undefined ? [] : [`Edit the artifacts in ${input.featurePath},`]),
+    `${input.featurePath === undefined ? "Fill them in, " : "then "}re-run visp plan to continue.`
+  ];
+  return lines.join("\n");
+}
+
 async function kitAvailable(projectPath: string): Promise<string | null> {
   const availability = await detectVisp(projectPath);
   if (availability.state === "healthy") return null;
@@ -105,7 +134,35 @@ async function driveByNext(input: {
       };
     }
     if (!executed.success) {
-      return { kind: "blocked", detail: `${next.nextCommand} reported failure. Run it directly for detail.` };
+      // Two different situations wore the same message here.
+      //
+      // A Kit stage generates a template, a human fills it in, and the stage is
+      // re-validated. So `visp-kit spec` exiting non-zero because its OWN
+      // freshly generated draft is still all TBD is the normal path through
+      // every stage — not a failure. Reporting it as `blocked` with
+      // "Run it directly for detail" threw away the 25 validation errors Kit
+      // had just handed over and made the user run a second command to see
+      // information the first one already had.
+      if (executed.validationErrors.length > 0) {
+        return {
+          kind: "human-needed",
+          detail: composeValidationStop({
+            command: next.nextCommand,
+            errors: executed.validationErrors,
+            featurePath: executed.featurePath
+          })
+        };
+      }
+      // No validation errors means this is the hard envelope: the wrong stage,
+      // a missing feature, an unreadable artifact. Kit works out a stage-aware
+      // repair for those; prefer it over anything invented here.
+      return {
+        kind: "blocked",
+        detail:
+          executed.recovery === undefined
+            ? `${next.nextCommand} reported failure. Run it directly for detail.`
+            : `${next.nextCommand} could not run. Try: ${executed.recovery}`
+      };
     }
   }
   return {
@@ -212,6 +269,34 @@ export function handoffVerbCommand(): Command {
     });
 }
 
+/**
+ * Print a check's verdict and, when it failed, why.
+ *
+ * `visp check` used to print `verify: FAILED` and stop — no reason at all,
+ * while holding a summary that already listed them. On a real project the
+ * withheld reason was a genuine out-of-scope violation naming the offending
+ * files, and the user had to run `visp-kit verify --task <id>` to see it.
+ * Same defect as the composites, different code path.
+ */
+function reportCheck(
+  label: string,
+  summary: { readonly success: boolean; readonly errors?: readonly string[] }
+): void {
+  console.log(`${label}: ${summary.success ? "passed" : "FAILED"}`);
+  if (summary.success) return;
+
+  const errors = summary.errors ?? [];
+  if (errors.length === 0) {
+    console.log(`  (${label} reported no detail; run visp-kit ${label} for the full report)`);
+    return;
+  }
+  for (const error of errors.slice(0, MAX_SHOWN_ERRORS)) {
+    console.log(`  - ${error}`);
+  }
+  const hidden = errors.length - Math.min(errors.length, MAX_SHOWN_ERRORS);
+  if (hidden > 0) console.log(`  (+${hidden} more)`);
+}
+
 export function checkVerbCommand(): Command {
   return new Command("check")
     .description("Run the real checks and record evidence without changing any workflow state.")
@@ -231,14 +316,14 @@ export function checkVerbCommand(): Command {
         process.exitCode = 1;
         return;
       }
-      console.log(`verify: ${verify.success ? "passed" : "FAILED"}`);
+      reportCheck("verify", verify);
       const review = await bridge.checkReview(options.task);
       if (review === null) {
         console.error(bridge.warnings.at(-1) ?? "Review did not produce a readable summary.");
         process.exitCode = 1;
         return;
       }
-      console.log(`review: ${review.success ? "passed" : "FAILED"}`);
+      reportCheck("review", review);
       if (!verify.success || !review.success) process.exitCode = 1;
       console.log("No workflow state was changed. Use visp handoff to record progress.");
     });
