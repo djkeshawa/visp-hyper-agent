@@ -47,7 +47,8 @@
     "test": "pnpm build && vitest run",
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm test",
-    "prepack": "pnpm build"
+    "prepack": "pnpm build",
+    "test:coverage": "vitest run --coverage"
   },
   "engines": {
     "node": ">=22.0.0",
@@ -70,7 +71,8 @@
     "@types/node": "^24.0.0",
     "tsup": "^8.5.0",
     "typescript": "^5.8.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "@vitest/coverage-v8": "^3.2.4"
   },
   "repository": {
     "type": "git",
