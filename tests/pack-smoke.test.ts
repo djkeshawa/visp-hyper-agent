@@ -98,12 +98,34 @@ describe("npm pack smoke", () => {
       peerDependenciesMeta?: Record<string, { optional?: boolean }>;
     };
 
-    // P10-US-03 bridge window: both pre-rename (0.2.3/0.3.0) and renamed
-    // (0.4.x) Kit are drivable; 0.5 is fenced until a decision admits it.
-    expect(manifest.peerDependencies?.["visp-kit"]).toBe(">=0.2.3 <0.5.0");
+    // The range must include the Kit this Hyper is meant to drive. It read
+    // "<0.5.0" while Kit moved to 0.5.0, which would have published an unmet
+    // peer dependency for every user installing the pair — caught at the
+    // publish gate, not by a test, which is why this assertion now exists.
+    expect(manifest.peerDependencies?.["visp-kit"]).toBe(">=0.2.3 <0.6.0");
     expect(manifest.peerDependenciesMeta?.["visp-kit"]).toEqual({ optional: true });
     expect(manifest.dependencies?.["visp-kit"]).toBeUndefined();
     expect(manifest.devDependencies?.["visp-kit"]).toBeUndefined();
     expect(manifest.optionalDependencies?.["visp-kit"]).toBeUndefined();
+  });
+
+  it("the peer range admits the Kit version this package is built against", async () => {
+    // A range that excludes the current Kit is invisible in this repo and only
+    // surfaces in a user's install. Derive it rather than restating a literal.
+    const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as {
+      peerDependencies?: Record<string, string>;
+    };
+    const range = manifest.peerDependencies?.["visp-kit"] ?? "";
+    const upper = /<\s*(\d+)\.(\d+)\.(\d+)/u.exec(range);
+    expect(upper).not.toBeNull();
+
+    const kitPackage = JSON.parse(
+      await readFile(join(packageRoot, "..", "visp-kit", "package.json"), "utf8")
+    ) as { version: string };
+    const [kMaj, kMin] = kitPackage.version.split(".").map(Number);
+    const [, uMaj, uMin] = (upper ?? []).map(Number);
+
+    const kitBelowUpperBound = kMaj < uMaj || (kMaj === uMaj && kMin < uMin);
+    expect(kitBelowUpperBound).toBe(true);
   });
 });
