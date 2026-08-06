@@ -244,8 +244,19 @@ export function planVerbCommand(): Command {
 export function handoffVerbCommand(): Command {
   return new Command("handoff")
     .description("Assemble the evidence for review: verify, review, assurance — as far as Kit allows.")
-    .option("--task <task-id>", "Task to hand off.")
-    .action(async (options: { task?: string }, command: Command) => {
+    // No --task option, deliberately.
+    //
+    // It used to be declared and then discarded with `void options;`, while the
+    // MCP tool went on forwarding it — so a caller could pass a task id, be
+    // told nothing, and have it silently ignored. Silently accepting an
+    // argument is worse than either honouring or rejecting it.
+    //
+    // Honouring it is not available: handoff drives whatever Kit's `next`
+    // answers, and those answers already carry the task Kit selected. Letting
+    // the caller override that here would put task selection in the
+    // coordinator, which is exactly the authority split this product forbids —
+    // Kit decides, Hyper presents. So the option is gone from both surfaces.
+    .action(async (_options: unknown, command: Command) => {
       const projectPath = resolveProjectPath(command);
       const unavailable = await kitAvailable(projectPath);
       if (unavailable !== null) {
@@ -254,7 +265,6 @@ export function handoffVerbCommand(): Command {
         return;
       }
       const bridge = new KitCommandBridge({ projectPath });
-      void options;
       const stop = await driveByNext({
         bridge,
         isGoal: (next) =>

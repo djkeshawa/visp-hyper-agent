@@ -267,7 +267,17 @@ describe("CLI workflow", () => {
       );
       const shim = await configureKit(projectPath);
 
-      await runCli(["node", "visp-hyper", "--project", projectPath, command]);
+      // `status` renders for humans by default now; this test is about the
+      // canonical FRAME and Kit's authority, both of which are unchanged, so
+      // it asks for the frame explicitly. `review` still emits it directly.
+      await runCli([
+        "node",
+        "visp-hyper",
+        "--project",
+        projectPath,
+        command,
+        ...(command === "status" ? ["--json"] : [])
+      ]);
 
       const output = logs.join("\n");
       expect(envelopeFromFrame(output).action).toMatchObject({

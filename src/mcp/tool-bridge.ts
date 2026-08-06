@@ -184,12 +184,12 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     name: "visp_handoff",
     description: "Assemble the evidence for review: verify, review, assurance — as far as Kit allows.",
-    inputSchema: {
-      type: "object",
-      properties: { task: { type: "string" } }
-    },
-    validate: (args) => optional(args, "task", isString, "a string"),
-    toArgv: (args) => (isString(args.task) ? ["handoff", "--task", args.task] : ["handoff"])
+    // No `task` property: handoff follows Kit's own next answer, which already
+    // carries the task Kit selected. Advertising one here promised an override
+    // the CLI silently threw away.
+    inputSchema: { type: "object", properties: {} },
+    validate: () => null,
+    toArgv: () => ["handoff"]
   },
   {
     name: "visp_status",

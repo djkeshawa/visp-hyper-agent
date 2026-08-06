@@ -130,7 +130,7 @@ describe("canonical action cross-surface conformance", () => {
       kitReadContract: { readContractVersion: "0.1" }
     });
     const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
-    const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status"]));
+    const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status", "--json"]));
     const reviewEnvelope = framedEnvelope(await captureCli(projectPath, ["review"]));
     const resumeEnvelope = JSON.parse(
       await captureCli(projectPath, ["resume", "--json"])
@@ -293,7 +293,7 @@ describe("canonical action cross-surface conformance", () => {
       await captureCli(projectPath, ["run", "ignored raw goal", "--tool", "codex"])
     );
     const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
-    const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status"]));
+    const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status", "--json"]));
     const reviewEnvelope = framedEnvelope(await captureCli(projectPath, ["review"]));
     const resumeEnvelope = JSON.parse(
       await captureCli(projectPath, ["resume", "--json"])
@@ -359,7 +359,7 @@ describe("canonical action cross-surface conformance", () => {
     const runEnvelope = framedEnvelope(runOutput);
     expect(runOutput).toContain("reason_code: strict_session_adoption_unavailable");
     const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
-    const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status"]));
+    const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status", "--json"]));
     const reviewEnvelope = framedEnvelope(await captureCli(projectPath, ["review"]));
     const resumeEnvelope = JSON.parse(
       await captureCli(projectPath, ["resume", "--json"])

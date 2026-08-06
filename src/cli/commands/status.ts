@@ -5,6 +5,7 @@ import { readTextIfExists, vispPath } from "../../core/fs-utils.js";
 import { getActiveSession } from "../../core/session-manager.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
+import type { NormalizedWorkflowAction } from "../../kit/workflow-action-adapter.js";
 import {
   renderHyperActionFrame,
   toHyperActionEnvelope
@@ -21,10 +22,51 @@ const generatedFiles = [
   "handoff.json"
 ];
 
+/**
+ * The canonical action, rendered for a person.
+ *
+ * `status` is one of the thirteen verbs a human is told to use, and it printed
+ * a single-line four-kilobyte `BEGIN_VISP_HYPER_ACTION_V1` envelope with no
+ * human rendering at all. The information in that frame is genuinely good —
+ * phase, task, verdict, findings, next command — which makes it worse rather
+ * than better: everything the reader needed was present and unreadable.
+ *
+ * The frame is unchanged and still available behind `--json`; `guard` and
+ * `work` continue to emit it as their machine surface.
+ */
+function renderActionSummary(action: NormalizedWorkflowAction): string {
+  const declared = <T>(value: { state: string; value?: T } | undefined): T | undefined =>
+    value !== undefined && value.state === "available" ? value.value : undefined;
+
+  const feature = declared(action.feature) as { id: string; slug: string } | null | undefined;
+  const lines = [
+    `Phase:   ${declared(action.phase) ?? action.sourcePhase}`,
+    `Verdict: ${action.verdict}`
+  ];
+
+  if (feature !== null && feature !== undefined) {
+    lines.push(`Feature: ${feature.id}-${feature.slug}`);
+  }
+  if (action.task !== null) {
+    const title = declared(action.task.title);
+    const status = declared(action.task.status);
+    lines.push(`Task:    ${action.task.id}${title === undefined ? "" : ` — ${title}`}${status === undefined ? "" : ` (${status})`}`);
+  }
+
+  if (action.findingMessages.length > 0) {
+    lines.push("", "Findings:");
+    for (const message of action.findingMessages) lines.push(`  - ${message}`);
+  }
+
+  lines.push("", `Next:    ${action.nextCommand}`);
+  return lines.join("\n");
+}
+
 export function statusCommand(): Command {
   return new Command("status")
     .description("Show Kit's canonical action, or local Hyper status in a Kit-less project.")
-    .action(async function (this: Command) {
+    .option("--json", "Emit the machine-readable WorkflowAction frame.")
+    .action(async function (this: Command, options: { json?: boolean }) {
       const projectPath = resolveProjectPath(this);
       const kit = await detectVisp(projectPath);
       if (kit.state === "configured-unhealthy") {
@@ -53,7 +95,11 @@ export function statusCommand(): Command {
           process.exitCode = 1;
           return;
         }
-        console.log(renderHyperActionFrame(toHyperActionEnvelope(diagnostic.value)));
+        console.log(
+          options.json
+            ? renderHyperActionFrame(toHyperActionEnvelope(diagnostic.value))
+            : renderActionSummary(diagnostic.value)
+        );
         if (diagnostic.value.verdict !== "ready") {
           process.exitCode = 1;
         }
