@@ -996,6 +996,12 @@ function isToolName(value: unknown): value is ToolName {
 function formatDoctorSummary(summary: DoctorSummary): string {
   const lines = [
     "VISP_HYPER_DOCTOR",
+    // Say which question this answers. `visp-dev doctor` reports on the machine
+    // and package compatibility; this reports on the project. They were never
+    // in conflict, but neither said so, and a weak-model evaluation reading
+    // both called the disagreement "unresolvable without knowing which tool is
+    // authoritative".
+    "Scope: this project (visp-dev doctor covers the machine and package compatibility)",
     `Project: ${summary.projectPath}`,
     `Version: ${summary.version}`,
     `Overall: ${summary.success ? "PASS" : "FAIL"}`,
