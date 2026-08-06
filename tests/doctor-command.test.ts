@@ -444,7 +444,10 @@ describe("doctor command", () => {
     };
     expect(summary.success).toBe(true);
     expect(summary.checks.find((check) => check.id === "kit-artifacts")?.status).toBe("warn");
-    expect(summary.nextCommand).toContain("visp init");
+    // Was `visp init` — a command hidden from `visp --help`, so a user reading
+    // the documented thirteen verbs could not find it. `visp setup` now
+    // performs that initialisation, so doctor names the verb that exists.
+    expect(summary.nextCommand).toContain("visp setup");
   });
 
   it("validates the selected host manifest and detects modified installed assets", async () => {

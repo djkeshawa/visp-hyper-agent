@@ -78,7 +78,7 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
     detail: kitArtifactsPresent
       ? "Found .visp/policy.json or .visp/project.json."
       : "No Kit-owned artifacts found; Hyper will use quick/local mode instead of the strict Kit backend.",
-    recovery: kitArtifactsPresent ? undefined : "Run `visp init` or `visp agent bootstrap <tool>` in this project."
+    recovery: kitArtifactsPresent ? undefined : "Run `visp setup` in this project."
   });
 
   if (kitArtifactsPresent) {
@@ -129,7 +129,7 @@ async function checkHyperInitialized(projectPath: string): Promise<DoctorCheck> 
     label: "Visp Hyper state",
     status: "fail",
     detail: "Visp Hyper has not been initialized in this project.",
-    recovery: "Run `visp-hyper init --tool <tool>`."
+    recovery: "Run `visp setup`."
   };
 }
 
@@ -199,8 +199,8 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
       id: "kit-contract",
       label: "Kit integration contract",
       status: "warn",
-      detail: "visp integration contract could not be read; falling back to legacy status and artifact probing.",
-      recovery: "Upgrade or link a Visp Kit version that supports `visp integration contract --json`."
+      detail: "visp-kit integration contract could not be read; falling back to legacy status and artifact probing.",
+      recovery: "Upgrade or link a Visp Kit version that supports `visp-kit integration contract --json`."
     });
     checks.push({
       id: "kit-workflow-action",
@@ -266,8 +266,8 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
           // A null result can mean a timeout, a non-zero exit, a missing binary, or a
           // genuine parse failure. Naming only the last one sent people to fix output
           // that was never produced. The real reason is in the warning drained above.
-          detail: "visp policy validate did not return a usable result; see the warning above for why.",
-          recovery: "Run `visp policy validate --json` and check whether it completes, exits non-zero, or emits unexpected output."
+          detail: "visp-kit policy validate did not return a usable result; see the warning above for why.",
+          recovery: "Run `visp-kit policy validate --json` and check whether it completes, exits non-zero, or emits unexpected output."
         }
       : {
           id: "kit-policy",
@@ -276,7 +276,7 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
           detail: policy.success
             ? "Policy validates successfully."
             : `Policy validation failed: ${policy.errors.join("; ") || "no error detail reported"}.`,
-          recovery: policy.success ? undefined : "Fix .visp/policy.json, then re-run `visp policy validate`."
+          recovery: policy.success ? undefined : "Fix .visp/policy.json, then re-run `visp-kit policy validate`."
         }
   );
 
@@ -287,8 +287,8 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
       id: "kit-next-gate",
       label: "Next gate",
       status: "fail",
-      detail: "visp gate next did not return a usable result; see the warning above for why.",
-      recovery: "Run `visp gate next --json` and check whether it completes, exits non-zero, or emits unexpected output."
+      detail: "visp-kit gate next did not return a usable result; see the warning above for why.",
+      recovery: "Run `visp-kit gate next --json` and check whether it completes, exits non-zero, or emits unexpected output."
     });
   } else {
     checks.push({
@@ -324,7 +324,7 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
     detail: pack
       ? `Read context for ${activeTaskId}${contextPath ? ` at ${contextPath}` : ""}.`
       : `No readable context pack found for active task ${activeTaskId}.`,
-    recovery: pack ? undefined : `Run \`visp context --task ${activeTaskId}\`, then re-run \`visp doctor\`.`
+    recovery: pack ? undefined : `Run \`visp-kit context --task ${activeTaskId}\`, then re-run \`visp doctor\`.`
   });
 }
 
@@ -395,7 +395,7 @@ async function checkSelectedHost(projectPath: string, config: HyperConfig | null
       label: "Selected coding host",
       status: "fail",
       detail: "A trusted defaultTool is unavailable.",
-      recovery: "Fix .visp/hyper/config.json, then run `visp-hyper init --tool <tool>`."
+      recovery: "Fix .visp/hyper/config.json, then run `visp setup`."
     };
   }
   if (tool === "generic") {
@@ -454,7 +454,7 @@ async function checkToolAssets(projectPath: string, config: HyperConfig | null):
       label: "Tool assets",
       status: "warn",
       detail: "No valid defaultTool found in .visp/hyper/config.json.",
-      recovery: "Run `visp-hyper init --tool <tool>`."
+      recovery: "Run `visp setup`."
     };
   }
 
