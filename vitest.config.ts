@@ -3,6 +3,10 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
+    // Remove any globally installed visp-kit / visp / visp-hyper from PATH
+    // before a test runs. Without this the suite passes only on a machine where
+    // the product is NOT installed — see the file for the measured numbers.
+    setupFiles: ["tests/setup/isolate-installed-visp.ts"],
     // Spawn-heavy integration tests drive real git/npm/pnpm through child
     // processes; on Windows those go through cmd.exe shims and are slower under
     // parallel worker load, so the 5s default flakes. 30s is comfortably above
