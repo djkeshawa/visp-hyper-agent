@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Command, Option } from "commander";
 import { checkContextFreshness } from "../../context/context-freshness.js";
-import { execFileResolved } from "../../core/executable-resolver.js";
+import { execFileResolved, resolveExecutable } from "../../core/executable-resolver.js";
 import { packageVersion } from "../../core/package-version.js";
 import { fileExists, readTextIfExists, vispPath } from "../../core/fs-utils.js";
 import { hyperConfigSchema } from "../../core/session-manager.js";
@@ -365,7 +365,7 @@ function checkTrustedConfig(inspection: HyperConfigInspection): DoctorCheck {
       label: "Trusted project configuration",
       status: "fail",
       detail: inspection.problems.join("; ") || "The Hyper configuration is invalid.",
-      recovery: "Review .visp/hyper/config.json and re-run `visp-hyper init --force` only if replacing it is intended."
+      recovery: "Review .visp/hyper/config.json and re-run `visp init --force` only if replacing it is intended."
     };
   }
   return {
@@ -490,7 +490,7 @@ async function checkToolAssets(projectPath: string, config: HyperConfig | null):
       label: "Tool assets",
       status: "warn",
       detail: `${tool} asset integrity differs from ${manifestDetail}: ${findings.join("; ")}.`,
-      recovery: `Run \`visp-hyper init --tool ${tool} --force-assets\` after reviewing local customizations.`
+      recovery: `Run \`visp init --tool ${tool} --force-assets\` after reviewing local customizations.`
     };
   } catch (error) {
     return {
@@ -516,58 +516,48 @@ async function checkMemory(
     };
   }
 
-  const endpoint = (config?.memoryEndpoint || "http://localhost:8000").replace(/\/+$/u, "");
-  let url: URL;
-  try {
-    url = new URL(endpoint);
-  } catch {
+  // Probe the surface the verbs actually use. `recall` and `learn` speak the
+  // visp-memory CLI contract in every configuration — the endpoint, when set,
+  // is a hint passed through to that CLI, not a transport Hyper owns. Doctor
+  // used to fetch `<endpoint>/healthz` itself and reported "llm-memory
+  // unavailable at http://localhost:8000" one command after `visp recall` had
+  // answered fine through the CLI. A doctor must examine the patient the
+  // verbs actually visit: CLI installed, endpoint well-formed when present.
+  const resolved = await resolveExecutable("visp-memory");
+  if (resolved === null) {
     return {
       id: "memory",
       label: "Memory provider",
       status: "warn",
-      detail: `llm-memory endpoint is invalid: ${endpoint}.`,
-      recovery: "Run `visp-hyper init --memory-mode file` or set a valid --memory-endpoint."
-    };
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return {
-      id: "memory",
-      label: "Memory provider",
-      status: "warn",
-      detail: `llm-memory endpoint uses unsupported protocol ${url.protocol}.`,
-      recovery: "Use an http(s) llm-memory endpoint or switch to file memory."
+      detail: "memoryMode is llm-memory, but the visp-memory CLI is not installed.",
+      recovery: "Run `visp setup` — it installs what is missing and configures memory here."
     };
   }
 
-  try {
-    const response = await fetch(`${endpoint}/healthz`, {
-      method: "GET",
-      signal: AbortSignal.timeout(750)
-    });
-    if (!response.ok) {
+  const endpoint = config?.memoryEndpoint?.trim();
+  if (endpoint !== undefined && endpoint !== "") {
+    let url: URL | null = null;
+    try {
+      url = new URL(endpoint.replace(/\/+$/u, ""));
+    } catch {
+      // fall through to the warning below
+    }
+    if (url === null || (url.protocol !== "http:" && url.protocol !== "https:")) {
       return {
         id: "memory",
         label: "Memory provider",
         status: "warn",
-        detail: `llm-memory health check returned ${response.status}.`,
-        recovery: "Start llm-memory or switch memoryMode to file."
+        detail: `llm-memory endpoint is invalid: ${endpoint}.`,
+        recovery: "Run `visp init --memory-mode file` or set a valid --memory-endpoint."
       };
     }
-  } catch (error) {
-    return {
-      id: "memory",
-      label: "Memory provider",
-      status: "warn",
-      detail: `llm-memory unavailable at ${endpoint}: ${error instanceof Error ? error.message : String(error)}.`,
-      recovery: "Start llm-memory or switch memoryMode to file."
-    };
   }
 
   return {
     id: "memory",
     label: "Memory provider",
     status: "pass",
-    detail: `llm-memory is reachable at ${endpoint}.`
+    detail: "llm-memory is available through the visp-memory CLI."
   };
 }
 
@@ -779,7 +769,7 @@ async function checkGitHook(projectPath: string): Promise<DoctorCheck> {
         label: "Git scope hook",
         status: "fail",
         detail: "The visp-hyper pre-commit hook is not executable.",
-        recovery: "Run `visp-hyper hooks git` to restore the canonical executable hook."
+        recovery: "Run `visp hooks git` to restore the canonical executable hook."
       };
     }
     return {
@@ -796,7 +786,7 @@ async function checkGitHook(projectPath: string): Promise<DoctorCheck> {
       label: "Git scope hook",
       status: "fail",
       detail: "The visp-hyper-owned pre-commit hook was modified and cannot be trusted to enforce scope.",
-      recovery: "Run `visp-hyper hooks git` to restore the canonical hook."
+      recovery: "Run `visp hooks git` to restore the canonical hook."
     };
   }
 
@@ -805,7 +795,7 @@ async function checkGitHook(projectPath: string): Promise<DoctorCheck> {
     label: "Git scope hook",
     status: "warn",
     detail: "visp-hyper guard is not installed as the pre-commit hook.",
-    recovery: "Run `visp-hyper hooks git`."
+    recovery: "Run `visp hooks git`."
   };
 }
 

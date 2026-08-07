@@ -110,15 +110,42 @@ describe("setup leaves the project genuinely set up", () => {
     expect(config.memoryMode).toBe(memoryInstalled ? "llm-memory" : "file");
   });
 
-  it("leaves memoryMode alone when the project has no memory store", async () => {
-    // The converse: setup must not certify a capability that is not there.
-    // That is the failure being repaired, in the opposite direction.
+  it("creates the memory store on a fresh project, so recall works after setup", async () => {
+    // The final round of the fresh-project drive: setup certified
+    // "recall/learn available" while nothing had ever created a store here, so
+    // `visp recall` still said "not configured" seconds later. When the binary
+    // is installed, setup now initialises the store itself; when it is not,
+    // the honest answer remains to leave the mode alone.
     await runSetup();
 
     const config = JSON.parse(
       await readFile(join(tempDir, ".visp", "hyper", "config.json"), "utf8")
     );
-    expect(config.memoryMode).toBe("file");
+    const memoryInstalled = await import("../src/core/executable-resolver.js").then(
+      async (module) => (await module.resolveExecutable("visp-memory")) !== null
+    );
+    expect(await exists(join(tempDir, "visp-memory.yaml"))).toBe(memoryInstalled);
+    expect(config.memoryMode).toBe(memoryInstalled ? "llm-memory" : "file");
+  });
+
+  it("installs the generic tool assets, so doctor cannot WARN about them", async () => {
+    // Right after a fresh `visp setup`, doctor reported "generic asset
+    // integrity differs from manifest… missing: visp-hyper-instructions.md"
+    // and recommended a hidden command. Setup initialised Hyper's config but
+    // never its assets.
+    await runSetup();
+
+    expect(await exists(join(tempDir, "visp-hyper-instructions.md"))).toBe(true);
+  });
+
+  it("does not overwrite customised tool assets on a second run", async () => {
+    await runSetup();
+    const assetPath = join(tempDir, "visp-hyper-instructions.md");
+    await writeFile(assetPath, "customised by the user\n", "utf8");
+
+    await runSetup();
+
+    expect(await readFile(assetPath, "utf8")).toBe("customised by the user\n");
   });
 
   it("says what it did to the project", async () => {

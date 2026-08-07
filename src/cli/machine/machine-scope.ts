@@ -2,7 +2,7 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 
 import { vispPath, writeText } from "../../core/fs-utils.js";
-import { resolveExecutable } from "../../core/executable-resolver.js";
+import { execFileResolved, resolveExecutable } from "../../core/executable-resolver.js";
 import { initializeProject, readConfig } from "../../core/session-manager.js";
 import { KitCommandBridge, hasKitArtifacts } from "../../kit/kit-command-bridge.js";
 
@@ -104,11 +104,69 @@ async function completeProjectScope(projectPath: string): Promise<void> {
     done.push("initialised Visp Hyper in this project");
   }
 
+  // Assets too, not just config. Initialising Hyper without its default tool
+  // assets left `visp doctor` WARNing about missing files ("missing:
+  // visp-hyper-instructions.md") seconds after setup said it was done — and
+  // its remedy was a hidden command. The default host is generic; a specific
+  // tool remains an explicit `visp-hyper init --tool <tool>` choice.
+  if (await installGenericAssets(projectPath)) {
+    done.push("installed the generic tool assets");
+  }
+
+  if (await initialiseMemoryStore(projectPath)) {
+    done.push("initialised the visp-memory store in this project");
+  }
+
   if (await enableLlmMemory(projectPath)) {
     done.push('set memoryMode to "llm-memory" (visp-memory is installed and initialised here)');
   }
 
   for (const line of done) console.log(`  ${line}`);
+}
+
+/**
+ * Create the project's memory store when visp-memory is installed but has
+ * never been initialised here.
+ *
+ * This is the missing first domino behind the setup/recall contradiction on a
+ * FRESH project: `enableLlmMemory` (correctly) refuses to point `recall` at a
+ * store that does not exist, but nothing ever created one — so setup still
+ * printed "recall/learn available" and recall still said "not configured",
+ * exactly the pair of sentences this whole path exists to prevent.
+ * `visp-memory init` is idempotent, writes visp-memory.yaml beside the
+ * project, and gitignores its own store.
+ */
+/**
+ * Install the generic (host-neutral) tool assets when none were ever
+ * installed. Never forces: an existing installation, customised or not,
+ * belongs to the user and to `visp-hyper init --tool <tool> --force-assets`.
+ */
+async function installGenericAssets(projectPath: string): Promise<boolean> {
+  try {
+    const { installAssets } = await import("../../install/tool-asset-installer.js");
+    const report = await installAssets("generic", projectPath, { force: false });
+    return report.created.length > 0;
+  } catch {
+    console.log(
+      "warning: could not install the generic tool assets. Run `visp-hyper init --tool generic`."
+    );
+    return false;
+  }
+}
+
+async function initialiseMemoryStore(projectPath: string): Promise<boolean> {
+  if (await pathExists(join(projectPath, "visp-memory.yaml"))) return false;
+  if ((await resolveExecutable("visp-memory")) === null) return false;
+
+  try {
+    await execFileResolved("visp-memory", ["init"], { cwd: projectPath, timeout: 120_000 });
+  } catch {
+    console.log(
+      "warning: could not initialise the visp-memory store here. Run `visp-memory init` in this project."
+    );
+    return false;
+  }
+  return pathExists(join(projectPath, "visp-memory.yaml"));
 }
 
 /**

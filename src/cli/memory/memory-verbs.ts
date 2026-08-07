@@ -16,7 +16,7 @@ export async function runRecallVerb(projectPath: string, query: string): Promise
     console.error(
       [
         "visp recall needs visp-memory, which is not configured for this project.",
-        'Set memoryMode to "llm-memory" in .visp/hyper/config.json (and install visp-memory) to enable it.',
+        "Run `visp setup` — it installs what is missing and configures memory here.",
         "Nothing was retrieved."
       ].join("\n")
     );
@@ -54,7 +54,7 @@ export async function runLearnVerb(projectPath: string, note: string): Promise<v
     console.error(
       [
         "visp learn needs visp-memory, which is not configured for this project.",
-        'Set memoryMode to "llm-memory" in .visp/hyper/config.json (and install visp-memory) to enable it.',
+        "Run `visp setup` — it installs what is missing and configures memory here.",
         "Nothing was recorded."
       ].join("\n")
     );

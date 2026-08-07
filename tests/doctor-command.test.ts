@@ -233,6 +233,30 @@ describe("doctor command", () => {
     vi.restoreAllMocks();
   });
 
+  it("probes memory the way the verbs use it, not an invented HTTP default", async () => {
+    // On a freshly set-up project, `visp recall` answered fine through the
+    // visp-memory CLI while doctor reported "llm-memory unavailable at
+    // http://localhost:8000" — it probed a default port no verb ever uses.
+    // With no endpoint configured, doctor must check the CLI instead.
+    const projectPath = await createProject();
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "config.json"),
+      `${JSON.stringify({ ...defaultConfig, memoryMode: "llm-memory" }, null, 2)}\n`,
+      "utf8"
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    const memory = summary.checks.find((check) => check.id === "memory");
+    expect(memory?.detail).not.toContain("localhost:8000");
+    const { resolveExecutable } = await import("../src/core/executable-resolver.js");
+    const installed = (await resolveExecutable("visp-memory")) !== null;
+    expect(memory?.status).toBe(installed ? "pass" : "warn");
+  });
+
   it("checks the healthy Visp Kit bridge path", async () => {
     const projectPath = await createProject();
     await writeKitArtifacts(projectPath);
