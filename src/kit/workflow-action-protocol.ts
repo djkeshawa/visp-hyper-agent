@@ -12,6 +12,22 @@ export const WORKFLOW_ACTION_PROTOCOL_PREFERENCE = Object.freeze([
 export type WorkflowActionProtocol = (typeof WORKFLOW_ACTION_PROTOCOL_PREFERENCE)[number];
 export type WorkflowActionPreference = "auto" | WorkflowActionProtocol;
 
+/**
+ * Whether a protocol's canonical action carries what strict session adoption
+ * needs: an explicit phase, task identity, and scope. Every 3.x protocol
+ * qualifies; 2.0 predates that discipline.
+ *
+ * This lives beside the preference list because `visp work` used to hardcode
+ * "3.0"/"3.1"/"3.2" at its call site. When negotiation moved on to 3.4, every
+ * other consumer followed the preference list and kept working — work alone
+ * refused strict adoption in every project. One authority, one place.
+ */
+export function supportsStrictSessionAdoption(
+  protocolVersion: WorkflowActionProtocol
+): boolean {
+  return protocolVersion !== "2.0";
+}
+
 export const TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES = Object.freeze({
   "2.0": "sha256:c63b279b1ce89f047b2be696a47e845a57adda7f8437892e211e3a4cfad39ed6",
   "3.0": "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7",

@@ -14,6 +14,7 @@ import { provenanceFreshnessContractWarning } from "../../kit/kit-contract-compa
 import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
 import type { NormalizedWorkflowAction } from "../../kit/workflow-action-adapter.js";
+import { supportsStrictSessionAdoption } from "../../kit/workflow-action-protocol.js";
 import {
   renderHyperActionFrame,
   toHyperActionEnvelope
@@ -107,9 +108,7 @@ export function runCommand(): Command {
         return;
       }
       if (
-        (action.source.protocolVersion !== "3.0" &&
-          action.source.protocolVersion !== "3.1" &&
-          action.source.protocolVersion !== "3.2") ||
+        !supportsStrictSessionAdoption(action.source.protocolVersion) ||
         action.phase.state !== "available" ||
         action.phase.value !== "implement" ||
         action.task === null
@@ -118,8 +117,7 @@ export function runCommand(): Command {
           renderKitAuthorityStop({
             status: "INCONCLUSIVE",
             reasonCode: "strict_session_adoption_unavailable",
-            reason:
-              "Strict session adoption requires a ready canonical WorkflowAction with an explicitly available implement phase and task."
+            reason: strictAdoptionRefusalReason(action)
           }),
           action
         );
@@ -381,6 +379,26 @@ async function printAndRecordRouting(
   } catch {
     // Advisory only; never fail the run because routing could not be computed.
   }
+}
+
+/**
+ * `visp work` is a human verb, and its refusal used to be one fixed sentence
+ * regardless of cause. Name what Kit actually reported and which verb fits it,
+ * so the stop is an instruction rather than a dead end.
+ */
+function strictAdoptionRefusalReason(action: NormalizedWorkflowAction): string {
+  if (!supportsStrictSessionAdoption(action.source.protocolVersion)) {
+    return `Kit is speaking WorkflowAction protocol ${action.source.protocolVersion}, which predates strict session adoption. Upgrade visp-kit.`;
+  }
+  const phase = action.phase.state === "available" ? action.phase.value : action.sourcePhase;
+  if (phase !== "implement") {
+    const verb =
+      phase === "verify" || phase === "review" || phase === "reconcile"
+        ? "visp check"
+        : "visp plan";
+    return `visp work starts implementation, but Kit reports the workflow is at the ${phase} phase. Run ${verb} to continue from there.`;
+  }
+  return "Kit's canonical action names no task yet. Run visp plan to advance the workflow until a task is selected.";
 }
 
 function failStrictRun(output: string, action?: NormalizedWorkflowAction): void {
