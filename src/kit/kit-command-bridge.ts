@@ -555,9 +555,24 @@ export class KitCommandBridge {
     return { success: result.exitCode === 0, validationErrors: [] };
   }
 
-  async reconcile(taskId?: string): Promise<KitReconcileSummary | null> {
+  async reconcile(
+    taskId?: string,
+    options: { acceptWarnings?: boolean } = {}
+  ): Promise<KitReconcileSummary | null> {
+    // --update-task-status is what closes the task when reconciliation
+    // passes. Without it, no task ever left "pending" through the visp
+    // surface: both live evaluation runs ended with every task still pending
+    // after fully PASSED checkpoints, and the next-task selection had nothing
+    // to advance past. A reconcile that passes WITH WARNINGS still leaves the
+    // task open by Kit's design — accepting those warnings is a human call,
+    // carried here as --force only when the caller explicitly made it.
     return this.invoke(
-      [...withTask(["reconcile"], taskId), "--update-traceability"],
+      [
+        ...withTask(["reconcile"], taskId),
+        "--update-traceability",
+        "--update-task-status",
+        ...(options.acceptWarnings === true ? ["--force"] : [])
+      ],
       kitReconcileSummarySchema,
       { rejectSuccessfulNonZero: true, timeoutMs: this.longTimeout() }
     );

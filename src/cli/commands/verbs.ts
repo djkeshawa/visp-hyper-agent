@@ -61,6 +61,40 @@ function composeValidationStop(input: {
   return lines.join("\n");
 }
 
+/**
+ * The preparation chain: commands the composites may still have to execute
+ * BEFORE implementation can genuinely start. verify/review/reconcile are
+ * deliberately absent — they judge implementation, and Kit's policy gate
+ * names them as "next allowed" the moment a context pack exists.
+ *
+ * This set exists because `implementationAllowed` alone is not a goal. On a
+ * two-task feature, finishing T001 leaves implementationAllowed true while
+ * Kit's next mechanical step is `context T002`. The goal check used to fire
+ * on the flag alone, so `visp plan` said "run visp work" without generating
+ * T002's context, `visp work` refused to adopt a task with no context, and
+ * status pointed back at plan — a loop with no exit on the thirteen-verb
+ * surface, hit live by an evaluation agent eight times in a row.
+ */
+const PREPARATION_COMMANDS = new Set([
+  "init",
+  "scan",
+  "feature",
+  "clarify",
+  "spec",
+  "plan",
+  "tasks",
+  "context"
+]);
+
+function isPreparationCommand(bareCommand: string): boolean {
+  const [binary, subcommand] = bareCommand.trim().split(/\s+/u);
+  return (
+    (binary === "visp-kit" || binary === "visp") &&
+    subcommand !== undefined &&
+    PREPARATION_COMMANDS.has(subcommand)
+  );
+}
+
 async function kitAvailable(projectPath: string): Promise<string | null> {
   const availability = await detectVisp(projectPath);
   if (availability.state === "healthy") return null;
@@ -212,7 +246,9 @@ export function newVerbCommand(): Command {
       const stop = await driveByNext({
         bridge,
         isGoal: (next) =>
-          next.implementationAllowed ? "the task is ready to implement — run visp work" : null,
+          next.implementationAllowed && !isPreparationCommand(next.nextCommand)
+            ? "the task is ready to implement — run visp work"
+            : null,
         log: (line) => console.log(line)
       });
       reportStop(stop, "new");
@@ -234,7 +270,9 @@ export function planVerbCommand(): Command {
       const stop = await driveByNext({
         bridge,
         isGoal: (next) =>
-          next.implementationAllowed ? "implementation is allowed — run visp work" : null,
+          next.implementationAllowed && !isPreparationCommand(next.nextCommand)
+            ? "implementation is allowed — run visp work"
+            : null,
         log: (line) => console.log(line)
       });
       reportStop(stop, "plan");

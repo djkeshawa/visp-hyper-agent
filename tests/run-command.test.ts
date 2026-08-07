@@ -2817,8 +2817,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       ["status", "--json"],
       ["verify", "--task", "T001", "--json"],
       ["review", "--task", "T001", "--json"],
-      ["reconcile", "--task", "T001", "--update-traceability", "--json"],
       ...attestationArgv("T001"),
+      ["reconcile", "--task", "T001", "--update-traceability", "--update-task-status", "--json"],
       ["integration", "contract", "--json"],
       ["next", "--format", "json", "--protocol", "3.0", "--json"]
     ]);
@@ -2882,8 +2882,8 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       ["status", "--json"],
       ["verify", "--task", "T001", "--json"],
       ["review", "--task", "T001", "--json"],
-      ["reconcile", "--task", "T001", "--update-traceability", "--json"],
       ...attestationArgv("T001"),
+      ["reconcile", "--task", "T001", "--update-traceability", "--update-task-status", "--json"],
       ["integration", "contract", "--json"],
       nextArgv
     ]);

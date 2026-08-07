@@ -124,6 +124,97 @@ describe("the bridge keeps what Kit already told it", () => {
   });
 });
 
+describe("the composite advances to the next task instead of ping-ponging", () => {
+  /**
+   * A stateful stub Kit reproducing the exact multi-task dead end a mid-tier
+   * model hit live: T001 is finished, Kit's `next` says the next mechanical
+   * step is `context T002` (while implementationAllowed stays true), and after
+   * context runs, the policy gate names `verify` as the next allowed command.
+   *
+   * The old goal check fired on implementationAllowed alone, so `visp plan`
+   * answered "done — run visp work" WITHOUT generating T002's context, `visp
+   * work` then refused (no implement phase for T002), and status pointed back
+   * at plan: an infinite loop with no exit on the thirteen-verb surface.
+   */
+  async function stubKitNextTask(): Promise<string> {
+    await mkdir(join(tempDir, ".visp"), { recursive: true });
+    await writeFile(join(tempDir, ".visp", "policy.json"), "{}", "utf8");
+    const counterPath = join(tempDir, ".visp", "stub-context-ran");
+    await writeShim(
+      [
+        'const fs = require("node:fs");',
+        `const counter = ${JSON.stringify(counterPath)};`,
+        "const sub = process.argv[2];",
+        'if (sub === "status") {',
+        '  process.stdout.write(JSON.stringify({ success: true, initialized: true }));',
+        "  process.exit(0);",
+        "}",
+        'if (sub === "next") {',
+        "  const contextRan = fs.existsSync(counter);",
+        "  process.stdout.write(JSON.stringify({",
+        "    success: true,",
+        "    implementationAllowed: true,",
+        '    nextCommand: contextRan ? "visp-kit verify --task T002" : "visp-kit context T002"',
+        "  }));",
+        "  process.exit(0);",
+        "}",
+        'if (sub === "context") {',
+        '  fs.writeFileSync(counter, "ran");',
+        '  process.stdout.write(JSON.stringify({ success: true }));',
+        "  process.exit(0);",
+        "}",
+        'if (sub === "verify") {',
+        '  fs.writeFileSync(counter + "-verify", "ran");',
+        '  process.stdout.write(JSON.stringify({ success: false, errors: ["No source changes"] }));',
+        "  process.exit(1);",
+        "}",
+        'process.stdout.write(JSON.stringify({ success: true }));',
+        "process.exit(0);"
+      ].join("\n")
+    );
+    return counterPath;
+  }
+
+  async function runPlan(): Promise<{ output: string; exitCode: number | undefined }> {
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args) => void lines.push(args.join(" ")));
+    vi.spyOn(console, "error").mockImplementation((...args) => void lines.push(args.join(" ")));
+    process.exitCode = undefined;
+
+    const { Command } = await import("commander");
+    const { planVerbCommand } = await import("../src/cli/commands/verbs.js");
+    const program = new Command().option("--project <path>", "project", tempDir);
+    program.addCommand(planVerbCommand());
+    program.exitOverride();
+    await program.parseAsync(["node", "visp", "plan"]);
+    return { output: lines.join("\n"), exitCode: process.exitCode };
+  }
+
+  it("generates the next task's context before declaring implementation allowed", async () => {
+    const counterPath = await stubKitNextTask();
+
+    const { output, exitCode } = await runPlan();
+
+    expect(output).toContain("→ visp-kit context T002");
+    expect(output).toContain("implementation is allowed");
+    expect(exitCode).toBeUndefined();
+    const { readFile: read } = await import("node:fs/promises");
+    await expect(read(counterPath, "utf8")).resolves.toBe("ran");
+  });
+
+  it("does not run verify on work that has not been written", async () => {
+    const counterPath = await stubKitNextTask();
+
+    await runPlan();
+
+    // The policy gate names verify as "next allowed" the moment context
+    // exists; executing it from the composite would judge an implementation
+    // that does not exist yet.
+    const { access } = await import("node:fs/promises");
+    await expect(access(`${counterPath}-verify`)).rejects.toThrow();
+  });
+});
+
 describe("visp check renders the findings a failing review already carries", () => {
   /** A stub Kit for the check verb: healthy status, verify passes, review fails. */
   async function stubKitCheck(): Promise<void> {

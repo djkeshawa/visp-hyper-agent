@@ -100,6 +100,12 @@ export function checkpointCommand(): Command {
   return new Command("checkpoint")
     .description("Capture current progress and git diff summary.")
     .addOption(new Option("--task <task-id>", "Run pipeline verify/review for the active task and advance the pipeline."))
+    .addOption(
+      new Option(
+        "--accept-warnings",
+        "Close the task even when reconcile passes with warnings (a deliberate human call)."
+      )
+    )
     .addOption(new Option("--tier <tier>", "Model tier that actually executed the task (recorded in telemetry)."))
     .addOption(new Option("--model <model-id>", "Model ID that actually executed the task (recorded in telemetry)."))
     .addOption(new Option("--model-version <version>", "Model version that actually executed the task (recorded in telemetry)."))
@@ -107,6 +113,7 @@ export function checkpointCommand(): Command {
       this: Command,
       options: {
         task?: string;
+        acceptWarnings?: boolean;
         tier?: string;
         model?: string;
         modelVersion?: string;
@@ -146,7 +153,8 @@ export function checkpointCommand(): Command {
         await runConfiguredKitCheckpoint(projectPath, taskId, {
           tier: options.tier,
           modelId: options.model,
-          modelVersion: options.modelVersion
+          modelVersion: options.modelVersion,
+          acceptWarnings: options.acceptWarnings === true
         });
         return;
       }
@@ -429,7 +437,12 @@ export function checkpointCommand(): Command {
 async function runConfiguredKitCheckpoint(
   projectPath: string,
   taskId: string,
-  actualModel: { tier?: string; modelId?: string; modelVersion?: string }
+  actualModel: {
+    tier?: string;
+    modelId?: string;
+    modelVersion?: string;
+    acceptWarnings?: boolean;
+  }
 ): Promise<void> {
   const bridge = new KitCommandBridge({ projectPath });
   const binding = await validateStrictCheckpointBinding(projectPath, taskId);
@@ -466,31 +479,22 @@ async function runConfiguredKitCheckpoint(
     blockingFindings
   });
   let reconcile: Awaited<ReturnType<KitCommandBridge["reconcile"]>> | undefined;
+  const attested: string[] = [];
 
   if (
     !contextFreshness.blocking &&
     preReconcileEvidence.verifyVerdict === "passed" &&
     preReconcileEvidence.reviewVerdict === "passed"
   ) {
-    reconcile = await bridge.reconcile(taskId);
-  }
-
-  const evidence = aggregateKitCheckpointEvidence({
-    verify,
-    review,
-    reconcile,
-    blockingFindings
-  });
-
-  // The agent's attestation moment. Kit's checklist protocol expects the agent
-  // to attest read-context / implement-selected-task / scope-check /
-  // tests-updated and to record usage — via engine commands the thirteen-verb
-  // surface does not expose, so a task driven purely through `visp` verbs
-  // ended every passing checkpoint stuck at VSP020. Running `visp save --task`
-  // IS the attestation, and it is only recorded when the checkpoint's own
-  // verify (which validates scope and runs the validation commands) passed.
-  const attested: string[] = [];
-  if (evidence.verdict === "passed") {
+    // The agent's attestation moment — and it must come BEFORE reconcile.
+    // Kit's checklist protocol expects the agent to attest read-context /
+    // implement-selected-task / scope-check / tests-updated and to record
+    // usage via engine commands the thirteen-verb surface does not expose,
+    // so a task driven purely through `visp` verbs ended every passing
+    // checkpoint stuck at VSP020. Attestation is only recorded once the
+    // checkpoint's own verify (which validates scope and runs the validation
+    // commands) and review have passed — and reconcile, the step that closes
+    // the task, then sees the completed checklist it requires.
     const attestations = [
       {
         item: "read-context",
@@ -519,7 +523,18 @@ async function runConfiguredKitCheckpoint(
       note: "visp save: the coordinator cannot observe the agent's token usage"
     });
     if (usage?.success === true) attested.push("record-usage (unavailable)");
+
+    reconcile = await bridge.reconcile(taskId, {
+      acceptWarnings: actualModel.acceptWarnings === true
+    });
   }
+
+  const evidence = aggregateKitCheckpointEvidence({
+    verify,
+    review,
+    reconcile,
+    blockingFindings
+  });
   if (routingBinding && actualModel.modelId && actualModel.modelVersion) {
     const session = await getActiveSession(projectPath);
     if (session) {
@@ -580,6 +595,19 @@ async function runConfiguredKitCheckpoint(
   );
   if (attested.length > 0) {
     console.log(`attested: ${attested.join(", ")}`);
+  }
+  // Two surfaces must not tell different stories: save used to print PASSED
+  // while reconcile — passing WITH WARNINGS — deliberately left the task
+  // open, and nothing said so. Kit's conservatism stands; the reader learns
+  // about it here, with the one decision that closes the task.
+  if (
+    evidence.verdict === "passed" &&
+    reconcile?.result === "warnings" &&
+    actualModel.acceptWarnings !== true
+  ) {
+    console.log(
+      `task_status: still open — reconcile passed with warnings, and accepting them is a human call. Review the warnings, then close with: visp save --task ${taskId} --accept-warnings`
+    );
   }
   const freshAction = await renderFreshCheckpointAction(bridge, taskId);
   if (routingBinding && evidence.verdict === "failed") {

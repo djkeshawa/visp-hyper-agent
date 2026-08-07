@@ -392,7 +392,13 @@ export type KitVerifySummary = z.infer<typeof kitVerifySummarySchema>;
 export const kitReviewSummarySchema = z.object(kitSummaryBaseShape);
 export type KitReviewSummary = z.infer<typeof kitReviewSummarySchema>;
 
-export const kitReconcileSummarySchema = z.object(kitSummaryBaseShape);
+// `result` distinguishes a clean pass from passed-with-warnings — the state
+// in which Kit deliberately leaves the task open unless forced. Without it,
+// `visp save` printed PASSED while the task silently stayed pending.
+export const kitReconcileSummarySchema = z.object({
+  ...kitSummaryBaseShape,
+  result: z.string().optional()
+});
 export type KitReconcileSummary = z.infer<typeof kitReconcileSummarySchema>;
 
 export const kitBudgetResultSchema = z.object({

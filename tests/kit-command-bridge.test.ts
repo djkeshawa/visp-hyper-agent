@@ -530,6 +530,30 @@ describe("KitCommandBridge", () => {
       "--task",
       "T009",
       "--update-traceability",
+      "--update-task-status",
+      "--json"
+    ]);
+  });
+
+  it("CHECKPOINT_ARGV: accepting warnings carries --force, and only then", async () => {
+    // Kit leaves a passed-with-warnings task open unless forced — a human
+    // call, so the flag appears exactly when the caller made it.
+    const shim = await createVispShim({ reconcile: { stdout: { success: true } } });
+    const bridge = new KitCommandBridge({ projectPath: process.cwd(), binary: shim.binary });
+
+    await bridge.reconcile("T009", { acceptWarnings: true });
+
+    const lines = (await readFile(shim.argvLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    expect(lines[0]).toEqual([
+      "reconcile",
+      "--task",
+      "T009",
+      "--update-traceability",
+      "--update-task-status",
+      "--force",
       "--json"
     ]);
   });
