@@ -124,6 +124,74 @@ describe("the bridge keeps what Kit already told it", () => {
   });
 });
 
+describe("visp check renders the findings a failing review already carries", () => {
+  /** A stub Kit for the check verb: healthy status, verify passes, review fails. */
+  async function stubKitCheck(): Promise<void> {
+    await mkdir(join(tempDir, ".visp"), { recursive: true });
+    await writeFile(join(tempDir, ".visp", "policy.json"), "{}", "utf8");
+    const review = {
+      success: false,
+      findings: [
+        { id: "REVIEW001", severity: "error", title: "Policy gate VSP012 did not pass" },
+        { id: "REVIEW002", severity: "info", title: "Verification commands passed" }
+      ]
+    };
+    await writeShim(
+      [
+        "const sub = process.argv[2];",
+        'if (sub === "status") {',
+        '  process.stdout.write(JSON.stringify({ success: true, initialized: true }));',
+        "  process.exit(0);",
+        "}",
+        'if (sub === "verify") {',
+        '  process.stdout.write(JSON.stringify({ success: true }));',
+        "  process.exit(0);",
+        "}",
+        `process.stdout.write(${JSON.stringify(JSON.stringify(review))});`,
+        "process.exit(1);"
+      ].join("\n")
+    );
+  }
+
+  async function runCheckVerb(): Promise<string> {
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args) => void lines.push(args.join(" ")));
+    vi.spyOn(console, "error").mockImplementation((...args) => void lines.push(args.join(" ")));
+    process.exitCode = undefined;
+
+    const { Command } = await import("commander");
+    const { checkVerbCommand } = await import("../src/cli/commands/verbs.js");
+    const program = new Command().option("--project <path>", "project", tempDir);
+    program.addCommand(checkVerbCommand());
+    program.exitOverride();
+    await program.parseAsync(["node", "visp", "check"]);
+
+    return lines.join("\n");
+  }
+
+  // Observed live: a review failed because verify's scope check failed, Kit's
+  // summary carried the findings, and `visp check` printed "(review reported
+  // no detail; run visp-kit review for the full report)" — a second command
+  // for information the first was holding. Same defect the block above pins
+  // for the composites, one summary field further along.
+  it("prints the failing findings instead of claiming there is no detail", async () => {
+    await stubKitCheck();
+
+    const output = await runCheckVerb();
+
+    expect(output).toContain("Policy gate VSP012 did not pass");
+    expect(output).not.toContain("reported no detail");
+  });
+
+  it("keeps info-severity findings out of the failure report", async () => {
+    await stubKitCheck();
+
+    const output = await runCheckVerb();
+
+    expect(output).not.toContain("Verification commands passed");
+  });
+});
+
 describe("a stage waiting on the human is not reported as a failure", () => {
   /** Drive `visp plan` against the stubbed Kit and capture what it printed. */
   async function runPlanVerb(): Promise<{ output: string; exitCode: number | undefined }> {

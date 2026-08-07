@@ -67,7 +67,7 @@ const workflow = [
   "Add or update tests where appropriate.",
   "Run validation commands.",
   "Use `visp save` or `visp check` only as local evidence; Kit alone authorizes strict progression.",
-  "Record session learnings with `visp-hyper remember`; it does not complete a Kit task."
+  "Record session learnings with `visp learn`; it does not complete a Kit task."
 ];
 
 const hardRules = [
@@ -175,7 +175,7 @@ export function buildHandoffProtocol(session: SessionRecord): HandoffProtocol {
     hardRules,
     integrationSeams,
     nextInstruction: "Read the required files now, then continue with the implementation workflow.",
-    completionInstruction: "After validation, treat Hyper results as local evidence; in Kit-backed work follow the exact current ready Kit action. Record session learnings with `visp-hyper remember`; it does not complete a Kit task."
+    completionInstruction: "After validation, treat Hyper results as local evidence; in Kit-backed work follow the exact current ready Kit action. Record session learnings with `visp learn`; it does not complete a Kit task."
   };
 }
 

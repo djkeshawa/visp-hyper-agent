@@ -1,4 +1,5 @@
 import { Command, Option } from "commander";
+import { renderActionSummary } from "./status.js";
 import { getActiveSession, readState } from "../../core/session-manager.js";
 import type { SessionRecord } from "../../core/types.js";
 import type { KitTask } from "../../kit/kit-schemas.js";
@@ -25,11 +26,12 @@ import {
 export function nextCommand(): Command {
   return new Command("next")
     .description("Print the next recommended action for the active session.")
+    .option("--json", "Emit the machine-readable WorkflowAction frame.")
     .addOption(new Option("--target-model <model-id>", "Exact cheap-tier model ID to evaluate for advisory routing."))
     .addOption(new Option("--target-model-version <version>", "Exact cheap-tier model version to evaluate for advisory routing."))
     .action(async function (
       this: Command,
-      options: { targetModel?: string; targetModelVersion?: string }
+      options: { json?: boolean; targetModel?: string; targetModelVersion?: string }
     ) {
       const projectPath = resolveProjectPath(this);
       const kit = await detectVisp(projectPath);
@@ -48,8 +50,15 @@ export function nextCommand(): Command {
         const bridge = new KitCommandBridge({ projectPath });
         const actionDiagnostic = await bridge.nextCanonicalActionDiagnostic("auto");
         if (actionDiagnostic.ok) {
+          // Same F1 rule as `status`: `next` is one of the thirteen verbs a
+          // human is told to use, and it printed only the machine frame. The
+          // frame stays exact behind --json.
           const envelope = toHyperActionEnvelope(actionDiagnostic.value);
-          console.log(renderHyperActionFrame(envelope));
+          console.log(
+            options.json
+              ? renderHyperActionFrame(envelope)
+              : renderActionSummary(actionDiagnostic.value)
+          );
           const session = await getActiveSession(projectPath);
           const routingTask = routingTaskFromAction(actionDiagnostic.value);
           if (session && routingTask) {

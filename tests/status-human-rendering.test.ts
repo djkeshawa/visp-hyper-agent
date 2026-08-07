@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { statusCommand } from "../src/cli/commands/status.js";
+import { statusCommand, verbForKitCommand } from "../src/cli/commands/status.js";
 
 describe("status offers a human rendering and keeps the frame", () => {
   it("declares a --json flag", () => {
@@ -36,5 +36,37 @@ describe("status offers a human rendering and keeps the frame", () => {
       .join(" ");
 
     expect(source).toMatch(/machine-readable/iu);
+  });
+});
+
+// Driving a fresh project end to end through the thirteen verbs, `status`
+// answered "Next: visp-kit verify --task T001" — the human surface teaching
+// its reader to abandon the human surface. The verb that drives Kit's command
+// leads; Kit's command stays visible because it is the authority.
+describe("status translates Kit's next command into the verb that drives it", () => {
+  it("maps the preparation chain to visp plan", () => {
+    expect(verbForKitCommand("visp-kit spec --validate", null)).toBe("visp plan");
+    expect(verbForKitCommand("visp-kit scan", null)).toBe("visp plan");
+    expect(verbForKitCommand("visp-kit context --next", "T001")).toBe("visp plan");
+  });
+
+  it("maps the evidence chain to visp save with the task", () => {
+    expect(verbForKitCommand("visp-kit verify --task T001", "T001")).toBe(
+      "visp save --task T001"
+    );
+    expect(verbForKitCommand("visp-kit checklist status --task T001", "T001")).toBe(
+      "visp save --task T001"
+    );
+  });
+
+  it("maps pr to handoff and init to setup", () => {
+    expect(verbForKitCommand("visp-kit pr", null)).toBe("visp handoff");
+    expect(verbForKitCommand("visp-kit init", null)).toBe("visp setup");
+  });
+
+  it("stays honest when no verb covers the command", () => {
+    expect(verbForKitCommand("Use .visp/prompts/current-task.prompt.md with your agent", null)).toBe(
+      null
+    );
   });
 });

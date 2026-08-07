@@ -367,11 +367,23 @@ export type KitAuthoritativeContextPack = z.infer<typeof kitAuthoritativeContext
 
 // Verify / review / reconcile share a minimal summary surface. We keep a
 // passthrough `findings`-like array when present without over-specifying it.
+// The minimum of a Kit review/verify finding that reporting needs. Kit sends
+// more (id, category, detail); passthrough keeps it without depending on it.
+export const kitSummaryFindingSchema = z
+  .object({
+    severity: z.string().optional(),
+    title: z.string().optional(),
+    message: z.string().optional(),
+    recommendation: z.string().optional()
+  })
+  .passthrough();
+export type KitSummaryFinding = z.infer<typeof kitSummaryFindingSchema>;
+
 const kitSummaryBaseShape = {
   success: z.boolean(),
   warnings: z.array(z.string()).optional(),
   errors: z.array(z.string()).optional(),
-  findings: z.array(z.unknown()).optional()
+  findings: z.array(kitSummaryFindingSchema).optional()
 };
 
 export const kitVerifySummarySchema = z.object(kitSummaryBaseShape);

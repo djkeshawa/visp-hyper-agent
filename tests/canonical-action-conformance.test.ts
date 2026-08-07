@@ -129,7 +129,7 @@ describe("canonical action cross-surface conformance", () => {
       nextCommand: action.nextCommand,
       kitReadContract: { readContractVersion: "0.1" }
     });
-    const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
+    const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next", "--json"]));
     const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status", "--json"]));
     const reviewEnvelope = framedEnvelope(await captureCli(projectPath, ["review"]));
     const resumeEnvelope = JSON.parse(
@@ -292,7 +292,7 @@ describe("canonical action cross-surface conformance", () => {
     const runEnvelope = framedEnvelope(
       await captureCli(projectPath, ["run", "ignored raw goal", "--tool", "codex"])
     );
-    const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
+    const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next", "--json"]));
     const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status", "--json"]));
     const reviewEnvelope = framedEnvelope(await captureCli(projectPath, ["review"]));
     const resumeEnvelope = JSON.parse(
@@ -358,7 +358,7 @@ describe("canonical action cross-surface conformance", () => {
     const runOutput = await captureCli(projectPath, ["run", "v2 must not authorize a session"]);
     const runEnvelope = framedEnvelope(runOutput);
     expect(runOutput).toContain("reason_code: strict_session_adoption_unavailable");
-    const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next"]));
+    const nextEnvelope = framedEnvelope(await captureCli(projectPath, ["next", "--json"]));
     const statusEnvelope = framedEnvelope(await captureCli(projectPath, ["status", "--json"]));
     const reviewEnvelope = framedEnvelope(await captureCli(projectPath, ["review"]));
     const resumeEnvelope = JSON.parse(

@@ -1025,7 +1025,7 @@ describe("CLI workflow", () => {
         })
       );
 
-      await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
+      await runCli(["node", "visp-hyper", "--project", projectPath, "next", "--json"]);
 
       expect(envelopeFromFrame(logs.join("\n")).action.source).toMatchObject({
         protocolVersion: "2.0",

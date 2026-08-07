@@ -39,8 +39,11 @@ describe("tool profiles", () => {
         "A Hyper checkpoint is local evidence only; strict progression and remediation require the exact current ready Kit action."
       );
       expect(protocol.profileInstructions.join("\n")).not.toMatch(/PASSED.*(continue|clears|advance)/iu);
+      // The verb, not the legacy binary: the handoff is agent-facing text, and
+      // naming `visp-hyper remember` taught every agent to abandon the
+      // thirteen-verb surface at the exact moment it finished a task.
       expect(protocol.workflow).toContain(
-        "Record session learnings with `visp-hyper remember`; it does not complete a Kit task."
+        "Record session learnings with `visp learn`; it does not complete a Kit task."
       );
       expect(protocol.completionInstruction).toContain("does not complete a Kit task");
     }

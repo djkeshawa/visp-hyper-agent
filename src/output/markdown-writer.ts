@@ -169,7 +169,7 @@ export function renderAgentInstructions(session: SessionRecord): string {
     "",
     `Implement the goal for session ${session.id}: ${session.goal}`,
     "",
-    "Read the current Visp Hyper files before editing code. Inspect only relevant files first, keep the change scoped, validate it, then run `visp-hyper review` and `visp-hyper remember`.",
+    "Read the current Visp Hyper files before editing code. Inspect only relevant files first, keep the change scoped, validate it, then run `visp check` and `visp learn`.",
     ""
   ].join("\n");
 }

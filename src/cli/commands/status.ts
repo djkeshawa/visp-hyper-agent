@@ -34,7 +34,7 @@ const generatedFiles = [
  * The frame is unchanged and still available behind `--json`; `guard` and
  * `work` continue to emit it as their machine surface.
  */
-function renderActionSummary(action: NormalizedWorkflowAction): string {
+export function renderActionSummary(action: NormalizedWorkflowAction): string {
   const declared = <T>(value: { state: string; value?: T } | undefined): T | undefined =>
     value !== undefined && value.state === "available" ? value.value : undefined;
 
@@ -58,8 +58,37 @@ function renderActionSummary(action: NormalizedWorkflowAction): string {
     for (const message of action.findingMessages) lines.push(`  - ${message}`);
   }
 
-  lines.push("", `Next:    ${action.nextCommand}`);
+  const verb = verbForKitCommand(action.nextCommand, action.task?.id ?? null);
+  lines.push(
+    "",
+    verb === null
+      ? `Next:    ${action.nextCommand}`
+      : `Next:    ${verb}  (Kit: ${action.nextCommand})`
+  );
   return lines.join("\n");
+}
+
+/**
+ * The verb that drives Kit's next command, for the human reading `status`.
+ *
+ * Kit's answer is an engine command and stays visible — it is the authority —
+ * but a surface that teaches thirteen verbs and then says "Next: visp-kit
+ * verify --task T001" is telling the reader to abandon the surface. Returns
+ * null when no verb covers the command, in which case the engine command is
+ * the honest answer.
+ */
+export function verbForKitCommand(nextCommand: string, taskId: string | null): string | null {
+  const stage = /^visp-kit\s+([a-z-]+)/u.exec(nextCommand)?.[1];
+  if (stage === undefined) return null;
+  if (["scan", "clarify", "spec", "plan", "tasks", "context", "feature"].includes(stage)) {
+    return "visp plan";
+  }
+  if (["verify", "review", "reconcile", "checklist", "done"].includes(stage)) {
+    return taskId === null ? "visp save" : `visp save --task ${taskId}`;
+  }
+  if (stage === "pr") return "visp handoff";
+  if (stage === "init") return "visp setup";
+  return null;
 }
 
 export function statusCommand(): Command {

@@ -290,20 +290,39 @@ export function handoffVerbCommand(): Command {
  */
 function reportCheck(
   label: string,
-  summary: { readonly success: boolean; readonly errors?: readonly string[] }
+  summary: {
+    readonly success: boolean;
+    readonly errors?: readonly string[];
+    readonly findings?: readonly {
+      readonly severity?: string;
+      readonly title?: string;
+      readonly message?: string;
+      readonly recommendation?: string;
+    }[];
+  }
 ): void {
   console.log(`${label}: ${summary.success ? "passed" : "FAILED"}`);
   if (summary.success) return;
 
-  const errors = summary.errors ?? [];
-  if (errors.length === 0) {
+  // A failing review usually reports through findings rather than errors —
+  // that gap was the surviving half of this defect: verify printed its
+  // reasons, review still said "(review reported no detail)" while its
+  // summary carried titled findings.
+  const findingLines = (summary.findings ?? [])
+    .filter((finding) => finding.severity === "error" || finding.severity === "warning")
+    .map((finding) => {
+      const text = finding.title ?? finding.message ?? "(untitled finding)";
+      return finding.recommendation === undefined ? text : `${text} — ${finding.recommendation}`;
+    });
+  const reasons = [...(summary.errors ?? []), ...findingLines];
+  if (reasons.length === 0) {
     console.log(`  (${label} reported no detail; run visp-kit ${label} for the full report)`);
     return;
   }
-  for (const error of errors.slice(0, MAX_SHOWN_ERRORS)) {
-    console.log(`  - ${error}`);
+  for (const reason of reasons.slice(0, MAX_SHOWN_ERRORS)) {
+    console.log(`  - ${reason}`);
   }
-  const hidden = errors.length - Math.min(errors.length, MAX_SHOWN_ERRORS);
+  const hidden = reasons.length - Math.min(reasons.length, MAX_SHOWN_ERRORS);
   if (hidden > 0) console.log(`  (+${hidden} more)`);
 }
 
