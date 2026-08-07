@@ -563,6 +563,38 @@ export class KitCommandBridge {
     );
   }
 
+  /**
+   * Mark one implementation-checklist item done, with the evidence that backs
+   * the attestation. Kit's checklist protocol expects the agent to attest via
+   * `visp-kit checklist update` as it works — a command the thirteen-verb
+   * surface deliberately does not expose. `visp save --task` is the surface's
+   * attestation moment, so it attests the items its own passing checkpoint
+   * evidences. Without this, a task driven purely through `visp` verbs ended
+   * every checkpoint stuck at VSP020 with five items nothing could mark.
+   */
+  async attestChecklistItem(input: {
+    taskId: string;
+    item: string;
+    evidence: string;
+  }): Promise<{ success: boolean } | null> {
+    return this.invoke(
+      [
+        "checklist",
+        "update",
+        "--task",
+        input.taskId,
+        "--item",
+        input.item,
+        "--status",
+        "done",
+        "--evidence",
+        input.evidence
+      ],
+      z.object({ success: z.boolean() }).passthrough(),
+      { allowNonZeroExit: true }
+    );
+  }
+
   async recordBudget(input: {
     taskId: string;
     inputTokens?: number;

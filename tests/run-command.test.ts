@@ -381,6 +381,53 @@ async function readArgvLog(path: string): Promise<string[][]> {
     .map((line) => JSON.parse(line) as string[]);
 }
 
+/**
+ * The attestation calls a PASSED checkpoint makes on the agent's behalf (see
+ * checkpoint.ts): the four checklist items the thirteen-verb surface cannot
+ * otherwise mark, plus usage recorded honestly as unavailable. Without these,
+ * a task driven purely through `visp` verbs ended every passing checkpoint
+ * stuck at VSP020.
+ */
+function attestationArgv(taskId: string): string[][] {
+  const item = (id: string, evidence: string): string[] => [
+    "checklist",
+    "update",
+    "--task",
+    taskId,
+    "--item",
+    id,
+    "--status",
+    "done",
+    "--evidence",
+    evidence,
+    "--json"
+  ];
+  return [
+    item(
+      "read-context",
+      `visp save --task ${taskId}: session context manifest is bound and hash-pinned for this task`
+    ),
+    item(
+      "implement-selected-task",
+      `visp save --task ${taskId}: agent attested completion; checkpoint verify passed`
+    ),
+    item("scope-check", `visp save --task ${taskId}: Kit verify scope validation passed`),
+    item(
+      "tests-updated",
+      `visp save --task ${taskId}: Kit verify ran the task's validation commands and passed`
+    ),
+    [
+      "budget",
+      "--task",
+      taskId,
+      "--record-usage-unavailable",
+      "--usage-note",
+      "visp save: the coordinator cannot observe the agent's token usage",
+      "--json"
+    ]
+  ];
+}
+
 function withoutCanonicalRoutingPreflight(argv: string[][]): string[][] {
   if (
     argv[0]?.[0] === "status" &&
@@ -2061,7 +2108,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       "utf8"
     );
     logs = [];
-    await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
+    await runCli(["node", "visp-hyper", "--project", projectPath, "next", "--json"]);
     let output = logs.join("\n");
     expect(output).toContain("BEGIN_VISP_HYPER_ACTION_V1");
     expect(output).toContain('"frameVersion":"1.0"');
@@ -2122,7 +2169,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       prependToPath(dirname(shim.binary));
 
       logs = [];
-      await runCli(["node", "visp-hyper", "--project", projectPath, "next"]);
+      await runCli(["node", "visp-hyper", "--project", projectPath, "next", "--json"]);
 
       const output = logs.join("\n");
       expect(output).toContain("BEGIN_VISP_HYPER_ACTION_V1");
@@ -2771,6 +2818,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       ["verify", "--task", "T001", "--json"],
       ["review", "--task", "T001", "--json"],
       ["reconcile", "--task", "T001", "--update-traceability", "--json"],
+      ...attestationArgv("T001"),
       ["integration", "contract", "--json"],
       ["next", "--format", "json", "--protocol", "3.0", "--json"]
     ]);
@@ -2835,6 +2883,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       ["verify", "--task", "T001", "--json"],
       ["review", "--task", "T001", "--json"],
       ["reconcile", "--task", "T001", "--update-traceability", "--json"],
+      ...attestationArgv("T001"),
       ["integration", "contract", "--json"],
       nextArgv
     ]);
