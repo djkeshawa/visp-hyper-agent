@@ -200,6 +200,9 @@ const mechanicalResultSchema = z
     // Present on the HARD failure envelope only — a stage-aware repair Kit has
     // already worked out, which beats anything the coordinator could invent.
     recovery: z.string().optional(),
+    // The hard envelope's own account of what went wrong. Dropping it forced
+    // "Run it directly for detail" on failures Kit had already explained.
+    error: z.string().optional(),
     feature: z.object({ path: z.string() }).partial().optional()
   })
   .passthrough();
@@ -209,6 +212,7 @@ export type MechanicalCommandResult = {
   /** Empty when the command failed for a reason other than validation. */
   readonly validationErrors: readonly string[];
   readonly recovery?: string;
+  readonly error?: string;
   readonly featurePath?: string;
 };
 
@@ -526,7 +530,12 @@ export class KitCommandBridge {
       "assurance",
       "reconcile",
       "verify",
-      "review"
+      "review",
+      // pr assembles the artifacts from evidence that already exists — it is
+      // exactly as mechanical as reconcile. Excluding it made the PR itself
+      // unreachable from the verbs: handoff declared "the gate is open" and
+      // nothing ever wrote pr.md.
+      "pr"
     ]);
     if (!mechanical.has(subcommand)) {
       this.warnings.push(
@@ -549,6 +558,7 @@ export class KitCommandBridge {
         success: parsed.success && result.exitCode === 0,
         validationErrors: parsed.validation?.errors ?? [],
         recovery: parsed.recovery,
+        error: parsed.error,
         featurePath: parsed.feature?.path
       };
     }

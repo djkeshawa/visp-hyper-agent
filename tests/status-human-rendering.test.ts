@@ -70,3 +70,15 @@ describe("status translates Kit's next command into the verb that drives it", ()
     );
   });
 });
+
+describe("the terminal state names the verb, not the engine", () => {
+  it("translates the embedded feature command and keeps the sentence", () => {
+    const sentence =
+      'Feature complete — pr.md is ready for review. Start the next feature with visp-kit feature "<describe your feature>"';
+    const translated = verbForKitCommand(sentence, null);
+
+    expect(translated).toContain("visp new");
+    expect(translated).not.toContain("visp-kit feature");
+    expect(translated).toContain("pr.md is ready for review");
+  });
+});

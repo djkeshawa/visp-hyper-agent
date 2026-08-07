@@ -63,7 +63,11 @@ export function renderActionSummary(action: NormalizedWorkflowAction): string {
     "",
     verb === null
       ? `Next:    ${action.nextCommand}`
-      : `Next:    ${verb}  (Kit: ${action.nextCommand})`
+      : verb.startsWith("visp ")
+        ? `Next:    ${verb}  (Kit: ${action.nextCommand})`
+        : // A full sentence (the terminal state) stands alone; suffixing the
+          // engine's phrasing of the same sentence would just say it twice.
+          `Next:    ${verb}`
   );
   return lines.join("\n");
 }
@@ -78,6 +82,11 @@ export function renderActionSummary(action: NormalizedWorkflowAction): string {
  * the honest answer.
  */
 export function verbForKitCommand(nextCommand: string, taskId: string | null): string | null {
+  // The terminal state arrives as a sentence, with Kit's own engine command
+  // inside it. The sentence is the answer; only the command gets translated.
+  if (nextCommand.startsWith("Feature complete")) {
+    return nextCommand.replace(/visp-kit feature\s+"[^"]*"/u, 'visp new "<describe your feature>"');
+  }
   const stage = /^visp-kit\s+([a-z-]+)/u.exec(nextCommand)?.[1];
   if (stage === undefined) return null;
   if (["scan", "clarify", "spec", "plan", "tasks", "context", "feature"].includes(stage)) {

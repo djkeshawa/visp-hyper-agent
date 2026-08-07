@@ -26,6 +26,10 @@ const recallEnvelopeSchema = z.object({
       })
     )
     .default([]),
+  // Additive in contract 1.0: how many goal-layer intents matched when the
+  // recall itself was empty. Without it the coordinator said "there was
+  // nothing to say" for the same query visp-memory answered with a signpost.
+  intentMatches: z.number().int().nonnegative().optional(),
   reason: z.string().optional()
 });
 
@@ -37,7 +41,11 @@ const proposeEnvelopeSchema = z.object({
 });
 
 export type MemoryRecallResult =
-  | { readonly ok: true; readonly entries: readonly { kind: string; content: string; caveat?: string }[] }
+  | {
+      readonly ok: true;
+      readonly entries: readonly { kind: string; content: string; caveat?: string }[];
+      readonly intentMatches?: number;
+    }
   | { readonly ok: false; readonly reason: string };
 
 export type MemoryProposeResult =
@@ -101,7 +109,7 @@ export async function memoryContractRecall(input: {
   if (!parsed.data.success) {
     return { ok: false, reason: parsed.data.reason ?? "Memory refused the recall." };
   }
-  return { ok: true, entries: parsed.data.entries };
+  return { ok: true, entries: parsed.data.entries, intentMatches: parsed.data.intentMatches };
 }
 
 export async function memoryContractPropose(input: {

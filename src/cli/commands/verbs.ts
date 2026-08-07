@@ -190,12 +190,15 @@ async function driveByNext(input: {
       // No validation errors means this is the hard envelope: the wrong stage,
       // a missing feature, an unreadable artifact. Kit works out a stage-aware
       // repair for those; prefer it over anything invented here.
+      const cause = executed.error === undefined ? "" : ` ${executed.error}`;
       return {
         kind: "blocked",
         detail:
           executed.recovery === undefined
-            ? `${next.nextCommand} reported failure. Run it directly for detail.`
-            : `${next.nextCommand} could not run. Try: ${executed.recovery}`
+            ? executed.error === undefined
+              ? `${next.nextCommand} reported failure. Run it directly for detail.`
+              : `${next.nextCommand} failed:${cause}`
+            : `${next.nextCommand} could not run.${cause} Try: ${executed.recovery}`
       };
     }
   }
@@ -305,12 +308,23 @@ export function handoffVerbCommand(): Command {
       const bridge = new KitCommandBridge({ projectPath });
       const stop = await driveByNext({
         bridge,
-        isGoal: (next) =>
-          next.prAllowed
-            ? "the PR gate is open — the change is ready to hand off"
-            : /assurance (?:decision|accept)|review --?accept/u.test(next.nextCommand)
-              ? `a human decision is next: ${next.nextCommand}`
-              : null,
+        // Handoff's job includes the PR itself. Declaring the goal the moment
+        // prAllowed turned true left `visp-kit pr` — the step that actually
+        // writes pr.md — unreachable from the verbs, and status/next/handoff
+        // then repeated "the PR gate is open" forever with nothing to be done.
+        // While Kit's next step IS the pr command, keep driving (pr is in the
+        // mechanical allowlist); once Kit reports the feature complete, that
+        // sentence is the goal.
+        isGoal: (next) => {
+          if (next.nextCommand.startsWith("Feature complete")) return next.nextCommand;
+          if (/assurance (?:decision|accept)|review --?accept/u.test(next.nextCommand)) {
+            return `a human decision is next: ${next.nextCommand}`;
+          }
+          if (next.prAllowed && !/^visp(?:-kit)?\s+pr\b/u.test(next.nextCommand)) {
+            return "the PR gate is open — the change is ready to hand off";
+          }
+          return null;
+        },
         log: (line) => console.log(line)
       });
       reportStop(stop, "handoff");
@@ -352,7 +366,11 @@ function reportCheck(
       const text = finding.title ?? finding.message ?? "(untitled finding)";
       return finding.recommendation === undefined ? text : `${text} — ${finding.recommendation}`;
     });
-  const reasons = [...(summary.errors ?? []), ...findingLines];
+  const reasons = [
+    ...(summary.errors ?? []),
+    ...findingLines,
+    ...("error" in summary && typeof summary.error === "string" ? [summary.error] : [])
+  ];
   if (reasons.length === 0) {
     console.log(`  (${label} reported no detail; run visp-kit ${label} for the full report)`);
     return;

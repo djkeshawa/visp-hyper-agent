@@ -26,7 +26,11 @@ export const kitStatusSchema = z.object({
   initialized: z.boolean(),
   activeFeature: kitFeatureRefSchema.nullish(),
   activeTask: kitActiveTaskSchema.nullish(),
-  featureState: z.string().optional()
+  featureState: z.string().optional(),
+  // Kit reports corrupted artifacts here ("spec is unreadable: …"). Doctor
+  // used to drop them and answer "Overall: PASS" while `visp status` was
+  // failing on the same corruption.
+  warnings: z.array(z.string()).optional()
 });
 export type KitStatus = z.infer<typeof kitStatusSchema>;
 
@@ -383,6 +387,10 @@ const kitSummaryBaseShape = {
   success: z.boolean(),
   warnings: z.array(z.string()).optional(),
   errors: z.array(z.string()).optional(),
+  // The hard-failure envelope explains itself in `error`. Stripping it left
+  // `visp check --task <bogus>` printing "(verify reported no detail)" for a
+  // failure Kit had named precisely.
+  error: z.string().optional(),
   findings: z.array(kitSummaryFindingSchema).optional()
 };
 

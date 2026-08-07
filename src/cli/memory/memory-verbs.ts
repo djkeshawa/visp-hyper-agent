@@ -40,7 +40,12 @@ export async function runRecallVerb(projectPath: string, query: string): Promise
     return;
   }
   if (result.entries.length === 0) {
-    console.log("No relevant memory found. (Memory answered; there was nothing to say.)");
+    const intents = result.intentMatches ?? 0;
+    console.log(
+      intents > 0
+        ? `No stored memory matched, but ${intents} goal-layer intent${intents === 1 ? "" : "s"} did — see visp-memory list-intents.`
+        : "No relevant memory found. (Memory answered; there was nothing to say.)"
+    );
     return;
   }
   for (const entry of result.entries) {

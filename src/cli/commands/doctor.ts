@@ -182,12 +182,29 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
     return;
   }
 
-  checks.push({
-    id: "kit-binary",
-    label: "Visp Kit CLI",
-    status: "pass",
-    detail: `Parsed visp status for ${featureLabel(availability.status.activeFeature) ?? "the project"}.`
-  });
+  // A health check must not pass while the canonical status command is
+  // reporting a corrupted core artifact on the same project. Doctor answered
+  // "Overall: PASS" at the exact moment `visp status` said "spec is
+  // unreadable: Invalid JSON…" — the one tool whose job is to notice.
+  const corrupted = (availability.status.warnings ?? []).filter((warning) =>
+    warning.includes("is unreadable:")
+  );
+  checks.push(
+    corrupted.length > 0
+      ? {
+          id: "kit-binary",
+          label: "Visp Kit CLI",
+          status: "fail",
+          detail: `visp-kit reports a corrupted artifact: ${corrupted[0]}`,
+          recovery: "Repair or restore the named file by hand; regenerating would overwrite it."
+        }
+      : {
+          id: "kit-binary",
+          label: "Visp Kit CLI",
+          status: "pass",
+          detail: `Parsed visp status for ${featureLabel(availability.status.activeFeature) ?? "the project"}.`
+        }
+  );
   addWarnings(checks, availability.warnings, "kit-detect-warning");
 
   const bridge = new KitCommandBridge({ projectPath });
