@@ -82,7 +82,15 @@ describe("memory fusion in start (AC006)", () => {
 
     const recall = server.requests.find((r) => r.path === "/recall");
     expect(recall?.method).toBe("POST");
-    expect(recall?.body).toMatchObject({ query: "implement offline note sync", limit: 10 });
+    // The query leads with the context files' basenames — in a default
+    // install recall is effectively lexical, and file names are the reliable
+    // associative key connecting past work to the new goal. They lead (rather
+    // than trail) because the query shaper keeps only the first eight terms.
+    expect(recall?.body).toMatchObject({
+      query: expect.stringContaining("implement offline note sync"),
+      limit: 10
+    });
+    expect((recall?.body as { query: string }).query).toMatch(/^\S+\s/u);
   });
 
   it("quarantines recalled text that tries to issue instructions", async () => {
