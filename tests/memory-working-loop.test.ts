@@ -111,3 +111,49 @@ describe("the completion memory stays cheap to recall", () => {
     expect(content).toContain("…");
   });
 });
+
+describe("the goal becomes a query memory can answer", () => {
+  it("keeps identifiers and distinctive words, drops filler", async () => {
+    const { goalRecallQuery } = await import("../src/cli/commands/start.js");
+    const query = goalRecallQuery("add a farewell message to app.js");
+
+    expect(query).toContain("app.js");
+    expect(query).toContain("farewell");
+    expect(query).not.toMatch(/\bto\b/);
+    expect(query).not.toMatch(/\ba\b/);
+  });
+
+  it("never returns an empty query", async () => {
+    const { goalRecallQuery } = await import("../src/cli/commands/start.js");
+    expect(goalRecallQuery("to the of").length).toBeGreaterThan(0);
+  });
+});
+
+describe("plan decisions become memories, once each", () => {
+  it("formats a decision with the vocabulary future goals share", async () => {
+    const { decisionMemoryLine } = await import("../src/cli/commands/checkpoint.js");
+    const line = decisionMemoryLine({
+      featureKey: "001-add-due-dates",
+      id: "PD001",
+      title: "Store due as a plain YYYY-MM-DD string",
+      decision: "Overdue means due strictly before today's local date."
+    });
+
+    expect(line).toBe(
+      "Decision PD001 (001-add-due-dates): Store due as a plain YYYY-MM-DD string — Overdue means due strictly before today's local date."
+    );
+  });
+
+  it("caps runaway decision text", async () => {
+    const { decisionMemoryLine } = await import("../src/cli/commands/checkpoint.js");
+    const line = decisionMemoryLine({
+      featureKey: "001-x",
+      id: "PD001",
+      title: "t".repeat(200),
+      decision: "d".repeat(200)
+    });
+
+    expect(line.length).toBeLessThan(280);
+    expect(line).toContain("…");
+  });
+});

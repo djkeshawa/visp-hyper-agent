@@ -90,11 +90,18 @@ export async function memoryContractRecall(input: {
   readonly endpoint?: string;
   readonly repoId?: string;
   readonly query: string;
+  /**
+   * Relevance floor override. The pack the coordinator assembles is
+   * explicitly untrusted, budget-capped context, so it may deliberately ask
+   * for more recall than the human CLI's default precision floor.
+   */
+  readonly minScore?: number;
 }): Promise<MemoryRecallResult> {
   const run = await runContract(input.projectPath, [
     "contract",
     "recall",
     input.query,
+    ...(input.minScore === undefined ? [] : ["--min-score", String(input.minScore)]),
     ...scopeArgs(input),
     "--json"
   ]);

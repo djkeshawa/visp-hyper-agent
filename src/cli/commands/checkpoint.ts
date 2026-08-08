@@ -1,5 +1,5 @@
 import { Command, Option } from "commander";
-import { posix, win32 } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { checkContextFreshness } from "../../context/context-freshness.js";
 import { GitBranchSessionLocator } from "../../core/branch-session-locator.js";
 import { gitOutput } from "../../core/git.js";
@@ -450,6 +450,27 @@ export function taskCompletionMemory(input: {
   return `Verified ${input.taskId}: ${goal}${files.length > 0 ? ` — files: ${files}${more}` : ""}`;
 }
 
+/**
+ * Format one plan decision as a memory. Pure and capped for the same reason
+ * as the completion line: decisions carry the domain vocabulary future goals
+ * actually share ("overdue", "YYYY-MM-DD", file names) — the completion lines
+ * alone described implementation minutiae and never matched the next
+ * feature's goal in evaluation.
+ */
+export function decisionMemoryLine(input: {
+  readonly featureKey: string;
+  readonly id: string;
+  readonly title: string;
+  readonly decision: string;
+}): string {
+  const body = `${input.title} — ${input.decision}`;
+  const capped = body.length > 220 ? `${body.slice(0, 219)}…` : body;
+  return `Decision ${input.id} (${input.featureKey}): ${capped}`;
+}
+
+const memoryLedgerPath = (projectPath: string): string =>
+  vispPath(projectPath, "hyper", "memory-ledger.json");
+
 async function recordCompletionMemory(projectPath: string, taskId: string): Promise<void> {
   try {
     const config = await readConfig(projectPath);
@@ -458,24 +479,88 @@ async function recordCompletionMemory(projectPath: string, taskId: string): Prom
       "../../core/executable-resolver.js"
     );
     if ((await resolveExecutable("visp-memory")) === null) return;
+    const record = async (content: string, category: string, importance: string) =>
+      execFileResolved(
+        "visp-memory",
+        ["record", content, "--category", category, "--importance", importance],
+        { cwd: projectPath, timeout: 30_000 }
+      );
+
     const session = await getActiveSession(projectPath);
     const diff = await collectChangedFiles(projectPath, { mode: "all" });
-    const content = taskCompletionMemory({
-      taskId,
-      goal: session?.goal ?? "task goal unavailable",
-      changedFiles: diff.files
-    });
-    await execFileResolved(
-      "visp-memory",
-      ["record", content, "--category", "task-completion", "--importance", "0.6"],
-      { cwd: projectPath, timeout: 30_000 }
+    await record(
+      taskCompletionMemory({
+        taskId,
+        goal: session?.goal ?? "task goal unavailable",
+        changedFiles: diff.files
+      }),
+      "task-completion",
+      "0.6"
     );
-    console.log("remembered: task completion recorded for future recall");
+    const remembered = ["task completion"];
+
+    // The feature's accepted decisions, once each (a multi-task feature saves
+    // several times; the ledger keeps re-saves from duplicating them).
+    const decisions = await unrecordedPlanDecisions(projectPath);
+    for (const decision of decisions) {
+      await record(decision.line, "decision", "0.7");
+    }
+    if (decisions.length > 0) {
+      remembered.push(`${decisions.length} plan decision(s)`);
+      await markDecisionsRecorded(
+        projectPath,
+        decisions.map((decision) => decision.key)
+      );
+    }
+    console.log(`remembered: ${remembered.join(", ")} recorded for future recall`);
   } catch (error) {
     console.log(
-      `warning: task completion was not recorded to memory: ${error instanceof Error ? error.message : String(error)}`
+      `warning: memory was not recorded: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+}
+
+async function unrecordedPlanDecisions(
+  projectPath: string
+): Promise<Array<{ key: string; line: string }>> {
+  const statusText = await readTextIfExists(join(projectPath, ".visp", "status.json"));
+  if (!statusText) return [];
+  const status = JSON.parse(statusText) as { activeFeaturePath?: string };
+  if (typeof status.activeFeaturePath !== "string") return [];
+  const featureKey = status.activeFeaturePath.split("/").at(-1) ?? "feature";
+  const planText = await readTextIfExists(
+    join(projectPath, status.activeFeaturePath, "plan.json")
+  );
+  if (!planText) return [];
+  const plan = JSON.parse(planText) as {
+    decisions?: Array<{ id?: string; title?: string; decision?: string }>;
+  };
+  const ledgerText = await readTextIfExists(memoryLedgerPath(projectPath));
+  const ledger = (ledgerText ? JSON.parse(ledgerText) : { decisions: [] }) as {
+    decisions: string[];
+  };
+  const recorded = new Set(ledger.decisions ?? []);
+  return (plan.decisions ?? [])
+    .filter(
+      (decision): decision is { id: string; title: string; decision: string } =>
+        typeof decision.id === "string" &&
+        typeof decision.title === "string" &&
+        typeof decision.decision === "string"
+    )
+    .map((decision) => ({
+      key: `${featureKey}:${decision.id}`,
+      line: decisionMemoryLine({ featureKey, ...decision })
+    }))
+    .filter((decision) => !recorded.has(decision.key));
+}
+
+async function markDecisionsRecorded(projectPath: string, keys: readonly string[]): Promise<void> {
+  const ledgerText = await readTextIfExists(memoryLedgerPath(projectPath));
+  const ledger = (ledgerText ? JSON.parse(ledgerText) : { decisions: [] }) as {
+    decisions: string[];
+  };
+  ledger.decisions = [...new Set([...(ledger.decisions ?? []), ...keys])];
+  await writeText(memoryLedgerPath(projectPath), `${JSON.stringify(ledger, null, 2)}\n`);
 }
 
 async function runConfiguredKitCheckpoint(

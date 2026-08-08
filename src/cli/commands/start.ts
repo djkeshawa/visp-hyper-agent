@@ -257,6 +257,33 @@ async function fuseRecalledMemory(projectPath: string, config: HyperConfig, goal
   };
 }
 
+const RECALL_STOPWORDS = new Set([
+  "the", "a", "an", "to", "of", "in", "on", "at", "for", "and", "or", "with",
+  "so", "that", "it", "is", "are", "be", "by", "from", "into", "when", "then",
+  "this", "there", "should", "must", "can", "will", "we", "i", "you"
+]);
+
+/**
+ * Turn a goal sentence into the query memory can actually answer.
+ *
+ * Memory's relevance threshold is tuned for query-shaped queries; a full goal
+ * sentence ("add a farewell message to app.js") dilutes its own lexical
+ * overlap across every filler word and scores below the bar even when the
+ * store holds exactly the fact needed. Identifiers (anything with a dot,
+ * digit, underscore or hyphen) always survive; ordinary stopwords never do.
+ */
+export function goalRecallQuery(goal: string): string {
+  const terms = goal
+    .split(/\s+/u)
+    .map((term) => term.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}.]+$/gu, ""))
+    .filter((term) => term.length > 1)
+    .filter(
+      (term) => /[.\d_-]/u.test(term) || !RECALL_STOPWORDS.has(term.toLowerCase())
+    );
+  const distinct = [...new Set(terms.map((term) => term.toLowerCase()))].slice(0, 8);
+  return distinct.length > 0 ? distinct.join(" ") : goal;
+}
+
 /**
  * Recall over the visp-memory CLI contract — the transport the verbs use and
  * the only one a standard install has. Entries get the same injection
@@ -274,7 +301,11 @@ export async function recallViaContract(
     projectPath,
     endpoint: config.memoryEndpoint,
     repoId: config.memoryRepoId,
-    query: goal
+    query: goalRecallQuery(goal),
+    // The pack is rank-limited, budget-capped, and marked untrusted-context;
+    // moderate precision is acceptable there, silence is not. The default
+    // floor is tuned for precise human queries and stays untouched for them.
+    minScore: 0.42
   });
   if (!result.ok) {
     return { warnings: [...priorWarnings, `memory recall unavailable: ${result.reason}`] };
