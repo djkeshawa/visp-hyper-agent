@@ -80,7 +80,9 @@ describe("renderHandoff", () => {
         source: "computed"
       })
     );
-    expect(protocol.workflow).toHaveLength(8);
+    // 9 steps since the runtime-artifact hygiene line: round-5 evaluation
+    // failed every save on the app's own data file created by its tests.
+    expect(protocol.workflow).toHaveLength(9);
     expect(protocol.hardRules).toHaveLength(6);
     expect(protocol.integrationSeams.map((seam) => seam.id)).toEqual(
       expect.arrayContaining(["llm-memory-provider", "semantic-retrieval", "validation-runner", "branch-sessions", "mcp-bridge"])

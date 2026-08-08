@@ -65,6 +65,7 @@ const workflow = [
   "Create a concise implementation plan.",
   "Implement the smallest safe change.",
   "Add or update tests where appropriate.",
+  "If running the app or its tests creates runtime files (data files, caches), gitignore them before saving — leftover artifacts read as out-of-scope changes.",
   "Run validation commands.",
   "Use `visp save` or `visp check` only as local evidence; Kit alone authorizes strict progression.",
   "Record session learnings with `visp learn`; it does not complete a Kit task."
