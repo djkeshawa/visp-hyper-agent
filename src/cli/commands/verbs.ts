@@ -222,17 +222,83 @@ function reportStop(stop: CompositeStop, verb: string): void {
   }
 }
 
+/**
+ * Tasks that make starting a NEW feature premature. Pure for testability.
+ */
+export function unfinishedActiveTasks(
+  tasks: ReadonlyArray<{ readonly id: string; readonly title: string; readonly status: string }>
+): ReadonlyArray<{ readonly id: string; readonly title: string }> {
+  return tasks.filter((task) => task.status !== "done" && task.status !== "verified");
+}
+
+async function activeFeaturePendingTasks(
+  projectPath: string
+): Promise<{ feature: string; tasks: ReadonlyArray<{ id: string; title: string }> } | null> {
+  try {
+    const { readTextIfExists } = await import("../../core/fs-utils.js");
+    const { join } = await import("node:path");
+    const statusText = await readTextIfExists(join(projectPath, ".visp", "status.json"));
+    if (!statusText) return null;
+    const status = JSON.parse(statusText) as { activeFeaturePath?: string };
+    if (typeof status.activeFeaturePath !== "string") return null;
+    const graphText = await readTextIfExists(
+      join(projectPath, status.activeFeaturePath, "task-graph.json")
+    );
+    if (!graphText) return null;
+    const graph = JSON.parse(graphText) as {
+      tasks?: Array<{ id?: string; title?: string; status?: string }>;
+    };
+    const tasks = unfinishedActiveTasks(
+      (graph.tasks ?? []).filter(
+        (task): task is { id: string; title: string; status: string } =>
+          typeof task.id === "string" &&
+          typeof task.title === "string" &&
+          typeof task.status === "string"
+      )
+    );
+    if (tasks.length === 0) return null;
+    return { feature: status.activeFeaturePath.split("/").at(-1) ?? "the active feature", tasks };
+  } catch {
+    return null;
+  }
+}
+
 export function newVerbCommand(): Command {
   return new Command("new")
     .description("Start a piece of work: register the goal with Kit and prepare it as far as Kit allows.")
     .argument("<goal>", "What you want built, in plain words.")
-    .action(async (goal: string, _options: unknown, command: Command) => {
+    .option(
+      "--switch",
+      "Start the new feature even though the active one still has unfinished tasks."
+    )
+    .action(async (goal: string, options: { switch?: boolean }, command: Command) => {
       const projectPath = resolveProjectPath(command);
       const unavailable = await kitAvailable(projectPath);
       if (unavailable !== null) {
         console.error(unavailable);
         process.exitCode = 1;
         return;
+      }
+      // Seven evaluation rounds ran; in three of them the agent started the
+      // next feature while the current one still had pending tasks, and
+      // `new` switched the active pointer without a word — the unfinished
+      // work became unreachable from the verbs. Starting fresh mid-feature
+      // is a decision, so it takes a flag.
+      if (options.switch !== true) {
+        const pending = await activeFeaturePendingTasks(projectPath);
+        if (pending !== null) {
+          console.error(
+            [
+              `${pending.feature} still has unfinished tasks: ${pending.tasks
+                .slice(0, 4)
+                .map((task) => `${task.id} (${task.title.length > 40 ? `${task.title.slice(0, 39)}…` : task.title})`)
+                .join(", ")}${pending.tasks.length > 4 ? ` (+${pending.tasks.length - 4} more)` : ""}.`,
+              "Finish them (visp plan → visp work → visp save --task <id>), or pass --switch to start a new feature anyway."
+            ].join("\n")
+          );
+          process.exitCode = 1;
+          return;
+        }
       }
       const bridge = new KitCommandBridge({ projectPath });
       // The goal is passed as ONE argument. Assembling it into a string here and

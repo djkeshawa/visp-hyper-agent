@@ -194,3 +194,26 @@ describe("save names what the feature still owes", () => {
     expect(line).toContain("(+3 more)");
   });
 });
+
+describe("starting a new feature is a decision, not a drift", () => {
+  it("names the unfinished tasks that make a new feature premature", async () => {
+    const { unfinishedActiveTasks } = await import("../src/cli/commands/verbs.js");
+    const pending = unfinishedActiveTasks([
+      { id: "T001", title: "done one", status: "verified" },
+      { id: "T002", title: "still open", status: "pending" },
+      { id: "T003", title: "also open", status: "in_progress" }
+    ]);
+
+    expect(pending.map((task) => task.id)).toEqual(["T002", "T003"]);
+  });
+
+  it("clears the way when everything is verified or done", async () => {
+    const { unfinishedActiveTasks } = await import("../src/cli/commands/verbs.js");
+    expect(
+      unfinishedActiveTasks([
+        { id: "T001", title: "a", status: "verified" },
+        { id: "T002", title: "b", status: "done" }
+      ])
+    ).toEqual([]);
+  });
+});
