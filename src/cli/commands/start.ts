@@ -119,7 +119,6 @@ export async function executeStart(
   const tool = options.tool ?? config.defaultTool;
   const kit = await readKitArtifacts(projectPath);
   const memory = await readMemoryPack(projectPath);
-  const memoryFusion = await fuseRecalledMemory(projectPath, config, goal);
   const contextFiles =
     adoption?.files ??
     (await scanRelevantFiles({
@@ -127,6 +126,21 @@ export async function executeStart(
       goal,
       blockedPaths: config.blockedPaths
     }));
+  // File names are the reliable associative key in a default install, where
+  // recall is effectively lexical: completions record the files they touched,
+  // and the next task knows the files it is about to touch.
+  const recallHints = contextFiles
+    .slice(0, 3)
+    .map((file) => file.path.split("/").at(-1) ?? "")
+    .filter((name) => name.length > 0);
+  // Hints lead: goalRecallQuery keeps the first eight distinct terms, and
+  // the file names are the strongest associative key — they must never be
+  // the part that truncation drops.
+  const memoryFusion = await fuseRecalledMemory(
+    projectPath,
+    config,
+    [...recallHints, goal].join(" ")
+  );
   const contextOptions: ContextPackOptions = adoption
     ? { source: adoption.source, validationCommands: adoption.validationCommands }
     : {};
@@ -305,7 +319,7 @@ export async function recallViaContract(
     // The pack is rank-limited, budget-capped, and marked untrusted-context;
     // moderate precision is acceptable there, silence is not. The default
     // floor is tuned for precise human queries and stays untouched for them.
-    minScore: 0.42
+    minScore: 0.35
   });
   if (!result.ok) {
     return { warnings: [...priorWarnings, `memory recall unavailable: ${result.reason}`] };
