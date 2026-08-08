@@ -434,6 +434,50 @@ export function checkpointCommand(): Command {
     });
 }
 
+/**
+ * Format the compact completion memory for a verified task. Pure so the
+ * shape — one line, capped, no artifact dumps — is pinned by a unit test:
+ * memory that costs more tokens to recall than it saves is worse than none.
+ */
+export function taskCompletionMemory(input: {
+  readonly taskId: string;
+  readonly goal: string;
+  readonly changedFiles: readonly string[];
+}): string {
+  const files = input.changedFiles.slice(0, 5).join(", ");
+  const more = input.changedFiles.length > 5 ? ` (+${input.changedFiles.length - 5} more)` : "";
+  const goal = input.goal.length > 160 ? `${input.goal.slice(0, 159)}…` : input.goal;
+  return `Verified ${input.taskId}: ${goal}${files.length > 0 ? ` — files: ${files}${more}` : ""}`;
+}
+
+async function recordCompletionMemory(projectPath: string, taskId: string): Promise<void> {
+  try {
+    const config = await readConfig(projectPath);
+    if (config.memoryMode !== "llm-memory") return;
+    const { resolveExecutable, execFileResolved } = await import(
+      "../../core/executable-resolver.js"
+    );
+    if ((await resolveExecutable("visp-memory")) === null) return;
+    const session = await getActiveSession(projectPath);
+    const diff = await collectChangedFiles(projectPath, { mode: "all" });
+    const content = taskCompletionMemory({
+      taskId,
+      goal: session?.goal ?? "task goal unavailable",
+      changedFiles: diff.files
+    });
+    await execFileResolved(
+      "visp-memory",
+      ["record", content, "--category", "task-completion", "--importance", "0.6"],
+      { cwd: projectPath, timeout: 30_000 }
+    );
+    console.log("remembered: task completion recorded for future recall");
+  } catch (error) {
+    console.log(
+      `warning: task completion was not recorded to memory: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
 async function runConfiguredKitCheckpoint(
   projectPath: string,
   taskId: string,
@@ -527,6 +571,15 @@ async function runConfiguredKitCheckpoint(
     reconcile = await bridge.reconcile(taskId, {
       acceptWarnings: actualModel.acceptWarnings === true
     });
+
+    // Memory accrues from the work itself, not from agent discipline. Agents
+    // were TOLD to run `visp learn`, and mostly did not — so on the next
+    // feature the store held nothing and every run re-discovered the project
+    // from scratch. A verified checkpoint is a mechanical fact the
+    // coordinator witnessed (like the git history `visp-memory init` seeds
+    // from), so it is recorded directly as episodic memory, compact enough
+    // that recalling it later costs a few dozen tokens, not a re-read.
+    await recordCompletionMemory(projectPath, taskId);
   }
 
   const evidence = aggregateKitCheckpointEvidence({

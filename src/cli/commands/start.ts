@@ -220,6 +220,15 @@ type MemoryFusion = {
 async function fuseRecalledMemory(projectPath: string, config: HyperConfig, goal: string): Promise<MemoryFusion> {
   const selection = await selectMemoryProvider({ config, projectPath });
   if (!(selection.provider instanceof LlmMemoryProvider)) {
+    // The standard install runs NO memory server: `visp setup` configures
+    // llm-memory over the visp-memory CLI contract, exactly as the recall and
+    // learn verbs speak it. The fusion used to be HTTP-only, so in every
+    // ordinary project it silently degraded to file mode and memory-pack.md
+    // carried nothing — the store `visp-memory init` seeds from git history
+    // was never read by the working loop at all.
+    if (config.memoryMode === "llm-memory") {
+      return recallViaContract(projectPath, config, goal, selection.warnings);
+    }
     return { warnings: selection.warnings };
   }
   const detailed = await selection.provider.recallDetailed(goal, { limit: recallLimit });
@@ -246,6 +255,50 @@ async function fuseRecalledMemory(projectPath: string, config: HyperConfig, goal
     recalled: recalled.length > 0 ? recalled : undefined,
     warnings: [...selection.warnings, ...selection.provider.warnings, ...quarantined]
   };
+}
+
+/**
+ * Recall over the visp-memory CLI contract — the transport the verbs use and
+ * the only one a standard install has. Entries get the same injection
+ * quarantine as the HTTP path; nothing recalled is ever trusted as
+ * instructions.
+ */
+export async function recallViaContract(
+  projectPath: string,
+  config: HyperConfig,
+  goal: string,
+  priorWarnings: readonly string[] = []
+): Promise<MemoryFusion> {
+  const { memoryContractRecall } = await import("../../memory/memory-cli-contract.js");
+  const result = await memoryContractRecall({
+    projectPath,
+    endpoint: config.memoryEndpoint,
+    repoId: config.memoryRepoId,
+    query: goal
+  });
+  if (!result.ok) {
+    return { warnings: [...priorWarnings, `memory recall unavailable: ${result.reason}`] };
+  }
+  const recalled: RecalledMemory[] = [];
+  const warnings: string[] = [...priorWarnings];
+  for (const entry of result.entries.slice(0, recallLimit)) {
+    if (looksLikeInstructionInjection(entry.content)) {
+      warnings.push("quarantined an instruction-like recalled memory; content omitted");
+      continue;
+    }
+    recalled.push({
+      summary: entry.content.length > 120 ? `${entry.content.slice(0, 119)}…` : entry.content,
+      content: entry.content,
+      category: entry.kind,
+      score: null,
+      provenance: "llm-memory",
+      sourceUri: "visp-memory (CLI contract)",
+      scope: "project",
+      ttl: "session",
+      trust: "untrusted-context"
+    });
+  }
+  return { recalled: recalled.length > 0 ? recalled : undefined, warnings };
 }
 
 function looksLikeInstructionInjection(content: string): boolean {
