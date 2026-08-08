@@ -110,7 +110,7 @@ export function runCommand(): Command {
       if (
         !supportsStrictSessionAdoption(action.source.protocolVersion) ||
         action.phase.state !== "available" ||
-        action.phase.value !== "implement" ||
+        (action.phase.value !== "implement" && action.phase.value !== "verify") ||
         action.task === null
       ) {
         failStrictRun(
@@ -391,12 +391,13 @@ function strictAdoptionRefusalReason(action: NormalizedWorkflowAction): string {
     return `Kit is speaking WorkflowAction protocol ${action.source.protocolVersion}, which predates strict session adoption. Upgrade visp-kit.`;
   }
   const phase = action.phase.state === "available" ? action.phase.value : action.sourcePhase;
-  if (phase !== "implement") {
-    const verb =
-      phase === "verify" || phase === "review" || phase === "reconcile"
-        ? "visp check"
-        : "visp plan";
-    return `visp work starts implementation, but Kit reports the workflow is at the ${phase} phase. Run ${verb} to continue from there.`;
+  if (phase !== "implement" && phase !== "verify") {
+    // Adoption accepts implement AND verify: an agent that committed its work
+    // still needs a session bound to the task so `visp save` can evaluate it
+    // — refusing at verify created a loop where save wanted a rebind only
+    // work could provide and work refused to provide it.
+    const verb = phase === "review" || phase === "reconcile" ? "visp check" : "visp plan";
+    return `visp work binds a session to the active task, but Kit reports the workflow is at the ${phase} phase. Run ${verb} to continue from there.`;
   }
   return "Kit's canonical action names no task yet. Run visp plan to advance the workflow until a task is selected.";
 }

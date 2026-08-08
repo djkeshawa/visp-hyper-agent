@@ -953,7 +953,7 @@ async function validateStrictCheckpointBinding(
   if (manifest.taskId !== taskId) {
     return strictBindingFailure(
       "strict_session_binding_unavailable",
-      "The current context manifest does not match the requested task ID.",
+      "The current context manifest does not match the requested task ID. Re-run `visp work \"<goal>\"` to rebind the session to the task Kit currently selects.",
       "error"
     );
   }

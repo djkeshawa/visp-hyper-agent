@@ -1667,10 +1667,15 @@ describe("run command and pipeline-aware next/checkpoint", () => {
     }
   );
 
-  it("FAIL_CLOSED: a ready v3 non-implement phase cannot create strict session state", async () => {
+  it("FAIL_CLOSED: a ready v3 non-adoptable phase cannot create strict session state", async () => {
+    // Adoption accepts implement AND verify: an agent that already committed
+    // its work needs a session bound to the task so `visp save` can evaluate
+    // it — refusing at verify created a loop where save demanded a rebind
+    // only work could provide and work refused to provide it. Phases past
+    // verify (pr here) still refuse.
     const projectPath = await createProject();
     await writeTaskGraph(projectPath);
-    const action = await workflowActionV3ForProject(projectPath, { phase: "verify" });
+    const action = await workflowActionV3ForProject(projectPath, { phase: "pr" });
     const shim = await createVispShim(
       await eligibleStrictRunSpec(projectPath, { next: { stdout: action } })
     );
@@ -1680,7 +1685,7 @@ describe("run command and pipeline-aware next/checkpoint", () => {
 
     const output = logs.join("\n");
     expect(output).toContain("reason_code: strict_session_adoption_unavailable");
-    expect(output).toContain('"value":"verify"');
+    expect(output).toContain('"value":"pr"');
     expect(output.match(/BEGIN_VISP_HYPER_ACTION_V1/gu)).toHaveLength(1);
     expect(process.exitCode).toBe(1);
     await expectHyperAbsent(projectPath);
