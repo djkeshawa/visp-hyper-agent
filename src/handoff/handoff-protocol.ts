@@ -63,7 +63,7 @@ const workflow = [
   "Read the required files and MCP resources when available.",
   "Inspect only the relevant files listed in the context pack.",
   "Create a concise implementation plan.",
-  "Implement the smallest safe change.",
+  "Implement the smallest safe change — ONE task at a time: finish and `visp save --task <id>` the current task before touching any other task's files.",
   "Add or update tests where appropriate.",
   "If running the app or its tests creates runtime files (data files, caches), gitignore them before saving — leftover artifacts read as out-of-scope changes.",
   "Run validation commands.",

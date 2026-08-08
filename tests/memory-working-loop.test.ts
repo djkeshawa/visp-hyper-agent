@@ -157,3 +157,40 @@ describe("plan decisions become memories, once each", () => {
     expect(line).toContain("…");
   });
 });
+
+describe("save names what the feature still owes", () => {
+  it("lists remaining pending tasks after the one just saved", async () => {
+    const { remainingTasksLine } = await import("../src/cli/commands/checkpoint.js");
+    const line = remainingTasksLine(
+      [
+        { id: "T001", title: "Store helpers", status: "verified" },
+        { id: "T002", title: "Add date validation function", status: "pending" },
+        { id: "T003", title: "Wire the CLI", status: "pending" }
+      ],
+      "T001"
+    );
+
+    expect(line).toBe(
+      "remaining in this feature: T002 (Add date validation function), T003 (Wire the CLI) — repeat plan → work → save for each"
+    );
+  });
+
+  it("says nothing when the feature is finished", async () => {
+    const { remainingTasksLine } = await import("../src/cli/commands/checkpoint.js");
+    expect(
+      remainingTasksLine([{ id: "T001", title: "x", status: "verified" }], "T001")
+    ).toBeNull();
+  });
+
+  it("caps a long list honestly", async () => {
+    const { remainingTasksLine } = await import("../src/cli/commands/checkpoint.js");
+    const tasks = Array.from({ length: 7 }, (_, index) => ({
+      id: `T00${index + 2}`,
+      title: `Task number ${index + 2}`,
+      status: "pending"
+    }));
+    const line = remainingTasksLine(tasks, "T001");
+
+    expect(line).toContain("(+3 more)");
+  });
+});
