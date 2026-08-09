@@ -1,6 +1,6 @@
 {
   "name": "visp-hyper-agent",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Runs the Visp workflow inside Codex, Claude Code, and Copilot. Prepares scoped handoffs and records checkpoint evidence. Makes no LLM calls of its own.",
   "type": "module",
   "license": "Apache-2.0",
@@ -60,7 +60,7 @@
     "zod": "^3.25.76"
   },
   "peerDependencies": {
-    "visp-kit": ">=0.2.3 <0.6.0"
+    "visp-kit": ">=0.2.3 <0.7.0"
   },
   "peerDependenciesMeta": {
     "visp-kit": {

@@ -102,7 +102,7 @@ describe("npm pack smoke", () => {
     // "<0.5.0" while Kit moved to 0.5.0, which would have published an unmet
     // peer dependency for every user installing the pair — caught at the
     // publish gate, not by a test, which is why this assertion now exists.
-    expect(manifest.peerDependencies?.["visp-kit"]).toBe(">=0.2.3 <0.6.0");
+    expect(manifest.peerDependencies?.["visp-kit"]).toBe(">=0.2.3 <0.7.0");
     expect(manifest.peerDependenciesMeta?.["visp-kit"]).toEqual({ optional: true });
     expect(manifest.dependencies?.["visp-kit"]).toBeUndefined();
     expect(manifest.devDependencies?.["visp-kit"]).toBeUndefined();
