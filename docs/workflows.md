@@ -12,7 +12,8 @@ This installs the legacy commands plus current native skills:
 
 ```text
 .claude/agents/coordinator.md     # routes work, validates results (model: inherit)
-.claude/agents/scout.md           # scanning + mechanical work (model: sonnet)
+.claude/agents/scout.md           # navigation only, intel queries (model: sonnet)
+.claude/agents/mechanic.md        # reading, running, mechanical edits (model: sonnet)
 .claude/agents/implementer.md     # real logic (model: opus)
 .claude/skills/visp-hyper/SKILL.md
 .claude/commands/hyper-run.md     # /hyper-run, /hyper-next, /hyper-checkpoint,
@@ -31,9 +32,12 @@ Then, inside a Claude Code session:
 /hyper-run implement offline note sync
 # → handoff + task action block (allowed/forbidden files, acceptance
 #   criteria, validation commands) + model_routing advice.
-#   Acting as the coordinator, delegate the scout pass to the `scout`
-#   subagent and implementation to `implementer` via the Agent tool,
-#   validating each result before checkpointing.
+#   Acting as the coordinator, delegate the navigation pass to the `scout`
+#   subagent, write its JSON verbatim to
+#   .visp/hyper/current/scout-findings.json, read the collected state back
+#   from visp-hyper://current/scout-findings, then hand implementation to
+#   `implementer` via the Agent tool, validating each result before
+#   checkpointing.
 
 /hyper-checkpoint T001
 # → collects verify + review evidence; follow Kit's exact ready action for strict progress
@@ -68,6 +72,7 @@ Routing advice is computed deterministically from local telemetry — visp-hyper
 
 - **Baseline**: every task starts on the strong tier (`implementer`). A missing task class remains unclassified and never borrows evidence from its risk level.
 - **Downgrades must be earned**: an explicit task class is suggested for the cheap tier (`scout`) only after at least 30 decided, comparable first-attempt records whose 95% Wilson lower bound is at least 85%.
+  - The cheap tier's telemetry label is still `scout` for continuity with recorded attempts, but the scout subagent is navigation-only since the role split. A suggested cheap tier means dispatch mechanical edits to `mechanic`; renaming the telemetry cohort would discard the accumulated downgrade evidence, so it is deliberately left for a separate change.
 - **Cohorts do not leak**: downgrade evidence matches task class, risk level,
   assurance profile, host, model ID/version, and project preset. Inconclusive
   attempts are reported separately and excluded from pass-rate math.

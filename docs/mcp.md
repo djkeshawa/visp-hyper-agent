@@ -29,6 +29,7 @@ Resources:
 - `visp-hyper://current/canonical-action`
 - `visp-hyper://current/context-freshness`
 - `visp-hyper://current/kit-read-contract`
+- `visp-hyper://current/scout-findings`
 - `visp-hyper://current/session`
 - `visp-hyper://current/context-pack`
 - `visp-hyper://current/context-manifest`
@@ -45,6 +46,8 @@ Resources:
 It also hashes each tool output schema, making text-only regressions and schema drift visible to integration checks.
 `visp-hyper://current/canonical-action` computes the current validated Kit action on every read. Healthy Kit-backed projects return the negotiated canonical action, including Kit-authored WorkflowAction 3.2 assurance status and review-decision state when available; genuine Kit absence and configured failures return distinct unavailable or inconclusive states without a local authority fallback.
 `visp-hyper://current/context-freshness` is also always available. It reports the active context pack and grounded Kit artifact freshness as JSON, including `status`, `blocking`, hashes, warnings, and any finding that should stop a coding agent before it drifts.
+`visp-hyper://current/scout-findings` is computed on every read: it runs Hyper's collector over `.visp/hyper/current/scout-findings.json` and returns only the rows that cite an intel query receipt. A payload that claims `resolved` with no path, carries a row without a receipt, or exceeds the twelve-action cap comes back as `rejected` with its reasons and carries no rows. Absence returns `absent`, not an error. Nothing this resource returns authorizes anything — `authority` is always `none`.
+
 `visp-hyper://current/kit-read-contract` is always available too. When a Kit `1.3` handoff is active, it returns the adopted artifact roles, MIME types, required stages, and freshness policy; otherwise it returns an explicit `unavailable` status.
 
 Prompts:

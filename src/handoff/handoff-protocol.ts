@@ -34,6 +34,16 @@ export const requiredResourceReads: readonly HandoffResource[] = [
     mimeType: "application/json",
     source: "computed"
   },
+  // P21-HYPER-01. The scout's raw file is deliberately NOT a required read: it
+  // is the scout's own output, and reading it directly would let unreceipted
+  // rows reach the implementer. The computed resource is the collected state —
+  // receipted rows only, transcript discarded.
+  {
+    uri: "visp-hyper://current/scout-findings",
+    title: "Current Scout Findings",
+    mimeType: "application/json",
+    source: "computed"
+  },
   {
     path: ".visp/hyper/current/memory-pack.md",
     uri: "visp-hyper://current/memory-pack",

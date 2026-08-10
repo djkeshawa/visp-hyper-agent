@@ -5,6 +5,7 @@ import { packageVersion } from "../core/package-version.js";
 import { readTextIfExists, vispPath } from "../core/fs-utils.js";
 import { checkContextFreshness } from "../context/context-freshness.js";
 import { detectVisp, KitCommandBridge } from "../kit/kit-command-bridge.js";
+import { readScoutFindings } from "../scout/scout-findings.js";
 import {
   toHyperActionEnvelope,
   type HyperActionEnvelopeV1
@@ -403,6 +404,23 @@ const CANONICAL_ACTION_RESOURCE: McpResourceDef = {
   }
 };
 
+/**
+ * P21-HYPER-01. Computed, not a file mirror: reading it runs the collector, so
+ * the only scout state any consumer can obtain is the receipted, validated
+ * subset. The raw `.visp/hyper/current/scout-findings.json` is never served.
+ */
+const SCOUT_FINDINGS_RESOURCE: McpResourceDef = {
+  uri: "visp-hyper://current/scout-findings",
+  name: "scout-findings.json",
+  title: "Current Scout Findings",
+  description: "Collected scout state: receipted entrypoints, path, affected tests, and unresolved questions.",
+  mimeType: "application/json",
+  annotations: {
+    audience: ["user", "assistant"],
+    priority: 0.9
+  }
+};
+
 const PROMPTS: McpPromptDef[] = [
   {
     name: "hyper_resume",
@@ -507,7 +525,8 @@ async function resourceDefs(projectPath: string): Promise<McpResourceDef[]> {
     SURFACE_MANIFEST_RESOURCE,
     CONTEXT_FRESHNESS_RESOURCE,
     KIT_READ_CONTRACT_RESOURCE,
-    CANONICAL_ACTION_RESOURCE
+    CANONICAL_ACTION_RESOURCE,
+    SCOUT_FINDINGS_RESOURCE
   ];
   for (const spec of RESOURCE_SPECS) {
     const content = await readTextIfExists(vispPath(projectPath, ...spec.path));
@@ -547,6 +566,15 @@ async function readResource(projectPath: string, uri: string): Promise<McpResour
 
   if (uri === KIT_READ_CONTRACT_RESOURCE.uri) {
     return readKitReadContractResource(projectPath, uri);
+  }
+
+  if (uri === SCOUT_FINDINGS_RESOURCE.uri) {
+    const report = await readScoutFindings(projectPath);
+    return {
+      uri,
+      mimeType: SCOUT_FINDINGS_RESOURCE.mimeType,
+      text: `${JSON.stringify({ resourceVersion: "1.0", authority: "none", ...report }, null, 2)}\n`
+    };
   }
 
   if (uri === CANONICAL_ACTION_RESOURCE.uri) {
@@ -621,6 +649,10 @@ function buildSurfaceManifest(): object {
       },
       {
         ...CANONICAL_ACTION_RESOURCE,
+        computed: true
+      },
+      {
+        ...SCOUT_FINDINGS_RESOURCE,
         computed: true
       },
       ...RESOURCE_SPECS.map((resource) => ({

@@ -39,6 +39,10 @@
       "destination": ".claude/agents/scout.md"
     },
     {
+      "templatePath": "agents/mechanic.md",
+      "destination": ".claude/agents/mechanic.md"
+    },
+    {
       "templatePath": "agents/implementer.md",
       "destination": ".claude/agents/implementer.md"
     },

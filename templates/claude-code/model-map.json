@@ -1,1 +1,1 @@
-{ "coordinator": "inherit", "scout": "sonnet", "implementer": "opus" }
+{ "coordinator": "inherit", "scout": "sonnet", "mechanic": "sonnet", "implementer": "opus" }

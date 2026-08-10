@@ -46,6 +46,9 @@ export async function readHostCapabilityManifest(
 const MODEL_TOKENS: Record<string, string> = {
   coordinator: "{{COORDINATOR_MODEL}}",
   scout: "{{SCOUT_MODEL}}",
+  // P21-HYPER-01 split the scout: navigation-only kept the name, the
+  // mechanical-edit duties moved to their own agent with its own model slot.
+  mechanic: "{{MECHANIC_MODEL}}",
   implementer: "{{IMPLEMENTER_MODEL}}"
 };
 
