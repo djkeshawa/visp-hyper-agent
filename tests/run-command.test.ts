@@ -382,13 +382,38 @@ async function readArgvLog(path: string): Promise<string[][]> {
 }
 
 /**
+ * The budget row a checkpoint writes when the host reported no token counts.
+ *
+ * The note has to state the true reason. It once claimed the coordinator
+ * "cannot observe the agent's token usage" — false on both halves, since Kit
+ * ships a working recorder and most hosts print exact usage every turn — and
+ * that single literal is why 38 closed tasks read as costless.
+ */
+function unavailableUsageArgv(taskId: string): string[] {
+  return [
+    "budget",
+    "--task",
+    taskId,
+    "--record-usage-unavailable",
+    "--usage-note",
+    `visp save: no usable token usage reached this invocation ` +
+      `(none was passed, or the reported counts summed to zero); rerun with ` +
+      `--input-tokens/--output-tokens from the host's reported counts ` +
+      `(e.g. visp save --task ${taskId} --input-tokens N --output-tokens M) to supersede this row`,
+    "--json"
+  ];
+}
+
+/**
  * The attestation calls a PASSED checkpoint makes on the agent's behalf (see
  * checkpoint.ts): the four checklist items the thirteen-verb surface cannot
- * otherwise mark, plus usage recorded honestly as unavailable. Without these,
- * a task driven purely through `visp` verbs ended every passing checkpoint
- * stuck at VSP020.
+ * otherwise mark, plus the task's cost row. Without these, a task driven purely
+ * through `visp` verbs ended every passing checkpoint stuck at VSP020.
+ *
+ * `usageArgv` defaults to the recorded-absence row because most scenarios here
+ * invoke `checkpoint` without token counts.
  */
-function attestationArgv(taskId: string): string[][] {
+function attestationArgv(taskId: string, usageArgv = unavailableUsageArgv(taskId)): string[][] {
   const item = (id: string, evidence: string): string[] => [
     "checklist",
     "update",
@@ -416,15 +441,7 @@ function attestationArgv(taskId: string): string[][] {
       "tests-updated",
       `visp save --task ${taskId}: Kit verify ran the task's validation commands and passed`
     ),
-    [
-      "budget",
-      "--task",
-      taskId,
-      "--record-usage-unavailable",
-      "--usage-note",
-      "visp save: the coordinator cannot observe the agent's token usage",
-      "--json"
-    ]
+    usageArgv
   ];
 }
 
@@ -2827,6 +2844,81 @@ describe("run command and pipeline-aware next/checkpoint", () => {
       ["integration", "contract", "--json"],
       ["next", "--format", "json", "--protocol", "3.0", "--json"]
     ]);
+  });
+
+  /**
+   * The wiring no unit test can see: counts entered on the command line have to
+   * survive parsing, the local meter, and the bridge, and arrive at Kit as a
+   * real `--record-usage` row. The recorder, the schema and the rendering were
+   * all finished already; the only thing standing between them and a populated
+   * ledger was a hardcoded `{ unavailable: true }` in the save path.
+   */
+  it("configured checkpoint records host-reported token usage as a real budget row", async () => {
+    const projectPath = await createProject();
+    await createStrictSession(projectPath);
+
+    const checkpointShim = await createVispShim(
+      kitStatusSpec({
+        verify: { stdout: { success: true } },
+        review: { stdout: { success: true } },
+        reconcile: { stdout: { success: true } },
+        budget: { stdout: { success: true } },
+        next: { stdout: workflowActionFixture() }
+      })
+    );
+    prependToPath(dirname(checkpointShim.binary));
+
+    logs = [];
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "checkpoint",
+      "--task",
+      "T001",
+      "--input-tokens",
+      "1200",
+      "--output-tokens",
+      "300",
+      "--model",
+      "claude-opus-5"
+    ]);
+
+    expect.soft(logs.join("\n")).toContain("status: PASSED");
+    expect.soft(process.exitCode).toBeFalsy();
+
+    const argv = withoutCanonicalRoutingPreflight(await readArgvLog(checkpointShim.argvLogPath));
+    const budgetArgv = argv.find((entry) => entry[0] === "budget");
+    expect(budgetArgv).toEqual([
+      "budget",
+      "--task",
+      "T001",
+      "--record-usage",
+      "--input-tokens",
+      "1200",
+      "--output-tokens",
+      "300",
+      "--model",
+      "claude-opus-5",
+      "--usage-note",
+      "visp save: token usage as reported by the agent host",
+      "--json"
+    ]);
+    // The absence row must not also be written: a task closes with one cost
+    // statement, and a real one supersedes rather than accompanies.
+    expect(argv.some((entry) => entry.includes("--record-usage-unavailable"))).toBe(false);
+
+    // The same counts reach the local meter, which is what `visp report` reads.
+    const telemetry = JSON.parse(
+      await readFile(join(projectPath, ".visp", "hyper", "telemetry.json"), "utf8")
+    ) as { usage: { inputTokens?: number; outputTokens?: number; model?: string }[] };
+    expect(telemetry.usage).toHaveLength(1);
+    expect(telemetry.usage[0]).toMatchObject({
+      inputTokens: 1200,
+      outputTokens: 300,
+      model: "claude-opus-5"
+    });
   });
 
   it.each([

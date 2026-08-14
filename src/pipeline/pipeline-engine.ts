@@ -375,7 +375,13 @@ export function buildActionBlock(
   lines.push("  1. All validation commands exit zero.");
   lines.push("  2. Only allowed or expected files changed.");
   lines.push(
-    `  3. Run \`visp save --task ${task.id}\` and proceed only if it reports PASSED.`
+    `  3. Run \`visp save --task ${task.id} --input-tokens <N> --output-tokens <M>\` and proceed only if it reports PASSED.`
+  );
+  // The counts are the agent's to supply: its host prints exact usage on every
+  // completed turn, and the coordinator has no other way to see them. Omitting
+  // them is allowed, and recorded as the absence it is — not as zero cost.
+  lines.push(
+    "  4. Substitute your host's reported token counts in step 3; omitting them records this task as cost-unavailable."
   );
   lines.push("END_VISP_TASK_ACTION");
 

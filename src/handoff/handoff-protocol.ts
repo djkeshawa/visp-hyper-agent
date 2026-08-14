@@ -78,6 +78,7 @@ const workflow = [
   "If running the app or its tests creates runtime files (data files, caches), gitignore them before saving — leftover artifacts read as out-of-scope changes.",
   "Run validation commands.",
   "Use `visp save` or `visp check` only as local evidence; Kit alone authorizes strict progression.",
+  "Report the cost you can see: pass your host's reported token counts as `visp save --task <id> --input-tokens <N> --output-tokens <M>`. Omitting them records the task as cost-unavailable, not as free.",
   "Record session learnings with `visp learn`; it does not complete a Kit task."
 ];
 

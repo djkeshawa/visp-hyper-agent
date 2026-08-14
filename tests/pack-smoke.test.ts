@@ -1,22 +1,10 @@
-import { access, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { execFileResolved } from "../src/core/executable-resolver.js";
 import { createToolContext } from "../src/mcp/tool-bridge.js";
+import { ensureHyperDist, packageRoot } from "./helpers/ensure-dist.js";
 import "./cockpit-packed-pair-smoke.js";
-
-const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const distIndex = join(packageRoot, "dist", "index.js");
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * `npm pack` computes the tarball file list from `files` + disk. We skip the
@@ -38,9 +26,7 @@ describe("npm pack smoke", () => {
   let files: string[];
 
   beforeAll(async () => {
-    if (!(await fileExists(distIndex))) {
-      await execFileResolved("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
-    }
+    await ensureHyperDist();
     files = await packFiles();
   }, 320_000);
 

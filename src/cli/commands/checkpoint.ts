@@ -49,9 +49,17 @@ import {
 } from "../../routing/routing-state.js";
 import {
   appendAttempt,
+  appendUsage,
   readTelemetry,
   type AttemptPrediction
 } from "../../telemetry/telemetry-store.js";
+import {
+  hasObservedTokens,
+  parseTokenCount,
+  reportedUsageNote,
+  unreportedUsageNote,
+  unreportedUsageWarning
+} from "../../telemetry/token-usage.js";
 import { printWarnings, printWorkflowDirectiveIfAny, resolveProjectPath } from "./shared.js";
 import { collectChangedFiles } from "../../governance/scope-guard.js";
 import type { EvidenceVerdict } from "../../core/types.js";
@@ -109,6 +117,18 @@ export function checkpointCommand(): Command {
     .addOption(new Option("--tier <tier>", "Model tier that actually executed the task (recorded in telemetry)."))
     .addOption(new Option("--model <model-id>", "Model ID that actually executed the task (recorded in telemetry)."))
     .addOption(new Option("--model-version <version>", "Model version that actually executed the task (recorded in telemetry)."))
+    .addOption(
+      new Option(
+        "--input-tokens <n>",
+        "Input tokens this task consumed, as reported by the host; recorded to telemetry and the kit budget ledger."
+      )
+    )
+    .addOption(
+      new Option(
+        "--output-tokens <n>",
+        "Output tokens this task produced, as reported by the host; recorded to telemetry and the kit budget ledger."
+      )
+    )
     .action(async function (
       this: Command,
       options: {
@@ -117,6 +137,8 @@ export function checkpointCommand(): Command {
         tier?: string;
         model?: string;
         modelVersion?: string;
+        inputTokens?: string;
+        outputTokens?: string;
       }
     ) {
       const projectPath = resolveProjectPath(this);
@@ -154,7 +176,9 @@ export function checkpointCommand(): Command {
           tier: options.tier,
           modelId: options.model,
           modelVersion: options.modelVersion,
-          acceptWarnings: options.acceptWarnings === true
+          acceptWarnings: options.acceptWarnings === true,
+          inputTokens: parseTokenCount(options.inputTokens, "input-tokens"),
+          outputTokens: parseTokenCount(options.outputTokens, "output-tokens")
         });
         return;
       }
@@ -613,6 +637,64 @@ async function printRemainingTasks(projectPath: string, justSavedId: string): Pr
   }
 }
 
+/**
+ * Record what this checkpoint actually knows about the task's token cost.
+ *
+ * Two outcomes, and only two. If the host reported counts, they go to the
+ * local telemetry meter and to Kit's budget ledger as a real row. If nothing
+ * was reported, the row is marked unavailable with a note that says the true
+ * reason — nothing was handed to this invocation — and the operator is told,
+ * out loud, how to supersede it. The old code took the second branch
+ * unconditionally with a note claiming observation was impossible, which is
+ * why every closed task read as costless.
+ *
+ * Returns the checklist label to attest, or null when Kit rejected the write.
+ */
+async function recordCheckpointUsage(
+  projectPath: string,
+  bridge: KitCommandBridge,
+  input: { taskId: string; inputTokens?: number; outputTokens?: number; model?: string }
+): Promise<string | null> {
+  const { taskId, inputTokens, outputTokens, model } = input;
+
+  if (!hasObservedTokens({ inputTokens, outputTokens })) {
+    console.warn(unreportedUsageWarning("visp save", taskId));
+    const absent = await bridge.recordBudget({
+      taskId,
+      unavailable: true,
+      note: unreportedUsageNote("visp save", taskId)
+    });
+    return absent?.success === true ? "record-usage (unavailable)" : null;
+  }
+
+  // The local meter is best-effort: a disk failure must not stop the task from
+  // closing, and Kit's ledger is the authoritative copy either way.
+  try {
+    const session = await getActiveSession(projectPath);
+    if (session) {
+      await appendUsage(projectPath, {
+        sessionId: session.id,
+        inputTokens,
+        outputTokens,
+        model
+      });
+    }
+  } catch (error) {
+    console.warn(
+      `warning: token usage was not recorded to local telemetry: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+
+  const recorded = await bridge.recordBudget({
+    taskId,
+    inputTokens,
+    outputTokens,
+    model,
+    note: reportedUsageNote("visp save")
+  });
+  return recorded?.success === true ? "record-usage" : null;
+}
+
 async function runConfiguredKitCheckpoint(
   projectPath: string,
   taskId: string,
@@ -621,6 +703,8 @@ async function runConfiguredKitCheckpoint(
     modelId?: string;
     modelVersion?: string;
     acceptWarnings?: boolean;
+    inputTokens?: number;
+    outputTokens?: number;
   }
 ): Promise<void> {
   const bridge = new KitCommandBridge({ projectPath });
@@ -696,12 +780,13 @@ async function runConfiguredKitCheckpoint(
       const updated = await bridge.attestChecklistItem({ taskId, ...attestation });
       if (updated?.success === true) attested.push(attestation.item);
     }
-    const usage = await bridge.recordBudget({
+    const usageLabel = await recordCheckpointUsage(projectPath, bridge, {
       taskId,
-      unavailable: true,
-      note: "visp save: the coordinator cannot observe the agent's token usage"
+      inputTokens: actualModel.inputTokens,
+      outputTokens: actualModel.outputTokens,
+      model: actualModel.modelId
     });
-    if (usage?.success === true) attested.push("record-usage (unavailable)");
+    if (usageLabel !== null) attested.push(usageLabel);
 
     reconcile = await bridge.reconcile(taskId, {
       acceptWarnings: actualModel.acceptWarnings === true

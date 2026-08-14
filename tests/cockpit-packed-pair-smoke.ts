@@ -6,13 +6,20 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+
+import { ensureHyperDist } from "./helpers/ensure-dist.js";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const workspaceRoot = dirname(packageRoot);
 const kitRoot = join(workspaceRoot, "visp-kit");
 const healthyFixture = join(packageRoot, "fixtures", "cockpit", "healthy");
 const siblingKitManifest = join(kitRoot, "package.json");
+// Cockpit imports `visp-kit/artifacts`, which the sibling's exports map resolves
+// to its built `dist/`. We deliberately do not build another repository from
+// here, so an unbuilt sibling has to announce itself instead of surfacing as a
+// module-resolution crash inside a spawned child.
+const siblingKitArtifacts = join(kitRoot, "dist", "artifacts.js");
 
 const PHASE_9_SCREEN_IDS = [
   "now",
@@ -285,6 +292,23 @@ describe("packed Kit and Hyper Cockpit compatibility", () => {
     it.skip("requires sibling ../visp-kit; skipped because its package.json is absent", () => {});
     return;
   }
+
+  // This suite packs the repository and boots the extracted tarball's
+  // `dist/index.js`, so `dist/` must exist before `npm pack` reads the disk.
+  // It used to inherit that from whichever suite happened to run first, which
+  // made a clean clone fail once and pass on the retry. Owning the
+  // precondition here is what makes the result independent of ordering.
+  beforeAll(async () => {
+    await ensureHyperDist();
+    if (!existsSync(siblingKitArtifacts)) {
+      throw new Error(
+        `Sibling ../visp-kit is present but unbuilt: ${siblingKitArtifacts} is missing, ` +
+          "and Cockpit resolves `visp-kit/artifacts` to it. Run `pnpm build` in visp-kit, " +
+          "then rerun. This is reported rather than repaired because building another " +
+          "repository from this suite is not this package's to do."
+      );
+    }
+  }, 320_000);
 
   it(
     "serves the healthy nine-screen Cockpit using only manually extracted package tarballs",

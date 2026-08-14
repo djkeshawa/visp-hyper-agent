@@ -80,9 +80,13 @@ describe("renderHandoff", () => {
         source: "computed"
       })
     );
-    // 9 steps since the runtime-artifact hygiene line: round-5 evaluation
-    // failed every save on the app's own data file created by its tests.
-    expect(protocol.workflow).toHaveLength(9);
+    // 10 steps since the cost-reporting line. The 9th was runtime-artifact
+    // hygiene (round-5 evaluation failed every save on the app's own data file
+    // created by its tests); the 10th tells the agent to pass its host's
+    // reported token counts to `visp save`, because the coordinator has no
+    // other source for them and a silent omission used to read as zero cost.
+    expect(protocol.workflow).toHaveLength(10);
+    expect(protocol.workflow.at(-2)).toContain("--input-tokens");
     expect(protocol.hardRules).toHaveLength(6);
     expect(protocol.integrationSeams.map((seam) => seam.id)).toEqual(
       expect.arrayContaining(["llm-memory-provider", "semantic-retrieval", "validation-runner", "branch-sessions", "mcp-bridge"])

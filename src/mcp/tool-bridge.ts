@@ -70,6 +70,10 @@ function isNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function isNonNegativeInteger(value: unknown): value is number {
+  return isNumber(value) && Number.isInteger(value) && value >= 0;
+}
+
 /** Require a present string field; returns an error detail or null. */
 function requireString(args: ToolArgs, key: string): string | null {
   if (!(key in args) || !isString(args[key]) || (args[key] as string).length === 0) {
@@ -167,19 +171,37 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "visp_save",
-    description: "Record a checkpoint of the current work; PASSED does not authorize strict Kit progression.",
+    description:
+      "Record a checkpoint of the current work; PASSED does not authorize strict Kit progression. Pass input_tokens/output_tokens from your host's reported usage so the task closes with a real cost row instead of an unavailable one.",
     inputSchema: {
       type: "object",
       properties: {
         task: { type: "string" },
-        tier: { type: "string" }
+        tier: { type: "string" },
+        input_tokens: { type: "integer", minimum: 0 },
+        output_tokens: { type: "integer", minimum: 0 }
       },
       required: ["task"]
     },
-    validate: (args) => firstError(requireString(args, "task"), optional(args, "tier", isString, "a string")),
+    validate: (args) =>
+      firstError(
+        requireString(args, "task"),
+        optional(args, "tier", isString, "a string"),
+        optional(args, "input_tokens", isNonNegativeInteger, "a non-negative integer"),
+        optional(args, "output_tokens", isNonNegativeInteger, "a non-negative integer")
+      ),
     toArgv: (args) => {
       const tierArgs = isString(args.tier) ? ["--tier", args.tier] : [];
-      return ["save", "--task", args.task as string, ...tierArgs];
+      // The host knows its own token counts; the coordinator never guesses
+      // them. Forwarded only when actually supplied, so an absent count stays
+      // a recorded absence rather than a fabricated zero.
+      const inputArgs = isNonNegativeInteger(args.input_tokens)
+        ? ["--input-tokens", String(args.input_tokens)]
+        : [];
+      const outputArgs = isNonNegativeInteger(args.output_tokens)
+        ? ["--output-tokens", String(args.output_tokens)]
+        : [];
+      return ["save", "--task", args.task as string, ...tierArgs, ...inputArgs, ...outputArgs];
     }
   },
   {

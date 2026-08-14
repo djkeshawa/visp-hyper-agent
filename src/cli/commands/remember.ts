@@ -18,6 +18,7 @@ import {
 } from "../../skills/skill-proposals.js";
 import { installSkill, isDuplicate, readSkillRegistry, recordUsage } from "../../skills/skill-registry.js";
 import { appendUsage } from "../../telemetry/telemetry-store.js";
+import { hasObservedTokens, parseTokenCount } from "../../telemetry/token-usage.js";
 import { resolveProjectPath } from "./shared.js";
 
 const rememberOutcome =
@@ -199,21 +200,6 @@ async function recordSkillUsage(projectPath: string, names: string[] | undefined
 }
 
 /**
- * Parse a CLI-supplied integer. Returns the parsed non-negative integer, or
- * `undefined` (with a warning) for anything that is not a clean integer.
- */
-function parseTokenCount(raw: string | undefined, label: string): number | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  if (!/^\d+$/.test(raw.trim())) {
-    console.warn(`warning: --${label} "${raw}" is not a valid integer; ignoring.`);
-    return undefined;
-  }
-  return Number.parseInt(raw, 10);
-}
-
-/**
  * Record per-session token usage to the local telemetry store and, when the
  * external kit is available, forward the usage to its budget ledger. All
  * failures degrade to warnings; the command always exits zero.
@@ -239,7 +225,7 @@ async function recordTokenUsage(
   }
 
   // Only forward to the kit budget when actual token counts were provided.
-  if (inputTokens === undefined && outputTokens === undefined) {
+  if (!hasObservedTokens({ inputTokens, outputTokens })) {
     return;
   }
 
