@@ -41,6 +41,11 @@ Follow these steps in order. Do not skip ahead.
    - `rejected` — forward none of it; the listed reasons say why.
    - `unresolved` status with a populated question is a successful run, not a
      failure. Do not re-run it on a stronger model to get a nicer answer.
+   - `provider.registered: false` — read this FIRST. Nothing in this project
+     provides the scout's `mcp__visp-intel__*` tools, so it had nothing to
+     query and its empty result means nothing. Report the missing provider,
+     use `mechanic` to locate the code instead, and never record that run as
+     evidence that intel had nothing to offer.
 
 4. **Delegate the implement pass.** Invoke the `implementer` subagent with a spec
    that carries the collected scout state forward (so it does not re-explore):

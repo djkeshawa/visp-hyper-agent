@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Command, Option } from "commander";
 import { checkContextFreshness } from "../../context/context-freshness.js";
@@ -9,6 +9,11 @@ import { fileExists, readTextIfExists, vispPath } from "../../core/fs-utils.js";
 import { hyperConfigSchema } from "../../core/session-manager.js";
 import type { HyperConfig } from "../../core/types.js";
 import { resolveGitHooksDirectory } from "../../governance/git-hooks.js";
+import {
+  INTEL_MCP_TOOL_PREFIX,
+  MCP_CONFIG_FILENAME,
+  describeIntelProvider
+} from "../../install/intel-mcp-registration.js";
 import {
   planInstall,
   readHostCapabilityManifest,
@@ -89,6 +94,7 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
   checks.push(await checkSelectedHost(projectPath, config));
   checks.push(await checkToolAssets(projectPath, config));
   checks.push(await checkMemory(projectPath, config));
+  checks.push(await checkIntelMcpProvider(projectPath));
   checks.push(await checkMcp(projectPath));
 
   return {
@@ -576,6 +582,80 @@ async function checkMemory(
     status: "pass",
     detail: "llm-memory is available through the visp-memory CLI."
   };
+}
+
+/**
+ * A3. Does anything provide the MCP tools an installed agent declares?
+ *
+ * Scoped to a declaration that actually exists on disk: a project with no
+ * `mcp__visp-intel__*` consumer needs no provider, and warning there would be
+ * noise. When the declaration IS installed and nothing registers the server,
+ * the scout lane is a silent no-op — it cannot obtain a receipt, so every row
+ * it produces is dropped and the coordinator sees an empty result that looks
+ * like an answer. That is the case worth a warning.
+ *
+ * `warn`, not `fail`: intel is optional, and a project may deliberately run the
+ * workflow without the navigation lane. What is not acceptable is running it
+ * without knowing.
+ */
+async function checkIntelMcpProvider(projectPath: string): Promise<DoctorCheck> {
+  const consumers = await agentsDeclaringIntelTools(projectPath);
+  const status = await describeIntelProvider(projectPath);
+
+  if (consumers.length === 0) {
+    return {
+      id: "intel-mcp",
+      label: "Intel MCP provider",
+      status: "pass",
+      detail: status.registered
+        ? `${status.serverName} is registered in ${MCP_CONFIG_FILENAME}; no installed agent declares its tools yet.`
+        : `No installed agent declares ${INTEL_MCP_TOOL_PREFIX}* tools, so none needs a provider.`
+    };
+  }
+  if (status.registered) {
+    return {
+      id: "intel-mcp",
+      label: "Intel MCP provider",
+      status: "pass",
+      detail: `${consumers.join(", ")} ${declares(consumers)} ${INTEL_MCP_TOOL_PREFIX}* tools and ${MCP_CONFIG_FILENAME} registers ${status.serverName}.`
+    };
+  }
+  return {
+    id: "intel-mcp",
+    label: "Intel MCP provider",
+    status: "warn",
+    detail:
+      `${consumers.join(", ")} ${declares(consumers)} ${INTEL_MCP_TOOL_PREFIX}* tools, but ${status.reason}. ` +
+      "The scout lane cannot obtain an intel receipt, so its rows are dropped and the coordinator " +
+      "reads an empty result that is indistinguishable from intel finding nothing.",
+    recovery:
+      "Index the repository with `visp-intel repo index`, then run " +
+      "`visp init --intel-store <path> --intel-repository <id>` to register the server."
+  };
+}
+
+function declares(consumers: readonly string[]): string {
+  return consumers.length === 1 ? "declares" : "declare";
+}
+
+/** Installed agent files whose front matter asks for the intel tool namespace. */
+async function agentsDeclaringIntelTools(projectPath: string): Promise<string[]> {
+  const agentsDir = join(projectPath, ".claude", "agents");
+  let entries: string[];
+  try {
+    entries = await readdir(agentsDir);
+  } catch {
+    return [];
+  }
+  const declaring: string[] = [];
+  for (const entry of entries.sort()) {
+    if (!entry.endsWith(".md")) continue;
+    const text = await readTextIfExists(join(agentsDir, entry));
+    if (text?.includes(INTEL_MCP_TOOL_PREFIX)) {
+      declaring.push(`.claude/agents/${entry}`);
+    }
+  }
+  return declaring;
 }
 
 async function checkMcp(projectPath: string): Promise<DoctorCheck> {

@@ -22,6 +22,13 @@ export type HyperConfig = {
    * (VISP_KIT_BINARY env, then probe visp-kit, then fall back to visp).
    */
   kitBinary?: string;
+  /**
+   * A3: the store the registered `visp-intel` MCP server queries. Unset means
+   * the scout lane has no provider, which is reported rather than guessed.
+   */
+  intelStore?: string;
+  /** A3: the repository instance id that store is scoped to. */
+  intelRepository?: string;
 };
 
 export type HyperState = {

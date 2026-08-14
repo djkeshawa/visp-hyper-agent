@@ -1,6 +1,11 @@
 import { z } from "zod";
 
 import { readTextIfExists, vispPath } from "../core/fs-utils.js";
+import {
+  INTEL_MCP_TOOL_PREFIX,
+  describeIntelProvider,
+  type IntelProviderStatus
+} from "../install/intel-mcp-registration.js";
 
 /**
  * P21-HYPER-01 / ADR 0014 Q4 — the scout's bounded action set and the only
@@ -102,6 +107,20 @@ export type ScoutFindingsReport = {
   /** Rows the collector removed, each named so the loss is visible, never silent. */
   readonly dropped: readonly string[];
   readonly findings?: ScoutFindings;
+  /**
+   * A3. Whether anything in this project provides the `mcp__visp-intel__*`
+   * tools the scout subagent declares.
+   *
+   * This exists because every other field here is ambiguous without it. A
+   * scout with no provider obtains no receipt, so the collector drops all its
+   * rows and the report reads `accepted` with an empty path — byte-identical
+   * to a careful scout that genuinely found nothing. Absence and emptiness are
+   * different answers and must not share a rendering.
+   *
+   * Present only on {@link readScoutFindings}, which knows the project;
+   * {@link collectScoutFindings} stays a pure shape check.
+   */
+  readonly provider?: IntelProviderStatus;
 };
 
 function nonBlank(max: number): z.ZodType<string> {
@@ -372,17 +391,46 @@ export function collectScoutFindings(raw: unknown): ScoutFindingsReport {
 }
 
 export async function readScoutFindings(projectPath: string): Promise<ScoutFindingsReport> {
-  const text = await readTextIfExists(vispPath(projectPath, "hyper", "current", SCOUT_FINDINGS_FILE));
+  const [text, provider] = await Promise.all([
+    readTextIfExists(vispPath(projectPath, "hyper", "current", SCOUT_FINDINGS_FILE)),
+    describeIntelProvider(projectPath)
+  ]);
   if (text === undefined) {
-    return { state: "absent", reasons: [], dropped: [] };
+    return { state: "absent", reasons: [], dropped: [], provider };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { state: "rejected", reasons: ["scout findings are not valid JSON"], dropped: [] };
+    return { state: "rejected", reasons: ["scout findings are not valid JSON"], dropped: [], provider };
   }
-  return collectScoutFindings(parsed);
+  return { ...collectScoutFindings(parsed), provider };
+}
+
+/**
+ * State the provider fact before any rows, and shout when there is no provider.
+ *
+ * The order matters: a reader who sees `entrypoints: (none)` first has already
+ * formed the wrong conclusion by the time an explanation arrives. The absence
+ * block is deliberately blunt — its whole job is to stop an empty result being
+ * scored as a negative finding about the repository.
+ */
+function renderProviderLines(report: ScoutFindingsReport): string[] {
+  const provider = report.provider;
+  if (provider === undefined) {
+    return [];
+  }
+  if (provider.registered) {
+    return [`intel_provider: registered (${provider.serverName})`];
+  }
+  return [
+    "intel_provider: MISSING",
+    "intel_provider_absent:",
+    `  - ${provider.reason}`,
+    `  - the scout subagent declares ${provider.declaredTools.length} ${INTEL_MCP_TOOL_PREFIX}* tools and has no provider for any of them`,
+    "  - an empty or unresolved scout result here is NOT evidence that intel found nothing; it is evidence that nothing was asked",
+    `  - fix: index the repository with \`visp-intel repo index\`, then \`visp init --intel-store <path> --intel-repository <id>\` to register the ${provider.serverName} MCP server`
+  ];
 }
 
 /**
@@ -395,7 +443,7 @@ export async function readScoutFindings(projectPath: string): Promise<ScoutFindi
  * intel regression rather than the rendering bug it is.
  */
 export function renderScoutState(report: ScoutFindingsReport): string {
-  const lines = ["BEGIN_VISP_SCOUT_STATE", `state: ${report.state}`];
+  const lines = ["BEGIN_VISP_SCOUT_STATE", `state: ${report.state}`, ...renderProviderLines(report)];
   const findings = report.findings;
   if (findings) {
     lines.push(

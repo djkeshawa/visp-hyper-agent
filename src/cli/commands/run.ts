@@ -309,7 +309,8 @@ export function runCommand(): Command {
       // precondition has produced a valid authoritative result.
       const { handoff, session } = await executeStart(projectPath, action.goal, {
         tool: options.tool,
-        authority: { mode: "kit", adoption: strictKitAdoption }
+        authority: { mode: "kit", adoption: strictKitAdoption },
+        constraints: recallConstraints(action)
       });
 
       console.log(handoff);
@@ -379,6 +380,25 @@ async function printAndRecordRouting(
   } catch {
     // Advisory only; never fail the run because routing could not be computed.
   }
+}
+
+/**
+ * A4(a): the constraints Kit already declared for this task, as retrieval
+ * context for memory recall.
+ *
+ * The coordinator is holding these at the exact moment recall runs — the paths
+ * the task must not touch and the statements it must satisfy — and they were
+ * being dropped at the contract boundary. Forwarding them lets recall rank
+ * memories about those files and those criteria above generic matches.
+ *
+ * Read-only and advisory in this direction: scope enforcement stays with the
+ * guard and with Kit, and nothing recalled can widen it.
+ */
+function recallConstraints(action: NormalizedWorkflowAction): string[] {
+  return [
+    ...action.scope.forbiddenPaths,
+    ...action.validationOracles.map((oracle) => oracle.statement)
+  ].filter((value) => value.trim().length > 0);
 }
 
 /**

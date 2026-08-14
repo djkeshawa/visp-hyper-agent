@@ -7,8 +7,29 @@
 // semantics stay in Memory, and a durable write is a quarantined proposal
 // through the reviewed lifecycle, never a direct model write.
 
-import { readConfig } from "../../core/session-manager.js";
-import { memoryContractRecall, memoryContractPropose } from "../../memory/memory-cli-contract.js";
+import { getActiveSession, readConfig } from "../../core/session-manager.js";
+import {
+  memoryContractRecall,
+  memoryContractPropose,
+  type MemoryRecallScope
+} from "../../memory/memory-cli-contract.js";
+
+/**
+ * A4(a): a manual `visp recall` still happens inside a task, so tell Memory
+ * which one.
+ *
+ * Without an active session there is nothing held and nothing is sent — the
+ * query stands alone, exactly as before.
+ */
+async function activeSessionScope(projectPath: string): Promise<MemoryRecallScope> {
+  const session = await getActiveSession(projectPath);
+  if (session === null) return {};
+  return {
+    task: session.goal,
+    files: session.relevantFiles,
+    sessionId: session.id
+  };
+}
 
 export async function runRecallVerb(projectPath: string, query: string): Promise<void> {
   const config = await readConfig(projectPath);
@@ -32,12 +53,16 @@ export async function runRecallVerb(projectPath: string, query: string): Promise
     projectPath,
     endpoint: config.memoryEndpoint,
     repoId: config.memoryRepoId,
-    query
+    query,
+    scope: await activeSessionScope(projectPath)
   });
   if (!result.ok) {
     console.error(`visp recall: ${result.reason}`);
     process.exitCode = 1;
     return;
+  }
+  if (result.degraded !== undefined) {
+    console.error(`warning: ${result.degraded}`);
   }
   if (result.entries.length === 0) {
     const intents = result.intentMatches ?? 0;

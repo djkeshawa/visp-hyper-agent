@@ -30,6 +30,7 @@ import { readKitArtifacts } from "../../kit/kit-reader.js";
 import type { KitContextPack, KitIntegrationContract } from "../../kit/kit-schemas.js";
 import type { NormalizedWorkflowAction } from "../../kit/workflow-action-adapter.js";
 import { readMemoryPack } from "../../memory/file-memory-provider.js";
+import type { MemoryRecallScope } from "../../memory/memory-cli-contract.js";
 import { readRelevantFailurePatterns } from "../../memory/failure-patterns.js";
 import { LlmMemoryProvider } from "../../memory/llm-memory-provider.js";
 import { selectMemoryProvider } from "../../memory/provider-factory.js";
@@ -81,7 +82,30 @@ export type StartOptions = {
         mode: "kit";
         adoption: KitAdoption;
       };
+  /**
+   * A4(a). What this task must respect, forwarded to memory recall so ranking
+   * knows the shape of the work. Kit-backed runs supply the authoritative
+   * forbidden paths and acceptance statements from the workflow action; a
+   * local run has none and sends none. Nothing here is authority — it is
+   * retrieval context only.
+   */
+  constraints?: readonly string[];
 };
+
+/**
+ * Environment scope tags for recall eligibility.
+ *
+ * A stored memory that declares an environment is rejected outright when the
+ * caller declares none, so sending nothing was actively hiding rows. These are
+ * facts about where the work is happening, not a guess: the platform, the Node
+ * major, and the host the session runs in.
+ */
+function recallEnvironment(tool: ToolProfile): string[] {
+  const nodeMajor = process.versions.node.split(".")[0] ?? "";
+  return [process.platform, nodeMajor.length > 0 ? `node${nodeMajor}` : "", tool].filter(
+    (value) => value.length > 0
+  );
+}
 
 /** Render the shared fail-closed result for local-only command entry points. */
 export function renderDirectCommandKitStop(
@@ -133,14 +157,6 @@ export async function executeStart(
     .slice(0, 3)
     .map((file) => file.path.split("/").at(-1) ?? "")
     .filter((name) => name.length > 0);
-  // Hints lead: goalRecallQuery keeps the first eight distinct terms, and
-  // the file names are the strongest associative key — they must never be
-  // the part that truncation drops.
-  const memoryFusion = await fuseRecalledMemory(
-    projectPath,
-    config,
-    [...recallHints, goal].join(" ")
-  );
   const contextOptions: ContextPackOptions = adoption
     ? { source: adoption.source, validationCommands: adoption.validationCommands }
     : {};
@@ -169,6 +185,32 @@ export async function executeStart(
         }
       }))) ?? createdSession
     : createdSession;
+
+  // A4(a). Recall runs here, AFTER the session exists, because the session id
+  // is part of what it is being told. Everything below was already in hand at
+  // this point and was previously thrown away at the contract boundary: the
+  // task sentence, the exact files the task touches, the constraints Kit
+  // declared, and the environment. Hints lead the query itself:
+  // goalRecallQuery keeps the first eight distinct terms, and the file names
+  // are the strongest associative key, so they must never be what truncation
+  // drops.
+  const memoryFusion = await fuseRecalledMemory(
+    projectPath,
+    config,
+    [...recallHints, goal].join(" "),
+    {
+      task: goal,
+      files: contextFiles.map((file) => file.path),
+      constraints: options.constraints ?? [],
+      sessionId: session.id,
+      environment: recallEnvironment(tool)
+      // `asOf` is deliberately not sent. Omitting it means "now", which is what
+      // the working loop wants; pinning any earlier instant would hide memories
+      // written during the session, and pinning "now" is the same thing with
+      // extra argv.
+    }
+  );
+
   const { registry } = await readSkillRegistry(projectPath);
   const handoff = renderHandoff(session, {
     skills: registry.skills.map((skill) => ({ name: skill.name, whenToUse: skill.whenToUse }))
@@ -231,7 +273,12 @@ type MemoryFusion = {
  * so they can be fused into the memory pack. File mode (or a fallback) contributes
  * no recalled entries; fallback warnings are surfaced so the user sees the degradation.
  */
-async function fuseRecalledMemory(projectPath: string, config: HyperConfig, goal: string): Promise<MemoryFusion> {
+async function fuseRecalledMemory(
+  projectPath: string,
+  config: HyperConfig,
+  goal: string,
+  scope: MemoryRecallScope
+): Promise<MemoryFusion> {
   const selection = await selectMemoryProvider({ config, projectPath });
   if (!(selection.provider instanceof LlmMemoryProvider)) {
     // The standard install runs NO memory server: `visp setup` configures
@@ -241,7 +288,7 @@ async function fuseRecalledMemory(projectPath: string, config: HyperConfig, goal
     // carried nothing — the store `visp-memory init` seeds from git history
     // was never read by the working loop at all.
     if (config.memoryMode === "llm-memory") {
-      return recallViaContract(projectPath, config, goal, selection.warnings);
+      return recallViaContract(projectPath, config, goal, selection.warnings, scope);
     }
     return { warnings: selection.warnings };
   }
@@ -308,7 +355,8 @@ export async function recallViaContract(
   projectPath: string,
   config: HyperConfig,
   goal: string,
-  priorWarnings: readonly string[] = []
+  priorWarnings: readonly string[] = [],
+  scope: MemoryRecallScope = {}
 ): Promise<MemoryFusion> {
   const { memoryContractRecall } = await import("../../memory/memory-cli-contract.js");
   const result = await memoryContractRecall({
@@ -319,13 +367,17 @@ export async function recallViaContract(
     // The pack is rank-limited, budget-capped, and marked untrusted-context;
     // moderate precision is acceptable there, silence is not. The default
     // floor is tuned for precise human queries and stays untouched for them.
-    minScore: 0.35
+    minScore: 0.35,
+    scope
   });
   if (!result.ok) {
     return { warnings: [...priorWarnings, `memory recall unavailable: ${result.reason}`] };
   }
   const recalled: RecalledMemory[] = [];
   const warnings: string[] = [...priorWarnings];
+  if (result.degraded !== undefined) {
+    warnings.push(result.degraded);
+  }
   for (const entry of result.entries.slice(0, recallLimit)) {
     if (looksLikeInstructionInjection(entry.content)) {
       warnings.push("quarantined an instruction-like recalled memory; content omitted");

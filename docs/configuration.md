@@ -8,7 +8,7 @@ Runtime files:
 .visp/
   hyper/
     config.json          # defaultTool, tokenBudget, memoryMode, memoryEndpoint,
-                         # skillMode, blockedPaths
+                         # skillMode, blockedPaths, intelStore, intelRepository
     state.json           # sessions + pipeline state (task DAG progress)
     telemetry.json       # checkpoint attempts + token usage
     routing.json         # quarantines + routing decisions
@@ -36,6 +36,19 @@ Source modules:
 - `src/install/` — tool asset installer over the versioned `templates/` directory.
 - `src/quality/` — git-diff review warnings, checkpoint snapshots, and the allowlisted validation-command runner.
 - `src/handoff/`, `src/output/` — protocol and markdown rendering.
+## Repository intelligence (the scout lane)
+
+The `scout` subagent `visp init --tool claude-code` installs is navigation-only: it answers from the Visp Intel graph through five `mcp__visp-intel__*` tools and has no file, shell or edit tool at all. Those tools need a provider, and the host only has one if this project's `.mcp.json` registers the `visp-intel` MCP server.
+
+```bash
+visp-intel repo index . --store .visp-intel/intel.sqlite --json   # produces the store and its repository id
+visp init --intel-store .visp-intel/intel.sqlite --intel-repository <repository-id>
+```
+
+`init` records both in `config.json` as `intelStore` and `intelRepository`, then merges a `visp-intel` entry into `.mcp.json` alongside any servers already there. Both values are required together: `visp-intel mcp` has no default for either, so a half-configured scope is refused rather than registered.
+
+Without the server the scout still runs, but it can obtain no query receipt, Hyper's collector drops every unreceipted row, and the coordinator reads an empty result that looks exactly like intel having found nothing. That is why absence is stated rather than implied: `visp doctor` reports it as the `intel-mcp` check, `visp setup` warns when it installs an agent nothing can serve, and every read of `visp-hyper://current/scout-findings` carries a `provider` block.
+
 ## Legacy private Memory compatibility
 
 ```bash

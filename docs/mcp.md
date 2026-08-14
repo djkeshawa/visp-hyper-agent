@@ -48,6 +48,8 @@ It also hashes each tool output schema, making text-only regressions and schema 
 `visp-hyper://current/context-freshness` is also always available. It reports the active context pack and grounded Kit artifact freshness as JSON, including `status`, `blocking`, hashes, warnings, and any finding that should stop a coding agent before it drifts.
 `visp-hyper://current/scout-findings` is computed on every read: it runs Hyper's collector over `.visp/hyper/current/scout-findings.json` and returns only the rows that cite an intel query receipt. A payload that claims `resolved` with no path, carries a row without a receipt, or exceeds the twelve-action cap comes back as `rejected` with its reasons and carries no rows. Absence returns `absent`, not an error. Nothing this resource returns authorizes anything — `authority` is always `none`.
 
+Every read also carries a `provider` block naming whether this project registers the `visp-intel` MCP server that backs the scout's declared `mcp__visp-intel__*` tools. This matters because without a provider the scout can obtain no receipt, the collector drops all of its rows, and the resource returns an empty `accepted` payload that is byte-identical to intel having looked and found nothing. `provider.registered: false` means the empty result is not a finding. Register the server with `visp init --intel-store <path> --intel-repository <id>` after indexing the repository with `visp-intel repo index`; `visp doctor` reports the same gap as the `intel-mcp` check.
+
 `visp-hyper://current/kit-read-contract` is always available too. When a Kit `1.3` handoff is active, it returns the adopted artifact roles, MIME types, required stages, and freshness policy; otherwise it returns an explicit `unavailable` status.
 
 Prompts:

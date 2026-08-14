@@ -53,6 +53,15 @@ runs Hyper's collector, which keeps only rows carrying an intel receipt:
   the scout with a tighter question, or proceed knowing the task has no case.
 - `state: "absent"` — no scout pass has been recorded for this task.
 
+**Check `provider` before you read anything else.** It says whether this project
+registers the `visp-intel` MCP server that backs the scout's five tools. When
+`provider.registered` is `false` the scout had no provider at all: it could not
+obtain a receipt, so every row it produced was dropped, and the empty result you
+are looking at is NOT a finding about the repository. Do not report "intel found
+nothing" and do not score the navigation lane on that run. Say the provider is
+missing, quote `provider.reason`, and fall back to `mechanic` for locating code
+until someone registers the server.
+
 A `status: "unresolved"` scout run with a populated question is a SUCCESS, not a
 failure. Do not silently re-run it on a stronger model to get a different
 answer; an honest gap is information the implementer needs.

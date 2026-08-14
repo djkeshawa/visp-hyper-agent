@@ -1,8 +1,14 @@
+import { resolve } from "node:path";
 import { Command, Option } from "commander";
 import { resolveProjectPath } from "./shared.js";
 import { initializeProject, readConfig } from "../../core/session-manager.js";
 import { vispPath, writeText } from "../../core/fs-utils.js";
 import { repoIdForProject } from "../../memory/llm-memory-provider.js";
+import {
+  INTEL_MCP_SERVER_NAME,
+  MCP_CONFIG_FILENAME,
+  registerIntelMcpServer
+} from "../../install/intel-mcp-registration.js";
 import { installAssets, type ToolName } from "../../install/tool-asset-installer.js";
 import { KitCommandBridge, detectVisp, hasKitArtifacts } from "../../kit/kit-command-bridge.js";
 
@@ -14,6 +20,8 @@ interface InitOptions {
   memoryEndpoint?: string;
   memoryMode?: "file" | "llm-memory";
   memoryRepoId?: string;
+  intelStore?: string;
+  intelRepository?: string;
 }
 
 export function initCommand(): Command {
@@ -34,6 +42,8 @@ export function initCommand(): Command {
     .option("--memory-endpoint <url>", "Configure the hosted llm-memory server endpoint.")
     .addOption(new Option("--memory-mode <mode>", "Set the memory mode.").choices(["file", "llm-memory"]))
     .option("--memory-repo-id <id>", "Pin a stable repo id shared across teammate clones.")
+    .option("--intel-store <path>", "Path to the visp-intel store the scout lane queries.")
+    .option("--intel-repository <id>", "Repository instance id that visp-intel store is scoped to.")
     .action(async function (this: Command, options: InitOptions) {
       const projectPath = resolveProjectPath(this);
 
@@ -47,6 +57,7 @@ export function initCommand(): Command {
       console.log(`Initialized Visp Hyper at ${projectPath}`);
 
       await applyMemoryConfig(projectPath, options);
+      await applyIntelConfig(projectPath, options);
 
       if (!options.tool) {
         return;
@@ -102,6 +113,43 @@ async function applyMemoryConfig(projectPath: string, options: InitOptions): Pro
 
   const repoId = config.memoryRepoId ? config.memoryRepoId : `derived (${repoIdForProject(projectPath)})`;
   console.log(`memory: mode=${config.memoryMode} endpoint=${config.memoryEndpoint} repo_id=${repoId}`);
+}
+
+/**
+ * A3: record the intel scope and register the MCP server that serves it.
+ *
+ * Both halves or neither. `visp-intel mcp` requires a store AND a repository
+ * instance id, so a half-configured scope would register a server that fails
+ * at connect time — trading a silent no-op for a noisy one without fixing
+ * anything. A refusal is printed, never swallowed: the whole defect being
+ * repaired is a capability that failed without saying so.
+ */
+async function applyIntelConfig(projectPath: string, options: InitOptions): Promise<void> {
+  if (options.intelStore === undefined && options.intelRepository === undefined) {
+    return;
+  }
+  if (options.intelStore === undefined || options.intelRepository === undefined) {
+    console.error("error: --intel-store and --intel-repository must be given together.");
+    process.exitCode = 1;
+    return;
+  }
+
+  const store = resolve(projectPath, options.intelStore);
+  const config = await readConfig(projectPath);
+  config.intelStore = store;
+  config.intelRepository = options.intelRepository;
+  await writeText(vispPath(projectPath, "hyper", "config.json"), `${JSON.stringify(config, null, 2)}\n`);
+
+  const result = await registerIntelMcpServer(projectPath, {
+    store,
+    repository: options.intelRepository
+  });
+  if (result.outcome === "refused") {
+    console.error(`error: could not register the ${INTEL_MCP_SERVER_NAME} MCP server: ${result.reason}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`intel: ${INTEL_MCP_SERVER_NAME} MCP server ${result.outcome} in ${MCP_CONFIG_FILENAME}`);
 }
 
 function normalizeRepoId(value: string): string {

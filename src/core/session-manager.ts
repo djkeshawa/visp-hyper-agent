@@ -26,7 +26,13 @@ export const hyperConfigSchema = z.object({
   validationCommands: z.array(z.string()).optional(),
   // P10-US-03: which Kit binary the bridge spawns. Unset means auto-resolve
   // (VISP_KIT_BINARY env, then probe visp-kit, then fall back to visp).
-  kitBinary: z.string().min(1).optional()
+  kitBinary: z.string().min(1).optional(),
+  // A3: the scope the registered visp-intel MCP server is launched with.
+  // Both are required by `visp-intel mcp` and neither has a default, so an
+  // unset pair means the scout lane has no provider — a stated fact, never a
+  // guessed store path.
+  intelStore: z.string().min(1).optional(),
+  intelRepository: z.string().min(1).optional()
 });
 
 const pipelineStepRecordSchema = z.object({

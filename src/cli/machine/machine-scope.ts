@@ -1,9 +1,15 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 
-import { vispPath, writeText } from "../../core/fs-utils.js";
+import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { execFileResolved, resolveExecutable } from "../../core/executable-resolver.js";
 import { initializeProject, readConfig } from "../../core/session-manager.js";
+import {
+  INTEL_MCP_TOOL_PREFIX,
+  MCP_CONFIG_FILENAME,
+  describeIntelProvider,
+  registerIntelMcpServer
+} from "../../install/intel-mcp-registration.js";
 import { KitCommandBridge, hasKitArtifacts } from "../../kit/kit-command-bridge.js";
 
 // P10-US-05/08: the machine-scope boundary.
@@ -121,7 +127,64 @@ async function completeProjectScope(projectPath: string): Promise<void> {
     done.push('set memoryMode to "llm-memory" (visp-memory is installed and initialised here)');
   }
 
+  const intel = await registerConfiguredIntelServer(projectPath);
+  if (intel !== null) done.push(intel);
+
   for (const line of done) console.log(`  ${line}`);
+
+  await reportIntelProviderGap(projectPath);
+}
+
+/**
+ * A3: re-assert the registration `setup` has always implied but never made.
+ *
+ * Only from a scope already recorded in config — `setup` configures what is
+ * installed, it does not index a repository or invent a store path. A project
+ * that has never run `visp-intel repo index` gets the report below instead.
+ */
+async function registerConfiguredIntelServer(projectPath: string): Promise<string | null> {
+  const configPath = vispPath(projectPath, "hyper", "config.json");
+  if (!(await pathExists(configPath))) return null;
+  const config = await readConfig(projectPath);
+  if (config.intelStore === undefined || config.intelRepository === undefined) return null;
+
+  const result = await registerIntelMcpServer(projectPath, {
+    store: config.intelStore,
+    repository: config.intelRepository
+  });
+  if (result.outcome === "refused") {
+    console.log(`warning: could not register the visp-intel MCP server: ${result.reason}`);
+    return null;
+  }
+  return result.outcome === "unchanged"
+    ? null
+    : `${result.outcome} the visp-intel MCP server in ${MCP_CONFIG_FILENAME}`;
+}
+
+/**
+ * Say it out loud when `setup` has just installed an agent that asks for tools
+ * nothing provides.
+ *
+ * This is the same class of untruth the rest of this file exists to repair:
+ * "Setup complete" while the navigation lane it just installed cannot run. The
+ * difference from the other cases is that this one never surfaces later either
+ * — the scout simply returns nothing, and nothing looks like an answer.
+ */
+async function reportIntelProviderGap(projectPath: string): Promise<void> {
+  const status = await describeIntelProvider(projectPath);
+  if (status.registered) return;
+  const scout = join(projectPath, ".claude", "agents", "scout.md");
+  const text = await readTextIfExists(scout);
+  if (text === undefined || !text.includes(INTEL_MCP_TOOL_PREFIX)) return;
+
+  console.log(
+    [
+      `warning: .claude/agents/scout.md declares ${status.declaredTools.length} ${INTEL_MCP_TOOL_PREFIX}* tools and ${status.reason}.`,
+      "         The scout lane will return nothing, and nothing is indistinguishable from a real negative answer.",
+      "         Index the repository with `visp-intel repo index`, then run",
+      "         `visp init --intel-store <path> --intel-repository <id>`."
+    ].join("\n")
+  );
 }
 
 /**
