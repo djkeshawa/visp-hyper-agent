@@ -4,13 +4,12 @@ import { dirname, join } from "node:path";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { renderGitHookContent } from "../src/cli/commands/hooks.js";
 import { defaultConfig } from "../src/core/defaults.js";
 import { createWorkflowActionV3Id } from "../src/kit/workflow-action-adapter.js";
 import { TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES } from "../src/kit/workflow-action-protocol.js";
-import { ensureHyperDist } from "./helpers/ensure-dist.js";
 import { createFakeHostBinaryDir } from "./helpers/fake-host-binary.js";
 import {
   createVispShim,
@@ -221,12 +220,9 @@ describe("doctor command", () => {
   let logs: string[];
 
   // Several cases install a real git hook, and `renderGitHookContent` resolves
-  // `dist/index.js` to write the hook's command line. On a clean clone that
-  // threw until some other suite happened to build first — the same
-  // second-try-passes shape the packing suites had.
-  beforeAll(async () => {
-    await ensureHyperDist();
-  }, 320_000);
+  // `dist/index.js` to write the hook's command line. That artifact is built by
+  // the suite's `globalSetup` (tests/setup/build-dist.ts) before any test file
+  // is collected, so there is nothing for this file to arrange.
 
   beforeEach(() => {
     logs = [];

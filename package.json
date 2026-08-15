@@ -44,7 +44,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "pnpm build && vitest run",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm test",
     "prepack": "pnpm build",

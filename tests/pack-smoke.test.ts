@@ -3,14 +3,15 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { execFileResolved } from "../src/core/executable-resolver.js";
 import { createToolContext } from "../src/mcp/tool-bridge.js";
-import { ensureHyperDist, packageRoot } from "./helpers/ensure-dist.js";
+import { packageRoot } from "./helpers/dist-paths.js";
 import "./cockpit-packed-pair-smoke.js";
 
 /**
  * `npm pack` computes the tarball file list from `files` + disk. We skip the
  * `prepack` build with `--ignore-scripts` for speed, so the dist artifacts must
  * already exist on disk for the file-list assertions to be meaningful. The
- * package test script builds first; direct Vitest runs still build on demand.
+ * suite's `globalSetup` (tests/setup/build-dist.ts) has built them before this
+ * file is collected.
  */
 async function packFiles(): Promise<string[]> {
   const { stdout } = await execFileResolved(
@@ -26,7 +27,6 @@ describe("npm pack smoke", () => {
   let files: string[];
 
   beforeAll(async () => {
-    await ensureHyperDist();
     files = await packFiles();
   }, 320_000);
 

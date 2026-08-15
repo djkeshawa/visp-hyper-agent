@@ -26,8 +26,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Build before test: hooks-command, mcp-server, pack-smoke, and
-      # tool-asset-installer suites read dist/ and templates/ from disk.
+      # Not the test suite's build precondition — that lives in the suite
+      # itself (tests/setup/build-dist.ts, registered as Vitest globalSetup),
+      # so a developer running `vitest` directly gets it too. This step is here
+      # only so a broken build fails as "build", before ~1270 tests run.
       - run: pnpm build
 
       - run: pnpm typecheck

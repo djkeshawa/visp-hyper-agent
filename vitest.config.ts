@@ -3,6 +3,13 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
+    // Build `dist/` once, before any test file is collected. Suites that drive
+    // the published artifact (spawned `node dist/index.js`, `npm pack`, git
+    // hook rendering) used to each carry their own `beforeAll` build, so a file
+    // run on its own from a clean clone failed on the first try and passed on
+    // the second. The precondition belongs to the run, not to the test that
+    // happens to notice it missing — see the file for the measured numbers.
+    globalSetup: ["tests/setup/build-dist.ts"],
     // Remove any globally installed visp-kit / visp / visp-hyper from PATH
     // before a test runs. Without this the suite passes only on a machine where
     // the product is NOT installed — see the file for the measured numbers.

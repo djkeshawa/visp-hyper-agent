@@ -5,14 +5,13 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli/index.js";
 import { initializeProject } from "../src/core/session-manager.js";
 
 const execFileAsync = promisify(execFile);
 
 const packageRoot = resolvePackageRoot();
-const distIndex = join(packageRoot, "dist", "index.js");
 
 function resolvePackageRoot(): string {
   // tests/ → package root
@@ -217,19 +216,15 @@ describe("hooks ci", () => {
   });
 });
 
+// The installed hook invokes `node dist/index.js guard --staged`, and the
+// earlier "hooks git" cases render that command line through
+// `renderGitHookContent`, which resolves `dist/index.js` on disk. Both are
+// served by the suite's `globalSetup` (tests/setup/build-dist.ts), which builds
+// unconditionally before any test file is collected — so the artifact is not
+// merely present but current. This file used to build it in a `beforeAll` on
+// the describe below, which arrived two `describe`s too late for the cases
+// above.
 describe("hooks git mechanical enforcement", () => {
-  beforeAll(async () => {
-    // The installed hook invokes `node dist/index.js guard --staged`. Ensure dist
-    // exists AND is current enough to expose the guard command (it may predate the
-    // guard/hooks work). `pnpm test` does not build, so build on demand.
-    const built = (await fileExists(distIndex))
-      ? (await readFile(distIndex, "utf8")).includes('"guard"')
-      : false;
-    if (!built) {
-      await execFileAsync("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
-    }
-  }, 320_000);
-
   it("AC006: an installed hook rejects an out-of-scope commit and allows an in-scope one", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "visp-hooks-e2e-"));
     await mkdir(join(projectPath, "src"), { recursive: true });

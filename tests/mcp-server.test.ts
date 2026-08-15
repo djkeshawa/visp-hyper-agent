@@ -6,8 +6,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { execFileCrossPlatform } from "../src/core/exec.js";
+import { afterEach, describe, expect, it } from "vitest";
 import { initializeProject } from "../src/core/session-manager.js";
 import {
   handleMessage,
@@ -1736,16 +1735,12 @@ describe("tool bridge execution", () => {
   });
 });
 
+// `dist/index.js` is built by the suite's `globalSetup`
+// (tests/setup/build-dist.ts) before any test file is collected. This file used
+// to build it in this `describe`'s `beforeAll` — which left the earlier
+// "tool bridge execution" cases, that reach `dist/` through the hooks command,
+// failing on the first run of a clean clone.
 describe("serve --mcp stdio integration (AC002/AC005)", () => {
-  beforeAll(async () => {
-    const built = (await fileExists(distIndex))
-      ? (await readFile(distIndex, "utf8")).includes('"serve"')
-      : false;
-    if (!built) {
-      await execFileCrossPlatform("pnpm", ["build"], { cwd: packageRoot, timeout: 300_000 });
-    }
-  }, 320_000);
-
   it("answers an MCP session over stdio and exits 0 when stdin closes", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "visp-mcp-serve-"));
 

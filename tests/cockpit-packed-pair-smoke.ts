@@ -8,8 +8,6 @@ import { fileURLToPath } from "node:url";
 
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { ensureHyperDist } from "./helpers/ensure-dist.js";
-
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const workspaceRoot = dirname(packageRoot);
 const kitRoot = join(workspaceRoot, "visp-kit");
@@ -295,11 +293,12 @@ describe("packed Kit and Hyper Cockpit compatibility", () => {
 
   // This suite packs the repository and boots the extracted tarball's
   // `dist/index.js`, so `dist/` must exist before `npm pack` reads the disk.
-  // It used to inherit that from whichever suite happened to run first, which
-  // made a clean clone fail once and pass on the retry. Owning the
-  // precondition here is what makes the result independent of ordering.
+  // The suite-wide `globalSetup` (tests/setup/build-dist.ts) has built it
+  // before any test file is collected, so ordering cannot affect this result.
+  //
+  // The SIBLING's build is a different matter: this package will not build
+  // another repository, so an unbuilt ../visp-kit is reported, loudly, here.
   beforeAll(async () => {
-    await ensureHyperDist();
     if (!existsSync(siblingKitArtifacts)) {
       throw new Error(
         `Sibling ../visp-kit is present but unbuilt: ${siblingKitArtifacts} is missing, ` +
