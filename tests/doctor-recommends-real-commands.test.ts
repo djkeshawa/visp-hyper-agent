@@ -19,7 +19,7 @@
 // visibility question is tracked separately; a command that does not exist is
 // a defect today.
 
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -41,7 +41,28 @@ import { serveCommand } from "../src/cli/commands/serve.js";
 import { startCommand } from "../src/cli/commands/start.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const DOCTOR_SOURCE = join(here, "..", "src", "cli", "commands", "doctor.ts");
+const COMMANDS_DIR = join(here, "..", "src", "cli", "commands");
+const DOCTOR_ENTRY = join(COMMANDS_DIR, "doctor.ts");
+const DOCTOR_CHECKS_DIR = join(COMMANDS_DIR, "doctor");
+
+/**
+ * Every source file that can contribute a recovery string: the command entry
+ * plus each grouped check module beside it.
+ *
+ * Reading the whole directory rather than one path is what keeps this property
+ * from quietly narrowing. The recovery text used to live in a single file; when
+ * the checks were grouped into `doctor/`, a single-file read still found two
+ * strings and would have kept "passing" over almost none of the surface.
+ */
+async function doctorSource(): Promise<string> {
+  const checkModules = (await readdir(DOCTOR_CHECKS_DIR)).filter((name) => name.endsWith(".ts"));
+  const sources = await Promise.all(
+    [DOCTOR_ENTRY, ...checkModules.map((name) => join(DOCTOR_CHECKS_DIR, name))].map((path) =>
+      readFile(path, "utf8")
+    )
+  );
+  return sources.join("\n");
+}
 
 /**
  * Every command name Hyper registers — the thirteen verbs plus the legacy
@@ -75,7 +96,7 @@ function registeredCommands(): ReadonlySet<string> {
  * in one of them.
  */
 async function recommendedCommands(): Promise<readonly string[]> {
-  const source = await readFile(DOCTOR_SOURCE, "utf8");
+  const source = await doctorSource();
   return [...source.matchAll(/`(visp(?:-hyper|-kit|-memory)?\s+[^`]+)`/gu)].map(([, command]) =>
     // Inside a template literal the backtick is escaped, so a match can end
     // with the escaping backslash. Strip it rather than reporting `visp
@@ -123,7 +144,7 @@ describe("every command doctor recommends is a real command", () => {
     // "Run `visp init` or `visp agent bootstrap <tool>`" gave two commands with
     // no basis for choosing — the undecidable-message defect fixed in Phase 12,
     // resurfaced. One cause, one command.
-    const source = await readFile(DOCTOR_SOURCE, "utf8");
+    const source = await doctorSource();
     const undecidable = [...source.matchAll(/recovery:[^\n]*`[^`]+`\s+or\s+`[^`]+`/gu)];
 
     expect(
@@ -135,7 +156,7 @@ describe("every command doctor recommends is a real command", () => {
   it("does not leave a bare <tool> placeholder the user cannot resolve", async () => {
     // `--tool <tool>` rejected the obvious value `claude` and revealed the
     // allowed set only after failing. Where a tool must be named, name it.
-    const source = await readFile(DOCTOR_SOURCE, "utf8");
+    const source = await doctorSource();
     const placeholders = [...source.matchAll(/recovery:[^\n]*--tool <tool>/gu)];
 
     expect(

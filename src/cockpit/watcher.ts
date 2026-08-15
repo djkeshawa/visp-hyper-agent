@@ -1,6 +1,7 @@
 import { watch, type FSWatcher, type WatchEventType } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { isNodeError } from "../core/guards.js";
 
 export type CockpitWatcherOptions = Readonly<{
   projectPath: string;
@@ -242,8 +243,4 @@ function artifactInvalidationPath(filename: string | null): string | undefined {
   if (parts.includes("..")) return ".visp";
   if (parts[0] === "cache") return undefined;
   return parts.length === 0 ? ".visp" : `.visp/${parts.join("/")}`;
-}
-
-function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === code;
 }

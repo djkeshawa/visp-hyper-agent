@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import { isNodeError } from "./guards.js";
 
 export async function ensureDir(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
@@ -16,7 +17,7 @@ export async function fileExists(path: string): Promise<boolean> {
     await stat(path);
     return true;
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+    if (isNodeError(error, "ENOENT")) {
       return false;
     }
     throw error;
@@ -27,7 +28,7 @@ export async function readTextIfExists(path: string): Promise<string | undefined
   try {
     return await readFile(path, "utf8");
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+    if (isNodeError(error, "ENOENT")) {
       return undefined;
     }
     throw error;

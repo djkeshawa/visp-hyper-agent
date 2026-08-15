@@ -44,6 +44,7 @@ import {
   renderSession
 } from "../../output/markdown-writer.js";
 import { resolveProjectPath } from "./shared.js";
+import { isRecord } from "../../core/guards.js";
 
 export function startCommand(): Command {
   return new Command("start")
@@ -777,10 +778,6 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function readPackFile(path: string): Promise<string | undefined> {

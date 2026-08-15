@@ -1,97 +1,50 @@
-import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+/**
+ * The typed vocabulary Hyper uses to drive Visp Kit.
+ *
+ * Each method names one Kit command, runs it through the shared execution
+ * layer, and validates the reply against its schema. A method returns null (or
+ * a diagnostic carrying a reason code) rather than throwing, because Kit being
+ * absent, slow, or older than expected is an ordinary state every caller has
+ * to render — not an exception.
+ *
+ * The execution layer lives in `./kit-command-exec.js` and the availability
+ * probes in `./kit-detection.js`; both are re-exported here so callers keep a
+ * single import surface.
+ */
+
+import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import type { ZodType, ZodTypeDef } from "zod";
-import { execFileResolved } from "../core/executable-resolver.js";
-import { resolveKitBinary, type KitBinaryResolution } from "./kit-binary-resolver.js";
-import {
-  classifyKitAvailability,
-  type KitAvailability,
-  type KitStatusProbeOutcome
-} from "./kit-availability.js";
+import { resolveKitBinary } from "./kit-binary-resolver.js";
+import type { KitBinaryResolution } from "./kit-binary-resolver.js";
 import { unsupportedIntegrationContractWarning } from "./kit-contract-compat.js";
+import { normalizeWorkflowAction } from "./workflow-action-adapter.js";
+import type { NormalizedWorkflowAction, WorkflowActionAdapterReasonCode } from "./workflow-action-adapter.js";
+import { parseSelectedWorkflowAction, selectWorkflowActionProtocol } from "./workflow-action-protocol.js";
+import type { WorkflowActionPreference, WorkflowActionProtocolReasonCode, WorkflowActionProtocolSelection, WorkflowActionWire } from "./workflow-action-protocol.js";
+import { kitAuthoritativeContextPackSchema, kitBudgetResultSchema, kitContextPackSchema, kitGateResultSchema, kitIntegrationContractSchema, kitNextSchema, kitPolicyValidationResultSchema, kitReconcileSummarySchema, kitReviewSummarySchema, kitStatusSchema, kitVerifySummarySchema } from "./kit-schemas.js";
+import type { KitBudgetResult, KitContextPack, KitGateResult, KitIntegrationContract, KitNext, KitPolicyValidationResult, KitReconcileSummary, KitReviewSummary, KitStatus, KitVerifySummary } from "./kit-schemas.js";
 import {
-  normalizeWorkflowAction,
-  type NormalizedWorkflowAction,
-  type WorkflowActionAdapterReasonCode
-} from "./workflow-action-adapter.js";
-import {
-  parseSelectedWorkflowAction,
-  selectWorkflowActionProtocol,
-  type WorkflowActionPreference,
-  type WorkflowActionProtocolReasonCode,
-  type WorkflowActionProtocolSelection,
-  type WorkflowActionWire
-} from "./workflow-action-protocol.js";
-import {
-  kitBudgetResultSchema,
-  kitAuthoritativeContextPackSchema,
-  kitContextPackSchema,
-  kitGateResultSchema,
-  kitIntegrationContractSchema,
-  kitNextSchema,
-  kitPolicyValidationResultSchema,
-  kitReconcileSummarySchema,
-  kitReviewSummarySchema,
-  kitStatusSchema,
-  kitVerifySummarySchema,
-  type KitBudgetResult,
-  type KitContextPack,
-  type KitGateResult,
-  type KitIntegrationContract,
-  type KitNext,
-  type KitPolicyValidationResult,
-  type KitReconcileSummary,
-  type KitReviewSummary,
-  type KitStatus,
-  type KitVerifySummary
-} from "./kit-schemas.js";
+  KIT_DEFAULT_TIMEOUT_MS,
+  KIT_LONG_COMMAND_TIMEOUT_MS,
+  hashText,
+  parseData,
+  parseJson,
+  parseUnknownJson,
+  resolveKitCommandTimeout,
+  runCommand,
+  tokenizeCommand,
+  withTask
+} from "./kit-command-exec.js";
+import type { OutputSchema, RunResult } from "./kit-command-exec.js";
 
 export type { KitAvailability } from "./kit-availability.js";
-
-// Schemas with `.transform()` have a different input than output type; allow any input.
-type OutputSchema<T> = ZodType<T, ZodTypeDef, unknown>;
-
-const DEFAULT_TIMEOUT_MS = 10_000;
-
-// Kit's verification runner allows 120s per validation command and may run several
-// inside one process, so the 10s default kills `visp verify` on any repository with
-// a real test suite — the checkpoint then reports INCONCLUSIVE forever. Long-running
-// Kit commands get their own budget; status, next, gate and the integration contract
-// stay at the default because `guard` runs on the PreToolUse hot path, where a hung
-// Kit should surface in seconds rather than stalling every edit.
-export const KIT_DEFAULT_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
-export const KIT_LONG_COMMAND_TIMEOUT_MS = 600_000;
-
-/**
- * Which budget a Kit command gets.
- *
- * `configuredMs` is whatever the caller passed to the bridge constructor. An
- * explicit value is a deliberate choice and wins for every command — tests rely on
- * this to force fast timeouts. Only when the bridge fell back to the default does a
- * long-running command get the larger budget.
- *
- * Returns `undefined` to mean "use the bridge's own timeout".
- */
-export function resolveKitCommandTimeout(input: {
-  configuredMs: number | undefined;
-  longRunning: boolean;
-}): number | undefined {
-  if (input.configuredMs !== undefined) return undefined;
-  return input.longRunning ? KIT_LONG_COMMAND_TIMEOUT_MS : undefined;
-}
-
-interface RunResult {
-  exitCode: number;
-  stdout: string;
-}
-
-type CommandFailureCode = "binary_not_found" | "command_timeout" | "command_failed";
-
-type CommandOutcome =
-  | { ok: true; value: RunResult }
-  | { ok: false; reasonCode: CommandFailureCode; reason: string };
+export {
+  KIT_DEFAULT_TIMEOUT_MS,
+  KIT_LONG_COMMAND_TIMEOUT_MS,
+  resolveKitCommandTimeout
+} from "./kit-command-exec.js";
+export { detectVisp, hasKitArtifacts } from "./kit-detection.js";
 
 export type KitBridgeDiagnosticReasonCode =
   | "integration_contract_unavailable"
@@ -119,67 +72,6 @@ export type WorkflowActionProtocolContext = Readonly<{
   contract: KitIntegrationContract;
   selection: WorkflowActionProtocolSelection;
 }>;
-
-/**
- * Probe whether the external `visp` CLI is installed and the target project has
- * an initialized kit. Never throws — any failure resolves to `available: false`.
- */
-export async function detectVisp(
-  projectPath: string,
-  options: { timeoutMs?: number; binary?: string } = {}
-): Promise<KitAvailability> {
-  let binary = options.binary;
-  if (binary === undefined) {
-    const resolution = await resolveKitBinary({ projectPath });
-    if (!resolution.ok) {
-      return classifyKitAvailability({
-        hasKitSignals: true,
-        probe: { kind: "failed", reasonCode: "binary_not_found", reason: resolution.reason }
-      });
-    }
-    binary = resolution.binary;
-  }
-  const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const signalProbe = await probeKitArtifacts(projectPath);
-  const hasKitSignals = signalProbe.state !== "absent";
-
-  // `visp status` reports initialized=true for ANY .visp/ directory — including
-  // the .visp/hyper/ tree visp-hyper's own init creates. Require a kit-owned
-  // artifact on disk before trusting the probe at all.
-  if (!hasKitSignals) {
-    return classifyKitAvailability({ hasKitSignals: false });
-  }
-
-  if (signalProbe.state === "unknown") {
-    return classifyKitAvailability({
-      hasKitSignals: true,
-      probe: {
-        kind: "failed",
-        reasonCode: "kit_signal_probe_failed",
-        reason: signalProbe.reason
-      }
-    });
-  }
-
-  const result = await runCommand(binary, ["status", "--json"], projectPath, timeout);
-  let probe: KitStatusProbeOutcome;
-  if (!result.ok) {
-    const reasonCode =
-      result.reasonCode === "binary_not_found"
-        ? "binary_not_found"
-        : result.reasonCode === "command_timeout"
-          ? "status_timeout"
-          : "status_command_failed";
-    probe = { kind: "failed", reasonCode, reason: result.reason };
-  } else {
-    // Never accept or even parse healthy-looking JSON from a failed command.
-    const status =
-      result.value.exitCode === 0 ? parseJson(result.value.stdout, kitStatusSchema) : null;
-    probe = { kind: "completed", exitCode: result.value.exitCode, status };
-  }
-
-  return classifyKitAvailability({ hasKitSignals, probe });
-}
 
 /**
  * What a mechanical Kit command tells us, beyond whether it worked.
@@ -216,53 +108,6 @@ export type MechanicalCommandResult = {
   readonly featurePath?: string;
 };
 
-/**
- * Split a command string into argv, honouring double quotes.
- *
- * This is deliberately NOT a shell parser: it understands quoting and nothing
- * else — no expansion, no substitution, no operators. Anything resembling shell
- * syntax is refused downstream rather than interpreted here.
- */
-function tokenizeCommand(command: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  let quoted = false;
-  let started = false;
-
-  let escaped = false;
-
-  for (const character of command.trim()) {
-    // A backslash-escaped quote is literal content, not a delimiter. Without
-    // this, a goal round-tripped through JSON.stringify loses its own quotes.
-    if (escaped) {
-      current += character;
-      started = true;
-      escaped = false;
-      continue;
-    }
-    if (character === "\\") {
-      escaped = true;
-      started = true;
-      continue;
-    }
-    if (character === '"') {
-      quoted = !quoted;
-      started = true;
-      continue;
-    }
-    if (!quoted && /\s/u.test(character)) {
-      if (started || current.length > 0) tokens.push(current);
-      current = "";
-      started = false;
-      continue;
-    }
-    current += character;
-    started = true;
-  }
-  if (started || current.length > 0) tokens.push(current);
-  return tokens;
-}
-
 export class KitCommandBridge {
   readonly warnings: string[] = [];
 
@@ -275,7 +120,7 @@ export class KitCommandBridge {
   constructor(input: { projectPath: string; binary?: string; timeoutMs?: number }) {
     this.projectPath = input.projectPath;
     this.explicitBinary = input.binary;
-    this.timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.timeoutMs = input.timeoutMs ?? KIT_DEFAULT_TIMEOUT_MS;
     this.configuredTimeoutMs = input.timeoutMs;
   }
 
@@ -881,138 +726,6 @@ export class KitCommandBridge {
   }
 }
 
-/**
- * True when the target project carries a kit-owned artifact on disk. `visp
- * status` reports initialized=true for ANY .visp/ directory (including the
- * .visp/hyper tree visp-hyper creates), so this is the real-kit signal.
- */
-export async function hasKitArtifacts(projectPath: string): Promise<boolean> {
-  return (await probeKitArtifacts(projectPath)).state !== "absent";
-}
-
-type KitArtifactProbe =
-  | { state: "present" }
-  | { state: "absent" }
-  | { state: "unknown"; reason: string };
-
-/**
- * Probe durable Kit-owned sentinels without treating Hyper's own `.visp/hyper`,
- * shared `.visp/memory`, or shared `.visp/prompts` trees as Kit authority.
- * Residual feature/config/state artifacts still mean the project is configured;
- * deleting one policy file must not silently enable local fallback.
- */
-async function probeKitArtifacts(projectPath: string): Promise<KitArtifactProbe> {
-  const artifacts = [
-    "policy.json",
-    "project.json",
-    "config.json",
-    "status.json",
-    "overrides.json",
-    "workflow.json",
-    "budget.json",
-    "features",
-    "agent",
-    "cache",
-    "reports",
-    "runs",
-    "presets",
-    "state",
-    "hooks"
-  ];
-  for (const artifact of artifacts) {
-    try {
-      await stat(join(projectPath, ".visp", artifact));
-      return { state: "present" };
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ENOTDIR") {
-        continue;
-      }
-      return {
-        state: "unknown",
-        reason: `Could not determine whether Kit signal .visp/${artifact} exists: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      };
-    }
-  }
-  return { state: "absent" };
-}
-
-function withTask(args: string[], taskId?: string): string[] {
-  // The real CLI takes the task as a flag; a positional id is parsed as a path.
-  return taskId ? [...args, "--task", taskId] : args;
-}
-
-/**
- * Centralizes ENOENT (binary missing) and timeout handling. Returns null and
- * records a warning for spawn-level failures; returns the captured stdout and
- * exit code otherwise — even when the exit code is non-zero.
- */
-async function runCommand(
-  binary: string,
-  args: string[],
-  cwd: string,
-  timeout: number
-): Promise<CommandOutcome> {
-  try {
-    const { stdout } = await execFileResolved(binary, args, { cwd, timeout });
-    return { ok: true, value: { exitCode: 0, stdout } };
-  } catch (error) {
-    const failure = error as NodeJS.ErrnoException & { code?: string | number; stdout?: string; killed?: boolean; signal?: string };
-
-    if (failure.code === "ENOENT" || failure.code === "EINVAL") {
-      return {
-        ok: false,
-        reasonCode: "binary_not_found",
-        reason: `visp binary "${binary}" was not found.`
-      };
-    }
-    if (failure.killed || failure.signal === "SIGTERM") {
-      return {
-        ok: false,
-        reasonCode: "command_timeout",
-        reason: `visp ${args.join(" ")} timed out after ${timeout}ms.`
-      };
-    }
-
-    // Non-zero exit: surface stdout so callers can still parse a JSON body.
-    if (typeof failure.code === "number") {
-      return {
-        ok: true,
-        value: { exitCode: failure.code, stdout: failure.stdout ?? "" }
-      };
-    }
-
-    return {
-      ok: false,
-      reasonCode: "command_failed",
-      reason: `visp ${args.join(" ")} failed: ${failure.message ?? String(error)}`
-    };
-  }
-}
-
-function parseUnknownJson(stdout: string): unknown {
-  try {
-    return JSON.parse(stdout);
-  } catch {
-    return undefined;
-  }
-}
-
-function parseJson<T>(stdout: string, schema: OutputSchema<T>): T | null {
-  const data = parseUnknownJson(stdout);
-  if (data === undefined) {
-    return null;
-  }
-  return parseData(data, schema);
-}
-
-function parseData<T>(data: unknown, schema: OutputSchema<T>): T | null {
-  const result = schema.safeParse(data);
-  return result.success ? result.data : null;
-}
-
 function contractActionContradiction(
   contract: KitIntegrationContract,
   action: WorkflowActionWire
@@ -1042,8 +755,4 @@ function diagnosticFailure(
   reason: string
 ): KitBridgeDiagnostic<never> {
   return { ok: false, reasonCode, reason };
-}
-
-function hashText(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }

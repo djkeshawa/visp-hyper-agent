@@ -1,4 +1,5 @@
 import type { NormalizedWorkflowAction } from "./workflow-action-adapter.js";
+import { isRecord } from "../core/guards.js";
 
 export const HYPER_ACTION_FRAME_NAME = "VISP_HYPER_ACTION_V1" as const;
 export const HYPER_ACTION_FRAME_BEGIN = `BEGIN_${HYPER_ACTION_FRAME_NAME}`;
@@ -78,10 +79,6 @@ export function classifyHyperActionEnvelope(
     kind: "valid",
     verdict: action.verdict as NormalizedWorkflowAction["verdict"]
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hasOwn(value: Record<string, unknown>, key: string): boolean {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isRecord } from "../core/guards.js";
 
 export const WORKFLOW_ACTION_PROTOCOL_PREFERENCE = Object.freeze([
   // 3.4 identity hashes a canonical-1.3 projection that excludes command
@@ -860,10 +861,6 @@ function failure(
 
 function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {

@@ -1,4 +1,5 @@
 import type { CockpitKitArtifactReader } from "./artifact-state.js";
+import { isRecord } from "../core/guards.js";
 
 export const COCKPIT_KIT_ARTIFACTS_MODULE_ID = "visp-kit/artifacts" as const;
 
@@ -115,8 +116,4 @@ function incompatibleModule(): CockpitKitArtifactsError {
     "incompatible_module",
     "Installed visp-kit does not expose the Cockpit artifact-reader contract."
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object";
 }

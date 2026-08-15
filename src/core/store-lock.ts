@@ -37,6 +37,12 @@ async function acquireLock(lockPath: string): Promise<boolean> {
   await mkdir(dirname(lockPath), { recursive: true }).catch(() => {
     // Parent creation failures surface on the mkdir below.
   });
+  // Clearing an abandoned lock earns one immediate retry, because the next
+  // mkdir normally wins it. Every later pass waits and re-reads the deadline:
+  // `removeIfStale` also reports true when its `rm` quietly failed (a foreign
+  // owner, a read-only parent), and retrying that on a bare `continue` spun
+  // the CPU forever with the timeout never consulted.
+  let retriedWithoutWaiting = false;
   for (;;) {
     try {
       await mkdir(lockPath);
@@ -49,13 +55,16 @@ async function acquireLock(lockPath: string): Promise<boolean> {
         return false;
       }
     }
-    if (await removeIfStale(lockPath)) {
-      continue;
-    }
+    const clearedStaleLock = await removeIfStale(lockPath);
     if (Date.now() >= deadline) {
       console.warn("warning: store lock held too long by another process; proceeding without it");
       return false;
     }
+    if (clearedStaleLock && !retriedWithoutWaiting) {
+      retriedWithoutWaiting = true;
+      continue;
+    }
+    retriedWithoutWaiting = false;
     await sleep(RETRY_MS);
   }
 }

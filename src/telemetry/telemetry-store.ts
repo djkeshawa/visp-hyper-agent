@@ -10,6 +10,7 @@ import {
   taskClassSchema,
   taskClassValues
 } from "../kit/workflow-action-protocol.js";
+import { isRecord } from "../core/guards.js";
 
 /**
  * What routing predicted for this attempt's cohort, captured from the evidence
@@ -82,10 +83,6 @@ export const telemetryUsageSchema = z.object({
 
 const riskLevels = new Set<string>(riskLevelValues);
 const taskClasses = new Set<string>(taskClassValues);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function migrateTelemetryFile(value: unknown): unknown {
   if (!isRecord(value) || !Array.isArray(value.attempts)) {

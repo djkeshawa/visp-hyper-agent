@@ -9,6 +9,7 @@ import {
   taskClassSchema,
   taskClassValues
 } from "../kit/workflow-action-protocol.js";
+import { isRecord } from "../core/guards.js";
 
 export const routingQuarantineSchema = z.object({
   taskClass: taskClassSchema.nullable(),
@@ -27,10 +28,6 @@ export const routingDecisionSchema = z.object({
 
 const taskClasses = new Set<string>(taskClassValues);
 const riskLevels = new Set<string>(riskLevelValues);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function migratedTaskClass(value: unknown): string | null | undefined {
   if (value === null) {

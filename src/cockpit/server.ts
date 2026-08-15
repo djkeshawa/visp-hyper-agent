@@ -48,6 +48,7 @@ import {
   COCKPIT_STYLE_PATH
 } from "./ui.js";
 import { startCockpitWatcher } from "./watcher.js";
+import { isNodeError, isRecord } from "../core/guards.js";
 
 const RUN_INDEX_PATH = cockpitArtifactPath(".visp/runs/index.json");
 const DEFAULT_SSE_KEEP_ALIVE_MS = 15_000;
@@ -467,10 +468,6 @@ function isRunIndexEntry(value: unknown): value is CockpitRunIndexEntryLike {
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function kitReadOptions(staleAfter: Date | undefined): CockpitKitReadOptions | undefined {
   return staleAfter === undefined ? undefined : Object.freeze({ staleAfter });
 }
@@ -513,10 +510,6 @@ async function artifactRootIsAbsent(projectPath: string): Promise<boolean> {
   } catch (error) {
     return isNodeError(error, "ENOENT");
   }
-}
-
-function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === code;
 }
 
 function validatePort(port: number): number {

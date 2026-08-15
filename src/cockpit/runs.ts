@@ -24,6 +24,7 @@ import {
   assertSafeCockpitRunId,
   resolveContainedExistingPath
 } from "./path-security.js";
+import { isNodeError } from "../core/guards.js";
 
 export const COCKPIT_RUNS_DEFAULT_LIMIT = 64 as const;
 export const COCKPIT_RUNS_MAX_LIMIT = 100 as const;
@@ -541,8 +542,4 @@ function assertOnlyQueryKeys(searchParams: URLSearchParams, allowed: readonly st
 
 function badRequest(message: string, cause?: unknown): CockpitRunsError {
   return new CockpitRunsError(400, "bad_request", message, undefined, cause);
-}
-
-function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === code;
 }
