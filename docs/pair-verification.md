@@ -175,10 +175,21 @@ red.
   workflow in this tree, and **no run of the current file has been observed**.
   A workflow in a tree is a plan, not a result.
 - **No pair-check record produced on a CI surface exists as of this writing.**
-  Every verification on record was produced on a developer machine. The served
-  pair — Hyper `0.9.0` at `ea18ece` against the `visp-kit@0.5.0` tarball above —
-  was verified there, 3/3 contract tests executed, on Linux x64 and Node
-  24.15.0.
+  Every verification on record was produced on a developer machine. What
+  replaces CI evidence is the pair check itself, which anyone with a clone can
+  run — and the two records below were produced that way, both at Hyper `0.9.0`
+  on commit `7c0d300` with a dirty tree, Linux x64, Node 24.15.0:
+
+  | Command | Kit exercised | Result |
+  | --- | --- | --- |
+  | `pnpm test:pair:served` | `visp-kit@0.5.0` from npm, `sha512-4ffAkBFWifKEd1Zh…` | verified, 3/3 executed, 0 skipped |
+  | `pnpm test:pair` | `visp-kit 0.6.0` at `c219cca` from a sibling checkout | verified, 3/3 executed, 0 skipped |
+
+  The first of those needs nothing but a clone and a network, and is the one a
+  reader should run to reproduce this claim. The second needs the private Kit
+  source and is therefore not reproducible outside the owner's machine — it is
+  listed because it is the pair that is actually developed against, not as
+  evidence anyone else can check.
 - **The record, not the tick, is the proof.** A `pair` run that verified the
   pair uploads `pair-check-record-node<version>` with `"verdict": "verified"`
   and `"surface": "ci"`. Absence of that artifact means the pair was not

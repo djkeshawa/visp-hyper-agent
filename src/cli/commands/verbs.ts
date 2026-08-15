@@ -14,6 +14,7 @@
 
 import { Command } from "commander";
 
+import { recordVerbActivity } from "../../core/session-manager.js";
 import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
 import { kitUnavailableGuidance } from "../../kit/kit-guidance.js";
 import { resolveProjectPath } from "./shared.js";
@@ -208,7 +209,19 @@ async function driveByNext(input: {
   };
 }
 
-function reportStop(stop: CompositeStop, verb: string): void {
+/**
+ * Print the stop AND record it in `.visp/hyper/state.json`.
+ *
+ * The recording is the fix for the eighth silent failure. These composites are
+ * the whole Kit-backed working surface — `new`, `plan`, `handoff` — and not
+ * one of them touched Hyper's own store, so a project driven entirely through
+ * them ended with a state file byte-identical to a project where Hyper had
+ * never been installed. The verb ran; the file has to say so.
+ *
+ * The write happens after the answer is printed and cannot change the exit
+ * code: bookkeeping never costs the user the result they asked for.
+ */
+async function reportStop(projectPath: string, stop: CompositeStop, verb: string): Promise<void> {
   const prefix = {
     "goal-reached": "done",
     "human-needed": "waiting on you",
@@ -220,6 +233,7 @@ function reportStop(stop: CompositeStop, verb: string): void {
   if (stop.kind === "blocked" || stop.kind === "kit-unavailable") {
     process.exitCode = 1;
   }
+  await recordVerbActivity(projectPath, { verb, outcome: stop.kind, detail: stop.detail });
 }
 
 /**
@@ -297,6 +311,11 @@ export function newVerbCommand(): Command {
             ].join("\n")
           );
           process.exitCode = 1;
+          await recordVerbActivity(projectPath, {
+            verb: "new",
+            outcome: "refused",
+            detail: `${pending.feature} still has unfinished tasks`
+          });
           return;
         }
       }
@@ -305,10 +324,11 @@ export function newVerbCommand(): Command {
       // letting the bridge re-split on whitespace shredded every multi-word goal.
       const created = await bridge.runMechanicalArgv("feature", [goal]);
       if (created === null || !created.success) {
-        console.error(
-          bridge.warnings.at(-1) ?? "Kit could not register the feature. Run visp-kit feature directly for detail."
-        );
+        const reason =
+          bridge.warnings.at(-1) ?? "Kit could not register the feature. Run visp-kit feature directly for detail.";
+        console.error(reason);
         process.exitCode = 1;
+        await recordVerbActivity(projectPath, { verb: "new", outcome: "blocked", detail: reason });
         return;
       }
       console.log(`Feature registered: ${goal}`);
@@ -320,7 +340,7 @@ export function newVerbCommand(): Command {
             : null,
         log: (line) => console.log(line)
       });
-      reportStop(stop, "new");
+      await reportStop(projectPath, stop, "new");
     });
 }
 
@@ -344,7 +364,7 @@ export function planVerbCommand(): Command {
             : null,
         log: (line) => console.log(line)
       });
-      reportStop(stop, "plan");
+      await reportStop(projectPath, stop, "plan");
     });
 }
 
@@ -393,7 +413,7 @@ export function handoffVerbCommand(): Command {
         },
         log: (line) => console.log(line)
       });
-      reportStop(stop, "handoff");
+      await reportStop(projectPath, stop, "handoff");
     });
 }
 
@@ -463,20 +483,34 @@ export function checkVerbCommand(): Command {
       const bridge = new KitCommandBridge({ projectPath });
       const verify = await bridge.checkVerify(options.task);
       if (verify === null) {
-        console.error(bridge.warnings.at(-1) ?? "Verification did not produce a readable summary.");
+        const reason = bridge.warnings.at(-1) ?? "Verification did not produce a readable summary.";
+        console.error(reason);
         process.exitCode = 1;
+        await recordVerbActivity(projectPath, { verb: "check", outcome: "blocked", detail: reason });
         return;
       }
       reportCheck("verify", verify);
       const review = await bridge.checkReview(options.task);
       if (review === null) {
-        console.error(bridge.warnings.at(-1) ?? "Review did not produce a readable summary.");
+        const reason = bridge.warnings.at(-1) ?? "Review did not produce a readable summary.";
+        console.error(reason);
         process.exitCode = 1;
+        await recordVerbActivity(projectPath, { verb: "check", outcome: "blocked", detail: reason });
         return;
       }
       reportCheck("review", review);
-      if (!verify.success || !review.success) process.exitCode = 1;
+      const passed = verify.success && review.success;
+      if (!passed) process.exitCode = 1;
       console.log("No workflow state was changed. Use visp handoff to record progress.");
+      // `check` changes no WORKFLOW state — that promise is Kit's and stands.
+      // Recording that Hyper ran it is a different thing: the checks are the
+      // most-used verb in a working session, and leaving them out of the
+      // activity trail would put the biggest gap back where it was.
+      await recordVerbActivity(projectPath, {
+        verb: "check",
+        outcome: passed ? "goal-reached" : "human-needed",
+        detail: passed ? "verify and review passed" : "verify or review reported findings"
+      });
     });
 }
 

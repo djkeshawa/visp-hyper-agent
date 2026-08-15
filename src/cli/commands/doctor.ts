@@ -6,7 +6,12 @@ import { checkContextFreshness } from "../../context/context-freshness.js";
 import { execFileResolved, resolveExecutable } from "../../core/executable-resolver.js";
 import { packageVersion } from "../../core/package-version.js";
 import { fileExists, readTextIfExists, vispPath } from "../../core/fs-utils.js";
-import { hyperConfigSchema } from "../../core/session-manager.js";
+import {
+  hyperConfigSchema,
+  readState,
+  renderDrivenWithoutSession,
+  summarizeCoordination
+} from "../../core/session-manager.js";
 import type { HyperConfig } from "../../core/types.js";
 import { resolveGitHooksDirectory } from "../../governance/git-hooks.js";
 import {
@@ -119,24 +124,64 @@ function checkPackageVersion(): DoctorCheck {
   };
 }
 
+/**
+ * Report what the state store SAYS, not that it exists.
+ *
+ * This check used to pass on the presence of two files. In the head-to-head
+ * evaluation that produced the eighth silent failure, `.visp/hyper/state.json`
+ * read exactly `{"activeSessionId": null, "sessions": {}}` after an agent had
+ * run `visp setup`, `visp new`, and a full working session — and this check
+ * printed `[PASS] Found .visp/hyper/config.json and .visp/hyper/state.json`
+ * with an `Overall: PASS` above it. A green tick for a store holding nothing
+ * is the same defect this project has now corrected eight times: the artifact
+ * that exists to answer "did it do anything" answered by existing.
+ *
+ * The three outcomes are now distinguishable from the check alone:
+ * sessions recorded (pass), nothing recorded and nothing attempted (pass, and
+ * it says which), and verbs run with no session to show for them (warn, in
+ * full sentences).
+ */
 async function checkHyperInitialized(projectPath: string): Promise<DoctorCheck> {
   const configPath = vispPath(projectPath, "hyper", "config.json");
   const statePath = vispPath(projectPath, "hyper", "state.json");
   const [configExists, stateExists] = await Promise.all([fileExists(configPath), fileExists(statePath)]);
-  if (configExists && stateExists) {
+  if (!configExists || !stateExists) {
+    return {
+      id: "hyper-state",
+      label: "Visp Hyper state",
+      status: "fail",
+      detail: "Visp Hyper has not been initialized in this project.",
+      recovery: "Run `visp setup`."
+    };
+  }
+
+  const summary = summarizeCoordination(await readState(projectPath));
+  if (summary.drivenWithoutSession) {
+    return {
+      id: "hyper-state",
+      label: "Visp Hyper state",
+      status: "warn",
+      detail: renderDrivenWithoutSession(summary),
+      recovery: "Run `visp work` to adopt Kit's active task, or accept that this work is uncoordinated."
+    };
+  }
+  if (summary.sessionCount === 0) {
     return {
       id: "hyper-state",
       label: "Visp Hyper state",
       status: "pass",
-      detail: "Found .visp/hyper/config.json and .visp/hyper/state.json."
+      detail:
+        "Initialized, and empty for the honest reason: no work-driving verb has run in this project yet, " +
+        "so there is no session and no activity to show. Start with `visp new \"<what you want built>\"`."
     };
   }
   return {
     id: "hyper-state",
     label: "Visp Hyper state",
-    status: "fail",
-    detail: "Visp Hyper has not been initialized in this project.",
-    recovery: "Run `visp setup`."
+    status: "pass",
+    detail:
+      `${summary.sessionCount} session${summary.sessionCount === 1 ? "" : "s"} recorded; ` +
+      `${summary.activityCount} work-driving verb${summary.activityCount === 1 ? "" : "s"} in the activity trail.`
   };
 }
 

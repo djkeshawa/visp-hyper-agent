@@ -9,7 +9,8 @@ Runtime files:
   hyper/
     config.json          # defaultTool, tokenBudget, memoryMode, memoryEndpoint,
                          # skillMode, blockedPaths, intelStore, intelRepository
-    state.json           # sessions + pipeline state (task DAG progress)
+    state.json           # sessions + pipeline state (task DAG progress),
+                         # plus `activity`: the last 20 work-driving verbs
     telemetry.json       # checkpoint attempts + token usage
     routing.json         # quarantines + routing decisions
     failure-patterns.json # failed checkpoint gotchas for future sessions
@@ -36,6 +37,60 @@ Source modules:
 - `src/install/` — tool asset installer over the versioned `templates/` directory.
 - `src/quality/` — git-diff review warnings, checkpoint snapshots, and the allowlisted validation-command runner.
 - `src/handoff/`, `src/output/` — protocol and markdown rendering.
+## What `state.json` says when nothing happened
+
+Only `visp work` (and the legacy `visp start`) create a session. `new`, `plan`,
+`check` and `handoff` drive Kit and create none — correctly, because a session
+is bound to an adopted task with a context pack, and those verbs are what get
+you to one.
+
+That left a real gap. A head-to-head evaluation ran `visp setup`, `visp new`,
+and then a full implementation task, and afterwards this file read, in full:
+
+```json
+{ "activeSessionId": null, "sessions": {} }
+```
+
+Byte-identical to a project where Hyper had never been installed. `visp doctor`
+called it `[PASS] Found .visp/hyper/config.json and .visp/hyper/state.json` and
+`visp status` did not mention Hyper at all, so the artifact that exists to
+answer "did the coordinator do anything here" answered by existing.
+
+Every work-driving verb now appends to `activity` — the last 20, oldest first:
+
+```json
+{
+  "activeSessionId": null,
+  "sessions": {},
+  "activity": [
+    {
+      "at": "2026-08-15T13:49:19.628Z",
+      "verb": "new",
+      "outcome": "human-needed",
+      "detail": "visp-kit clarify needs more detail before it can pass:"
+    }
+  ]
+}
+```
+
+`outcome` is one of `goal-reached`, `human-needed`, `blocked`, `stalled`,
+`kit-unavailable`, `refused`. `detail` is one clipped line of the stop's own
+sentence — evidence, never a command to re-run.
+
+Activity is not a session and never becomes one. What it buys is that the three
+states which used to look identical now read differently, and both `doctor` and
+`status` say which one you are in:
+
+| On disk | What it means |
+| --- | --- |
+| no `.visp/hyper/` | Hyper was never set up here. `doctor` fails the `hyper-state` check. |
+| sessions empty, no activity | Set up, never asked to do anything. `doctor` passes and says so. |
+| sessions empty, activity present | Verbs ran and produced no session. `doctor` **warns** and `status` prints the sentence next to Kit's action. |
+| sessions present | Normal. `doctor` reports the counts. |
+
+Recording is best-effort and runs after the verb has printed its answer: a
+store that cannot be written warns and never changes the verb's exit code.
+
 ## Repository intelligence (the scout lane)
 
 The `scout` subagent `visp init --tool claude-code` installs is navigation-only: it answers from the Visp Intel graph through five `mcp__visp-intel__*` tools and has no file, shell or edit tool at all. Those tools need a provider, and the host only has one if this project's `.mcp.json` registers the `visp-intel` MCP server.

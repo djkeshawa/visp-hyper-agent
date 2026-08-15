@@ -7,7 +7,14 @@ import { ensureDir, readTextIfExists, vispPath, writeText } from "./fs-utils.js"
 import { parseJsonStore } from "./json-store.js";
 import { withStoreLock } from "./store-lock.js";
 import { kitTaskSchema } from "../kit/kit-schemas.js";
-import type { HyperConfig, HyperState, SessionRecord, ToolProfile } from "./types.js";
+import type {
+  HyperConfig,
+  HyperState,
+  SessionRecord,
+  ToolProfile,
+  VerbActivityRecord,
+  VerbOutcome
+} from "./types.js";
 
 export const hyperConfigSchema = z.object({
   defaultTool: z.enum(["generic", "codex", "claude-code", "copilot", "opencode"]),
@@ -59,6 +66,13 @@ const pipelineStateSchema = z.object({
   })).optional()
 });
 
+const verbActivitySchema = z.object({
+  at: z.string(),
+  verb: z.string(),
+  outcome: z.enum(["goal-reached", "human-needed", "blocked", "stalled", "kit-unavailable", "refused"]),
+  detail: z.string().optional()
+});
+
 const stateSchema = z.object({
   activeSessionId: z.string().nullable(),
   sessions: z.record(
@@ -74,7 +88,13 @@ const stateSchema = z.object({
       pipeline: pipelineStateSchema.optional()
     })
   ),
-  activeSessionByBranch: z.record(z.string()).optional()
+  activeSessionByBranch: z.record(z.string()).optional(),
+  // `.catch([])` deliberately, unlike every other field here. Activity is an
+  // audit trail, not domain state: a row this build does not understand (a
+  // newer outcome name, a hand-edit) must cost the reader that row, never the
+  // sessions in the same file. Everything else stays strict, because a
+  // malformed session IS the thing the store exists to hold.
+  activity: z.array(verbActivitySchema).catch([]).optional()
 });
 
 export async function initializeProject(projectPath: string, force = false): Promise<void> {
@@ -139,7 +159,23 @@ export async function readConfig(projectPath: string): Promise<HyperConfig> {
  */
 export async function readState(projectPath: string): Promise<HyperState> {
   await initializeProject(projectPath);
+  return (await readStateIfInitialized(projectPath)) ?? emptyState();
+}
+
+/**
+ * Read the state store WITHOUT creating it. Returns null when Hyper has never
+ * been initialized here.
+ *
+ * `readState` initializes as a side effect, which is right for the verbs that
+ * are about to write. It is wrong for a reporting surface: `visp status`
+ * calling `readState` would create `.visp/hyper/` in a project that has never
+ * run Hyper, and the next `visp doctor` would then read that freshly minted
+ * empty store as "initialized" — inventing exactly the ambiguity this work
+ * exists to remove.
+ */
+export async function readStateIfInitialized(projectPath: string): Promise<HyperState | null> {
   const raw = await readTextIfExists(vispPath(projectPath, "hyper", "state.json"));
+  if (raw === undefined) return null;
   const { value, warnings } = parseJsonStore(
     raw,
     stateSchema,
@@ -180,6 +216,62 @@ export async function createSession(input: {
   });
 }
 
+/**
+ * How many verb records the store keeps. Enough to show the shape of a working
+ * session; small enough that state.json stays a file a human reads.
+ */
+export const MAX_ACTIVITY_RECORDS = 20;
+
+/** Detail is evidence, not prose: one line, clipped, never re-executed. */
+const MAX_ACTIVITY_DETAIL = 200;
+
+function clipDetail(detail: string | undefined): string | undefined {
+  if (detail === undefined) return undefined;
+  const line = detail.split("\n")[0]?.trim() ?? "";
+  if (line.length === 0) return undefined;
+  return line.length > MAX_ACTIVITY_DETAIL ? `${line.slice(0, MAX_ACTIVITY_DETAIL - 1)}…` : line;
+}
+
+/**
+ * Record that a work-driving verb ran here, and how it ended.
+ *
+ * The eighth silent failure was an empty `state.json` after `visp setup`,
+ * `visp new` and a full working session: only `work`/`start` create sessions,
+ * so a run driven entirely through the Kit-backed verbs left the coordinator's
+ * store byte-identical to a project Hyper had never touched. That file could
+ * not answer the one question an evaluation asks of it.
+ *
+ * DEGRADE, NEVER CRASH: this is bookkeeping on the way out of a verb that has
+ * already done its work and printed its answer. A failure to write the record
+ * warns and returns; it must never change the verb's exit code or swallow the
+ * result the user is waiting on.
+ */
+export async function recordVerbActivity(
+  projectPath: string,
+  entry: { verb: string; outcome: VerbOutcome; detail?: string }
+): Promise<void> {
+  try {
+    await withStoreLock(projectPath, async () => {
+      const state = await readState(projectPath);
+      const detail = clipDetail(entry.detail);
+      const record: VerbActivityRecord = {
+        at: new Date().toISOString(),
+        verb: entry.verb,
+        outcome: entry.outcome,
+        ...(detail === undefined ? {} : { detail })
+      };
+      state.activity = [...(state.activity ?? []), record].slice(-MAX_ACTIVITY_RECORDS);
+      await writeState(projectPath, state);
+    });
+  } catch (error) {
+    console.warn(
+      `warning: could not record ${entry.verb} in .visp/hyper/state.json (${
+        error instanceof Error ? error.message : String(error)
+      }); the run itself is unaffected, but this project's Hyper activity trail is now incomplete.`
+    );
+  }
+}
+
 export async function getActiveSession(projectPath: string): Promise<SessionRecord | null> {
   const [state, branchKey] = await Promise.all([readState(projectPath), currentBranchKey(projectPath)]);
   const sessionId = resolveActiveSessionId(state, branchKey);
@@ -200,6 +292,51 @@ export async function updateActiveSession(
     await writeState(projectPath, state);
     return next;
   });
+}
+
+/** What the store says about Hyper's own involvement in this project. */
+export type CoordinationSummary = {
+  sessionCount: number;
+  activityCount: number;
+  lastActivity?: VerbActivityRecord;
+  /**
+   * Work-driving verbs ran here and not one session was ever recorded — the
+   * exact shape of the eighth silent failure. True is the loud case.
+   */
+  drivenWithoutSession: boolean;
+};
+
+/** Pure, so both `doctor` and `status` read the store the same way. */
+export function summarizeCoordination(state: HyperState): CoordinationSummary {
+  const activity = state.activity ?? [];
+  const sessionCount = Object.keys(state.sessions).length;
+  return {
+    sessionCount,
+    activityCount: activity.length,
+    ...(activity.length > 0 ? { lastActivity: activity[activity.length - 1]! } : {}),
+    drivenWithoutSession: sessionCount === 0 && activity.length > 0
+  };
+}
+
+/**
+ * The one sentence both surfaces say when Hyper drove work here and recorded
+ * no session. Shared so `doctor` and `status` cannot drift into two different
+ * accounts of the same file.
+ */
+export function renderDrivenWithoutSession(summary: CoordinationSummary): string {
+  const last = summary.lastActivity;
+  const lastPart =
+    last === undefined
+      ? ""
+      : ` The last was \`visp ${last.verb}\` at ${last.at} (${last.outcome}${
+          last.detail === undefined ? "" : `: ${last.detail}`
+        }).`;
+  return (
+    `Hyper ran ${summary.activityCount} work-driving verb${summary.activityCount === 1 ? "" : "s"} in this ` +
+    `project and recorded NO session.${lastPart} Nothing has gone through \`visp work\`, so Hyper holds no ` +
+    "context manifest, no checkpoint evidence and no memory for this work — whatever was built here was not " +
+    "coordinated by Hyper."
+  );
 }
 
 export function currentDir(projectPath: string): string {

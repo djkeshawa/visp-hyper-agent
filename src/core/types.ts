@@ -31,6 +31,42 @@ export type HyperConfig = {
   intelRepository?: string;
 };
 
+/**
+ * How a work-driving verb ended. These are the `CompositeStop` kinds plus
+ * `refused`, which covers the pre-flight refusals that stop a verb before it
+ * ever reaches Kit (no Kit, unfinished tasks on the active feature).
+ */
+export type VerbOutcome =
+  | "goal-reached"
+  | "human-needed"
+  | "blocked"
+  | "stalled"
+  | "kit-unavailable"
+  | "refused";
+
+/**
+ * One work-driving verb, and how it ended.
+ *
+ * This exists because of the eighth silent failure. A head-to-head evaluation
+ * ran `visp setup`, `visp new`, and then worked; afterwards
+ * `.visp/hyper/state.json` read exactly `{"activeSessionId": null,
+ * "sessions": {}}`, and there was no way to tell from any artifact whether
+ * Hyper had coordinated the work or had never been asked to. Only `visp work`
+ * and `visp start` create a session — `new`, `plan`, `check` and `handoff`
+ * drive Kit and wrote no trace at all, so the coordinator's own store could
+ * not distinguish "never invoked" from "invoked and accomplished nothing".
+ *
+ * Activity is not a session and never becomes one. It is the record that
+ * Hyper was here.
+ */
+export type VerbActivityRecord = {
+  at: string;
+  verb: string;
+  outcome: VerbOutcome;
+  /** The stop's own sentence, first line only, clipped. Never authority. */
+  detail?: string;
+};
+
 export type HyperState = {
   activeSessionId: string | null;
   sessions: Record<string, SessionRecord>;
@@ -40,6 +76,12 @@ export type HyperState = {
    * without it keep parsing, and resolution falls back to activeSessionId.
    */
   activeSessionByBranch?: Record<string, string>;
+  /**
+   * The most recent work-driving verbs, oldest first. Optional: state files
+   * written before this field keep parsing, and an absent list means the same
+   * thing an empty one does — no work-driving verb has been recorded.
+   */
+  activity?: VerbActivityRecord[];
 };
 
 export type PipelineStepRecord = {

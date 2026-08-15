@@ -2,7 +2,12 @@ import { Command } from "commander";
 import { checkContextFreshness } from "../../context/context-freshness.js";
 import type { ContextFreshness } from "../../context/context-freshness.js";
 import { readTextIfExists, vispPath } from "../../core/fs-utils.js";
-import { getActiveSession } from "../../core/session-manager.js";
+import {
+  getActiveSession,
+  readStateIfInitialized,
+  renderDrivenWithoutSession,
+  summarizeCoordination
+} from "../../core/session-manager.js";
 import { detectVisp, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import { renderKitAuthorityStop } from "../../kit/kit-availability.js";
 import type { NormalizedWorkflowAction } from "../../kit/workflow-action-adapter.js";
@@ -138,6 +143,22 @@ export function statusCommand(): Command {
             ? renderHyperActionFrame(toHyperActionEnvelope(diagnostic.value))
             : renderActionSummary(diagnostic.value)
         );
+        // In a Kit-backed project this command printed Kit's action and NOTHING
+        // about Hyper's own store — so the state file could sit empty through a
+        // whole evaluation and the everyday surface never said a word. Kit's
+        // answer stays first and unchanged; this is Hyper reporting on itself,
+        // and only when it has something uncomfortable to report. The `--json`
+        // frame is a pinned contract and is left alone.
+        if (!options.json) {
+          const hyperState = await readStateIfInitialized(projectPath);
+          const coordination = hyperState === null ? null : summarizeCoordination(hyperState);
+          if (coordination?.drivenWithoutSession) {
+            // The sentence names itself, so no label prefix — "Hyper: Hyper
+            // ran…" reads like a stutter and this is the line that has to be
+            // read.
+            console.log(`\n${renderDrivenWithoutSession(coordination)}`);
+          }
+        }
         if (diagnostic.value.verdict !== "ready") {
           process.exitCode = 1;
         }
@@ -148,6 +169,13 @@ export function statusCommand(): Command {
         console.log("Authority: local");
         console.log("Assurance: local_checked");
         console.log("No active Visp Hyper session.");
+        // "No active session" reads as "nothing to resume". If verbs ran here
+        // and produced none, that is a different sentence and it has to be said.
+        const local = await readStateIfInitialized(projectPath);
+        const coordination = local === null ? null : summarizeCoordination(local);
+        if (coordination?.drivenWithoutSession) {
+          console.log(renderDrivenWithoutSession(coordination));
+        }
         return;
       }
       console.log("Authority: local");
