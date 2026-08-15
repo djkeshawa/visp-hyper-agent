@@ -25,12 +25,15 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let tempDir: string;
+let originalPath: string | undefined;
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "visp-setup-project-"));
+  originalPath = process.env.PATH;
 });
 
 afterEach(async () => {
+  process.env.PATH = originalPath;
   vi.restoreAllMocks();
   vi.resetModules();
   await rm(tempDir, { recursive: true, force: true });
@@ -53,6 +56,12 @@ async function runSetup(): Promise<string> {
   const { runSetupVerb } = await import("../src/cli/machine/machine-scope.js");
   await runSetupVerb(tempDir, []);
   return lines.join("\n");
+}
+
+/** Whether a `visp-memory` command really exists on PATH — the test's own oracle. */
+async function memoryCliOnPath(): Promise<boolean> {
+  const { findExecutableOnPath } = await import("../src/core/executable-resolver.js");
+  return (await findExecutableOnPath("visp-memory")) !== null;
 }
 
 async function exists(candidate: string): Promise<boolean> {
@@ -104,9 +113,12 @@ describe("setup leaves the project genuinely set up", () => {
     );
     // visp-memory is a real dependency of this repo's test environment; when it
     // is genuinely absent the honest answer is to leave the mode alone.
-    const memoryInstalled = await import("../src/core/executable-resolver.js").then(
-      async (module) => (await module.resolveExecutable("visp-memory")) !== null
-    );
+    //
+    // `findExecutableOnPath`, because `resolveExecutable` answers a different
+    // question and on POSIX never returns null — this oracle used to read
+    // "installed" on every Linux and macOS host, so the branch it is meant to
+    // discriminate was never exercised.
+    const memoryInstalled = await memoryCliOnPath();
     expect(config.memoryMode).toBe(memoryInstalled ? "llm-memory" : "file");
   });
 
@@ -121,11 +133,36 @@ describe("setup leaves the project genuinely set up", () => {
     const config = JSON.parse(
       await readFile(join(tempDir, ".visp", "hyper", "config.json"), "utf8")
     );
-    const memoryInstalled = await import("../src/core/executable-resolver.js").then(
-      async (module) => (await module.resolveExecutable("visp-memory")) !== null
-    );
+    const memoryInstalled = await memoryCliOnPath();
     expect(await exists(join(tempDir, "visp-memory.yaml"))).toBe(memoryInstalled);
     expect(config.memoryMode).toBe(memoryInstalled ? "llm-memory" : "file");
+  });
+
+  it("says visp-memory is missing rather than leaving the project quietly storeless", async () => {
+    // LC-14. A whole workflow run finished with no memory store and no word
+    // about it: setup could not tell that the CLI was absent (its guard was
+    // unreachable on POSIX), so it tried `visp-memory init`, swallowed the
+    // ENOENT, and advised running `visp-memory init` — the command the user did
+    // not have. The store is created by `visp-memory init` and by nothing else,
+    // so when its CLI is absent that is the fact worth printing.
+    process.env.PATH = await mkdtemp(join(tmpdir(), "visp-no-memory-cli-"));
+
+    const output = await runSetup();
+
+    expect(output).toContain("visp-memory is not on PATH");
+    expect(output).toContain("pip install visp-memory");
+    expect(
+      output,
+      "advising a command that is not installed is what made the gap unactionable"
+    ).not.toContain("Run `visp-memory init` in this project.");
+
+    const config = JSON.parse(
+      await readFile(join(tempDir, ".visp", "hyper", "config.json"), "utf8")
+    );
+    expect(
+      config.memoryMode,
+      "setup must not certify a provider it could not reach"
+    ).toBe("file");
   });
 
   it("installs the generic tool assets, so doctor cannot WARN about them", async () => {

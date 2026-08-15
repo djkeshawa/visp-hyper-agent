@@ -3,9 +3,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
-import { execFileResolved, resolveExecutable } from "../../core/executable-resolver.js";
+import { execFileResolved, findExecutableOnPath } from "../../core/executable-resolver.js";
 import { resolveInstalledPackageExport } from "../../core/installed-package.js";
 import { initializeProject, readConfig } from "../../core/session-manager.js";
+import { MEMORY_STORE_MANIFEST } from "../memory/memory-readiness.js";
 import {
   INTEL_MCP_TOOL_PREFIX,
   MCP_CONFIG_FILENAME,
@@ -256,13 +257,28 @@ async function installGenericAssets(projectPath: string): Promise<boolean> {
  * store that does not exist, but nothing ever created one — so setup still
  * printed "recall/learn available" and recall still said "not configured",
  * exactly the pair of sentences this whole path exists to prevent.
- * `visp-memory init` is idempotent, writes visp-memory.yaml beside the
- * project, and gitignores its own store.
+ * `visp-memory init` is idempotent, writes visp-memory.yaml beside the project,
+ * and gitignores its own store. That file is what makes a store exist; nothing
+ * else in this workspace creates one.
  */
 async function initialiseMemoryStore(projectPath: string): Promise<boolean> {
-  if (await pathExists(join(projectPath, "visp-memory.yaml"))) return false;
+  if (await pathExists(join(projectPath, MEMORY_STORE_MANIFEST))) return false;
 
-  if ((await resolveExecutable("visp-memory")) === null) return false;
+  // Say the absence out loud rather than spawning a command that is not there.
+  // `resolveExecutable` used to guard this and cannot: on POSIX it returns the
+  // bare name unconditionally, so setup reached the spawn, caught ENOENT, and
+  // told the user to run `visp-memory init` themselves — a command they did not
+  // have either. A run then finished with no store and no explanation.
+  if ((await findExecutableOnPath("visp-memory")) === null) {
+    console.log(
+      [
+        "note: visp-memory is not on PATH, so this project has no memory store and",
+        "      `visp recall` and `visp learn` will refuse until it is.",
+        "      Install it with `pip install visp-memory[mcp,capture]`, then re-run `visp setup`."
+      ].join("\n")
+    );
+    return false;
+  }
 
   try {
     await execFileResolved("visp-memory", ["init"], { cwd: projectPath, timeout: 120_000 });
@@ -272,7 +288,7 @@ async function initialiseMemoryStore(projectPath: string): Promise<boolean> {
     );
     return false;
   }
-  return pathExists(join(projectPath, "visp-memory.yaml"));
+  return pathExists(join(projectPath, MEMORY_STORE_MANIFEST));
 }
 
 /**
@@ -286,10 +302,9 @@ async function initialiseMemoryStore(projectPath: string): Promise<boolean> {
 async function enableLlmMemory(projectPath: string): Promise<boolean> {
   const configPath = vispPath(projectPath, "hyper", "config.json");
   if (!(await pathExists(configPath))) return false;
-  if (!(await pathExists(join(projectPath, "visp-memory.yaml")))) return false;
+  if (!(await pathExists(join(projectPath, MEMORY_STORE_MANIFEST)))) return false;
 
-  const resolved = await resolveExecutable("visp-memory");
-  if (resolved === null) return false;
+  if ((await findExecutableOnPath("visp-memory")) === null) return false;
 
   const config = await readConfig(projectPath);
   if (config.memoryMode === "llm-memory") return false;

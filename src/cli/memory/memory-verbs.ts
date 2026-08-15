@@ -13,6 +13,7 @@ import {
   memoryContractPropose,
   type MemoryRecallScope
 } from "../../memory/memory-cli-contract.js";
+import { describeMemoryGap, renderMemoryRefusal } from "./memory-readiness.js";
 
 /**
  * A4(a): a manual `visp recall` still happens inside a task, so tell Memory
@@ -35,11 +36,7 @@ export async function runRecallVerb(projectPath: string, query: string): Promise
   const config = await readConfig(projectPath);
   if (config.memoryMode !== "llm-memory") {
     console.error(
-      [
-        "visp recall needs visp-memory, which is not configured for this project.",
-        "Run `visp setup` — it installs what is missing and configures memory here.",
-        "Nothing was retrieved."
-      ].join("\n")
+      renderMemoryRefusal("recall", await describeMemoryGap(projectPath), "Nothing was retrieved.")
     );
     process.exitCode = 1;
     return;
@@ -82,11 +79,7 @@ export async function runLearnVerb(projectPath: string, note: string): Promise<v
   const config = await readConfig(projectPath);
   if (config.memoryMode !== "llm-memory") {
     console.error(
-      [
-        "visp learn needs visp-memory, which is not configured for this project.",
-        "Run `visp setup` — it installs what is missing and configures memory here.",
-        "Nothing was recorded."
-      ].join("\n")
+      renderMemoryRefusal("learn", await describeMemoryGap(projectPath), "Nothing was recorded.")
     );
     process.exitCode = 1;
     return;

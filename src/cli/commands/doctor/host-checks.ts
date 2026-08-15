@@ -6,7 +6,7 @@
 
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { execFileResolved, resolveExecutable } from "../../../core/executable-resolver.js";
+import { execFileResolved, findExecutableOnPath } from "../../../core/executable-resolver.js";
 import { readTextIfExists } from "../../../core/fs-utils.js";
 import type { HyperConfig } from "../../../core/types.js";
 import { INTEL_MCP_TOOL_PREFIX, MCP_CONFIG_FILENAME, describeIntelProvider } from "../../../install/intel-mcp-registration.js";
@@ -150,14 +150,25 @@ export async function checkMemory(
   // unavailable at http://localhost:8000" one command after `visp recall` had
   // answered fine through the CLI. A doctor must examine the patient the
   // verbs actually visit: CLI installed, endpoint well-formed when present.
-  const resolved = await resolveExecutable("visp-memory");
+  // `findExecutableOnPath`, not `resolveExecutable`: the latter answers "what do
+  // I hand to execFile" and on POSIX hands back the bare name, so this branch
+  // could never be taken on Linux or macOS. Doctor therefore reported
+  // "llm-memory is available through the visp-memory CLI" on every host where
+  // the CLI was absent — the one report that would have shown that Memory was
+  // never reachable during a whole workflow run.
+  const resolved = await findExecutableOnPath("visp-memory");
   if (resolved === null) {
     return {
       id: "memory",
       label: "Memory provider",
       status: "warn",
-      detail: "memoryMode is llm-memory, but the visp-memory CLI is not installed.",
-      recovery: "Run `visp setup` — it installs what is missing and configures memory here."
+      detail: "memoryMode is llm-memory, but the visp-memory CLI is not on PATH.",
+      // Not `visp setup`: setup configures what is installed, and it has never
+      // installed the Python package. Naming it here sent the user to a command
+      // that would report the same absence back.
+      recovery:
+        "Install it with `pip install visp-memory[mcp,capture]`, then run `visp setup`. " +
+        "Until then run `visp init --memory-mode file` so recall and learn stop claiming a provider."
     };
   }
 
