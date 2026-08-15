@@ -18,6 +18,10 @@ dist/
 coverage/
 *.tsbuildinfo
 
+# Pair-check records describe a run, not the source. CI writes one here so it
+# can be uploaded as a build artifact; `pnpm test:pair` defaults to .visp/.
+/pair-check.json
+
 # Package tarballs. `npm pack` writes these into the repository root and the
 # release tooling packs on every run, so one is easy to commit by accident.
 *.tgz

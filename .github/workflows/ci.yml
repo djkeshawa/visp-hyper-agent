@@ -104,7 +104,25 @@ jobs:
         working-directory: visp-hyper-agent
         run: node ../visp-kit/dist/index.js init . --agent none
 
-      - name: Run the live Kit contract test
+      # Run through the pair check rather than calling vitest directly.
+      # `tests/visp-binary-contract.test.ts` is guarded by `describe.skipIf`, so
+      # if the Kit build or the `.visp/` init above quietly produced nothing,
+      # vitest reports `success: true` with every test pending and this job goes
+      # green having verified nothing. The pair check treats a skip as a
+      # failure, and writes a record naming the two commits it exercised and the
+      # surface that ran it. See docs/pair-verification.md.
+      - name: Verify the Kit<->Hyper pair
         if: steps.kit_token.outputs.available == 'true'
         working-directory: visp-hyper-agent
-        run: pnpm vitest run tests/visp-binary-contract.test.ts --reporter verbose
+        run: node scripts/pair-check.mjs --record pair-check.json
+
+      # The record is the artifact that distinguishes "verified in CI" from
+      # "verified on somebody's laptop". Uploaded even on failure -- a
+      # not-verified record with its blockers is the useful one.
+      - name: Upload the pair-check record
+        if: always() && steps.kit_token.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pair-check-record
+          path: visp-hyper-agent/pair-check.json
+          if-no-files-found: warn

@@ -45,6 +45,10 @@ Node 22+ and pnpm 11+.
 Before opening a PR:
 
 - `pnpm check` passes, which runs typecheck, build, and the test suite.
+- If the change touches the Kit bridge, `pnpm test:pair` passes against a built
+  sibling `visp-kit`. `pnpm check` alone does not cover that seam — the live
+  contract test skips without a Kit, and a skip reports as a pass. See
+  [docs/pair-verification.md](docs/pair-verification.md).
 - New behaviour has a test. A test written to match the code you just wrote is
   weaker evidence than one written from the requirement — this project cares
   about that distinction more than most.

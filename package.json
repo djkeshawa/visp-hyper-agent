@@ -38,6 +38,7 @@
     "docs/configuration.md",
     "docs/development.md",
     "docs/mcp.md",
+    "docs/pair-verification.md",
     "docs/quickstart.md",
     "docs/workflows.md",
     "templates"
@@ -47,6 +48,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm test",
+    "test:pair": "node scripts/pair-check.mjs",
     "prepack": "pnpm build",
     "test:coverage": "vitest run --coverage"
   },

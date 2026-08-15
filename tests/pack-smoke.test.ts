@@ -62,6 +62,9 @@ describe("npm pack smoke", () => {
       "docs/configuration.md",
       "docs/development.md",
       "docs/mcp.md",
+      // Ships because a reader deciding whether to install needs it: it is what
+      // says a green suite is not the same claim as a verified Kit pairing.
+      "docs/pair-verification.md",
       "docs/quickstart.md",
       "docs/workflows.md"
     ]);
