@@ -249,6 +249,14 @@ describe("doctor command", () => {
       `${JSON.stringify({ ...defaultConfig, memoryMode: "llm-memory" }, null, 2)}\n`,
       "utf8"
     );
+    // The CLI is placed on PATH rather than inferred from the machine. This
+    // case is about WHICH surface doctor probes, and its expectation used to be
+    // computed from `resolveExecutable` — the same predicate production used,
+    // so oracle and subject agreed by construction and the assertion could not
+    // fail however the probe behaved. It also made the verdict depend on
+    // whatever the host happened to have installed. The absent-CLI verdict has
+    // its own coverage in tests/doctor-memory-gap.test.ts.
+    prependToPath(await createFakeHostBinaryDir("visp-memory", "0.5.0"));
 
     await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
 
@@ -257,9 +265,7 @@ describe("doctor command", () => {
     };
     const memory = summary.checks.find((check) => check.id === "memory");
     expect(memory?.detail).not.toContain("localhost:8000");
-    const { resolveExecutable } = await import("../src/core/executable-resolver.js");
-    const installed = (await resolveExecutable("visp-memory")) !== null;
-    expect(memory?.status).toBe(installed ? "pass" : "warn");
+    expect(memory?.status).toBe("pass");
   });
 
   it("checks the healthy Visp Kit bridge path", async () => {
@@ -474,9 +480,18 @@ describe("doctor command", () => {
     expect(summary.success).toBe(true);
     expect(summary.checks.find((check) => check.id === "kit-artifacts")?.status).toBe("warn");
     // Was `visp init` — a command hidden from `visp --help`, so a user reading
-    // the documented thirteen verbs could not find it. `visp setup` now
-    // performs that initialisation, so doctor names the verb that exists.
-    expect(summary.nextCommand).toContain("visp setup");
+    // the documented thirteen verbs could not find it. Doctor must name a verb
+    // that exists.
+    //
+    // Which one it names depends on the machine, not on this project: `visp
+    // setup` when the visp-dev machine-scope adapter is loadable, `visp-kit
+    // init .` when it is not. So this asserts the property under test — a
+    // documented, reachable command — and leaves the choice between the two to
+    // tests/doctor-setup-route.test.ts, which controls the probe. A bare
+    // `toContain("visp setup")` would pass on either route, because the
+    // project-scope text mentions `visp setup` only to say it cannot help.
+    expect(summary.nextCommand).not.toContain("visp init ");
+    expect(summary.nextCommand).toMatch(/Run `visp setup`\.|Run `visp-kit init \.`/u);
   });
 
   it("validates the selected host manifest and detects modified installed assets", async () => {
