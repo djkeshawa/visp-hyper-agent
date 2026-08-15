@@ -20,6 +20,7 @@ import {
   type ToolName
 } from "../../install/tool-asset-installer.js";
 import { provenanceFreshnessContractWarning } from "../../kit/kit-contract-compat.js";
+import { PINNED_PAIR_GUIDANCE } from "../../kit/workflow-action-protocol.js";
 import { detectVisp, hasKitArtifacts, KitCommandBridge } from "../../kit/kit-command-bridge.js";
 import type { KitIntegrationContract } from "../../kit/kit-schemas.js";
 import { handleMessage } from "../../mcp/mcp-server.js";
@@ -223,14 +224,14 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
       label: "Kit integration contract",
       status: "warn",
       detail: "visp-kit integration contract could not be read; falling back to legacy status and artifact probing.",
-      recovery: "Upgrade or link a Visp Kit version that supports `visp-kit integration contract --json`."
+      recovery: `This Kit does not answer \`visp-kit integration contract --json\`. ${PINNED_PAIR_GUIDANCE}`
     });
     checks.push({
       id: "kit-workflow-action",
       label: "Kit WorkflowAction protocol",
       status: "fail",
       detail: "integration_contract_unavailable: no supported Kit contract is available for WorkflowAction negotiation.",
-      recovery: "Upgrade or link a compatible Visp Kit, then re-run `visp doctor`."
+      recovery: `${PINNED_PAIR_GUIDANCE} Then re-run \`visp doctor\`.`
     });
   } else {
     const provenanceWarning = provenanceFreshnessContractWarning(contract);
@@ -243,7 +244,7 @@ async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Prom
         provenanceWarning
       ].filter((line): line is string => typeof line === "string").join(" "),
       recovery: provenanceWarning
-        ? "Upgrade or link a Visp Kit version that supports integration contract 1.2 provenance freshness."
+        ? `This pair does not advertise provenance freshness, so context cannot be grounded on artifact provenance. ${PINNED_PAIR_GUIDANCE}`
         : undefined
     });
     const activeReadContract = await checkActiveKitReadContract(projectPath, contract);

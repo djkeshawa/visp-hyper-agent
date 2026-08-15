@@ -28,6 +28,22 @@ export function supportsStrictSessionAdoption(
   return protocolVersion !== "2.0";
 }
 
+/**
+ * Appended to every negotiation refusal.
+ *
+ * Hyper used to publish `peerDependencies: { "visp-kit": ">=0.2.3 <0.7.0" }`,
+ * and a reader who hit a refusal reasonably went looking for a Kit version
+ * that would satisfy it. There is none: compatibility is an exact pair pinned
+ * by commit and artifact hash (visp-kit ADR 0007), the matrix records no
+ * version strings to range over, and the deleted range's own floor is a build
+ * that matrix marks hazardous. So the refusal has to say what the reader
+ * should do instead of implying a bump.
+ */
+export const PINNED_PAIR_GUIDANCE =
+  "Kit and Hyper compatibility is an exact pair pinned by commit and artifact hash, never a version range — " +
+  "no Kit version is simply 'new enough'. Run `visp-dev doctor` for the verdict on this pair, and " +
+  "`pnpm test:pair:served` to exercise the pair npm serves.";
+
 export const TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES = Object.freeze({
   "2.0": "sha256:c63b279b1ce89f047b2be696a47e845a57adda7f8437892e211e3a4cfad39ed6",
   "3.0": "sha256:ceb45ad3a27a4172c4dbe7e7caacf473570f4578eda27744662a8ed094e96ce7",
@@ -616,16 +632,19 @@ export function selectWorkflowActionProtocol(
   preference: WorkflowActionPreference = "auto"
 ): WorkflowActionProtocolResult<WorkflowActionProtocolSelection> {
   if (!isRecord(contract) || contract.contractVersion !== "2.0") {
-    return failure(
+    const advertised = isRecord(contract) && typeof contract.contractVersion === "string"
+      ? `; this Kit advertises ${contract.contractVersion}`
+      : "";
+    return negotiationFailure(
       "unsupported_integration_contract",
-      "WorkflowAction negotiation requires Kit integration contract 2.0."
+      `WorkflowAction negotiation requires Kit integration contract 2.0${advertised}.`
     );
   }
   const kit = isRecord(contract.kit) ? contract.kit : undefined;
   // The bridge accepts both Kit CLI identities: `visp` before the rename and
   // `visp-kit` after it (P10-US-03). Package identity stays exact.
   if (kit?.packageName !== "visp-kit" || (kit.cliName !== "visp" && kit.cliName !== "visp-kit")) {
-    return failure(
+    return negotiationFailure(
       "unsupported_integration_contract",
       "WorkflowAction negotiation requires Kit identity visp-kit with CLI visp or visp-kit."
     );
@@ -633,9 +652,10 @@ export function selectWorkflowActionProtocol(
 
   if (!Object.prototype.hasOwnProperty.call(contract, "protocols")) {
     if (preference !== "auto" && preference !== "2.0") {
-      return failure(
+      return negotiationFailure(
         "workflow_action_no_mutual_protocol",
-        `Legacy integration contract 2.0 does not advertise WorkflowAction ${preference}.`
+        `Hyper requested WorkflowAction ${preference}, but this Kit's integration contract 2.0 carries no ` +
+          `\`protocols\` block and so advertises nothing beyond the implied 2.0.`
       );
     }
     return success(
@@ -676,16 +696,17 @@ export function selectWorkflowActionProtocol(
         ? preference
         : undefined;
   if (selected === undefined) {
-    return failure(
+    return negotiationFailure(
       "workflow_action_no_mutual_protocol",
-      `No mutually supported WorkflowAction protocol exists for preference ${preference}.`
+      `No mutually supported WorkflowAction protocol exists for preference ${preference}: Hyper supports ` +
+        `${WORKFLOW_ACTION_PROTOCOL_PREFERENCE.join(", ")} and this Kit advertises ${supported.join(", ")}.`
     );
   }
 
   const advertisedHash = advertisement.schemaHashes[selected] as `sha256:${string}`;
   const localSchemaHash = TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES[selected];
   if (advertisedHash !== localSchemaHash) {
-    return failure(
+    return negotiationFailure(
       "workflow_action_schema_hash_mismatch",
       `Advertised WorkflowAction ${selected} schema hash ${advertisedHash} does not match local trust anchor ${localSchemaHash}.`
     );
@@ -808,10 +829,22 @@ function isUnsupportedWorkflowActionProtocolError(payload: unknown): boolean {
 }
 
 function invalidAdvertisement(detail: string): WorkflowActionProtocolResult<never> {
-  return failure(
+  return negotiationFailure(
     "workflow_action_advertisement_invalid",
     `Kit WorkflowAction protocol advertisement is invalid: ${detail}.`
   );
+}
+
+/**
+ * A refusal raised while deciding whether this Kit and this Hyper can talk at
+ * all. Every one of these carries {@link PINNED_PAIR_GUIDANCE}, so no refusal
+ * sends the reader hunting for a version to bump.
+ */
+function negotiationFailure(
+  reasonCode: WorkflowActionProtocolReasonCode,
+  reason: string
+): WorkflowActionProtocolResult<never> {
+  return failure(reasonCode, `${reason} ${PINNED_PAIR_GUIDANCE}`);
 }
 
 function success<T>(value: T): WorkflowActionProtocolResult<T> {

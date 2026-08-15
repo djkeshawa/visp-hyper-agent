@@ -1,4 +1,5 @@
 import type { KitIntegrationContract } from "./kit-schemas.js";
+import { PINNED_PAIR_GUIDANCE } from "./workflow-action-protocol.js";
 
 const PROVENANCE_FRESHNESS_CONTRACT = "2.0";
 export const SUPPORTED_KIT_INTEGRATION_CONTRACT_VERSION = "2.0";
@@ -8,7 +9,7 @@ export function unsupportedIntegrationContractWarning(payload: unknown): string 
   if (version === undefined || version === SUPPORTED_KIT_INTEGRATION_CONTRACT_VERSION) {
     return undefined;
   }
-  return `Unsupported Kit integration contract version ${version}; expected ${SUPPORTED_KIT_INTEGRATION_CONTRACT_VERSION}.`;
+  return `Unsupported Kit integration contract version ${version}; expected ${SUPPORTED_KIT_INTEGRATION_CONTRACT_VERSION}. ${PINNED_PAIR_GUIDANCE}`;
 }
 
 export function provenanceFreshnessContractWarning(
@@ -27,7 +28,9 @@ export function provenanceFreshnessContractWarning(
     return undefined;
   }
 
-  return `Kit integration contract ${contract.contractVersion} does not advertise provenance freshness (${missing.join(", ")}); upgrade or link a Visp Kit that supports contract ${PROVENANCE_FRESHNESS_CONTRACT}.`;
+  // Deliberately not "upgrade Kit": the pair, not the version, is the unit of
+  // compatibility, and the reader needs the pinned check rather than a bump.
+  return `Kit integration contract ${contract.contractVersion} does not advertise provenance freshness (${missing.join(", ")}); this pair cannot ground context on artifact provenance, which contract ${PROVENANCE_FRESHNESS_CONTRACT} advertises. ${PINNED_PAIR_GUIDANCE}`;
 }
 
 function stringProperty(payload: unknown, key: string): string | undefined {

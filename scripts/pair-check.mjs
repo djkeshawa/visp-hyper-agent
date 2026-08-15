@@ -49,16 +49,24 @@
  * whether either working tree was dirty, and which surface ran it — so the
  * claim is attributable rather than remembered. See docs/pair-verification.md.
  *
- * Usage:
- *   node scripts/pair-check.mjs [--kit <path>] [--hyper <path>]
- *                               [--record <path>] [--preconditions-only]
+ * WHICH KIT
  *
- * `--kit` defaults to $VISP_KIT_PATH, then to the sibling `../visp-kit`, which
- * is where tests/visp-binary-contract.test.ts looks for it.
+ * `--kit` defaults to $VISP_KIT_PATH, then to the sibling `../visp-kit`.
+ * `--kit-npm <spec>` installs a published Kit instead and checks against that
+ * artifact — visp-kit's source repository is private, but its package is
+ * public, so this is the route a fork or a fresh clone can actually take, and
+ * it exercises the pair npm serves rather than two development branches.
+ * Whichever is chosen, that Kit is passed to the contract test through
+ * $VISP_KIT_PATH, so the Kit named in the record is the Kit that ran.
+ *
+ * Usage:
+ *   node scripts/pair-check.mjs [--kit <path> | --kit-npm <spec>]
+ *                               [--hyper <path>] [--record <path>]
+ *                               [--init-if-missing] [--preconditions-only]
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,13 +84,84 @@ function readVersion(packageRoot) {
   }
 }
 
-/** Reads Hyper's declared Kit peer range, or null. Recorded, never enforced here. */
-function readKitPeerRange(packageRoot) {
+/**
+ * Fetches the Kit that npm actually serves for `spec` and returns its package
+ * root, so the pair check can run against the published artifact instead of a
+ * source checkout of a private repository.
+ *
+ * This is what makes the check runnable by someone who just cloned this
+ * repository: `visp-kit`'s source is private, but its package is public, and
+ * the published tarball is the thing a user installs anyway. `npm install`
+ * rather than `npm pack`: the packed tarball's `dist/index.js` imports
+ * `commander`, so an unpacked tarball cannot answer `--version`.
+ *
+ * The lockfile npm writes carries the tarball URL and its integrity hash. Both
+ * go into the run record: compatibility here is pinned by artifact hash, so a
+ * record that cannot name the artifact it exercised is not evidence.
+ */
+function resolveKitFromNpm(spec, cacheRoot) {
+  mkdirSync(cacheRoot, { recursive: true });
+  const install = spawnSync(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    ["install", "--prefix", cacheRoot, "--no-audit", "--no-fund", "--loglevel", "error", spec],
+    { encoding: "utf8", stdio: "inherit", timeout: 600_000 }
+  );
+  if (install.error || install.status !== 0) {
+    return {
+      root: null,
+      origin: { source: "npm", spec, resolvedVersion: null, tarball: null, integrity: null },
+      error:
+        `\`npm install ${spec}\` into ${cacheRoot} failed (exit ${install.status ?? "none"}` +
+        `${install.error ? `, ${install.error.message}` : ""}). The served pair cannot be fetched, so it ` +
+        `cannot be checked. Network access to the npm registry is required for --kit-npm; use --kit <path> ` +
+        `against a local Kit build instead.`
+    };
+  }
+
+  const root = join(cacheRoot, "node_modules", "visp-kit");
+  let tarball = null;
+  let integrity = null;
   try {
-    const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-    return manifest.peerDependencies?.["visp-kit"] ?? null;
+    const lock = JSON.parse(readFileSync(join(cacheRoot, "package-lock.json"), "utf8"));
+    const entry = lock.packages?.["node_modules/visp-kit"] ?? null;
+    tarball = entry?.resolved ?? null;
+    integrity = entry?.integrity ?? null;
   } catch {
-    return null;
+    // A missing lockfile costs provenance, not correctness: the record says
+    // null rather than inventing a hash.
+  }
+  return {
+    root,
+    origin: { source: "npm", spec, resolvedVersion: readVersion(root), tarball, integrity },
+    error: null
+  };
+}
+
+/**
+ * Initializes a Visp project in the Hyper checkout so the contract test has
+ * Kit artifacts to read. Opt-in (`--init-if-missing`) and never destructive:
+ * the caller only reaches this when `.visp/` holds neither `policy.json` nor
+ * `project.json`, which is the fresh-clone case.
+ */
+function initializeKitArtifacts(kitEntry, hyperPath) {
+  const init = spawnSync(process.execPath, [kitEntry, "init", ".", "--agent", "none"], {
+    cwd: hyperPath,
+    encoding: "utf8",
+    stdio: "inherit",
+    timeout: 300_000
+  });
+  if (init.error || init.status !== 0) {
+    return `\`<kit> init . --agent none\` failed in ${hyperPath} (exit ${init.status ?? "none"}${init.error ? `, ${init.error.message}` : ""}).`;
+  }
+  return null;
+}
+
+/** Resolves a path through symlinks where possible, so two spellings compare equal. */
+function canonicalPath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
   }
 }
 
@@ -90,12 +169,23 @@ function readKitPeerRange(packageRoot) {
  * Git identity of a checkout. Every field is nullable on purpose: a checkout
  * extracted from a tarball has no git metadata, and the record must say
  * `null` rather than invent a commit.
+ *
+ * `git -C <dir>` walks up to the nearest enclosing repository, so a directory
+ * that is merely *inside* one answers with that repository's commit. A Kit
+ * installed from npm lands under the Hyper checkout's `.visp/`, and the first
+ * served-pair record read `Kit 0.5.0 @ ea18ece (DIRTY)` — Hyper's own commit
+ * and Hyper's own dirty tree, attributed to Kit. So the identity counts only
+ * when this directory *is* the repository root.
  */
-function gitIdentity(root) {
+export function gitIdentity(root) {
   const git = (args) => {
     const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
     return !result.error && result.status === 0 ? result.stdout.trim() : null;
   };
+  const toplevel = git(["rev-parse", "--show-toplevel"]);
+  if (toplevel === null || canonicalPath(toplevel) !== canonicalPath(root)) {
+    return { commit: null, branch: null, dirty: null };
+  }
   const porcelain = git(["status", "--porcelain"]);
   return {
     commit: git(["rev-parse", "HEAD"]),
@@ -173,7 +263,7 @@ export function inspectPair({ hyperRoot = PACKAGE_ROOT, kitRoot } = {}) {
   return {
     ready: blockers.length === 0,
     blockers,
-    hyper: { path: hyperPath, version: readVersion(hyperPath), kitPeerRange: readKitPeerRange(hyperPath), ...gitIdentity(hyperPath) },
+    hyper: { path: hyperPath, version: readVersion(hyperPath), ...gitIdentity(hyperPath) },
     kit: { path: kitPath, entry: kitEntry, built: kitAnswers, version: readVersion(kitPath), ...gitIdentity(kitPath) }
   };
 }
@@ -215,17 +305,28 @@ export function interpretSuiteOutcome(summary) {
 }
 
 /** Runs the contract test file and returns its parsed JSON summary (or null). */
-function runContractSuite(hyperPath) {
+function runContractSuite(hyperPath, kitPath) {
   const scratch = mkdtempSync(join(tmpdir(), "visp-pair-check-"));
   const outputFile = join(scratch, "contract.json");
   const vitest = join(hyperPath, "node_modules", "vitest", "vitest.mjs");
   try {
     // Spawned through `process.execPath` rather than the `.bin` shim: on
     // Windows those shims are `.cmd` files that cannot be exec'd directly.
+    //
+    // VISP_KIT_PATH is passed explicitly so the contract test drives the same
+    // Kit this script probed and is about to name in the record. Without it
+    // the test falls back to the sibling checkout or to `visp` on PATH, and a
+    // `--kit`/`--kit-npm` run would attribute one Kit's result to another.
     const run = spawnSync(
       process.execPath,
       [vitest, "run", CONTRACT_TEST, "--reporter=json", `--outputFile=${outputFile}`],
-      { cwd: hyperPath, encoding: "utf8", stdio: "inherit", timeout: 900_000 }
+      {
+        cwd: hyperPath,
+        encoding: "utf8",
+        stdio: "inherit",
+        timeout: 900_000,
+        env: { ...process.env, VISP_KIT_PATH: kitPath }
+      }
     );
     if (run.error) return { summary: null, spawnError: run.error.message };
     if (!existsSync(outputFile)) return { summary: null, spawnError: `vitest wrote no JSON summary (exit ${run.status})` };
@@ -243,22 +344,28 @@ function writeRecord(recordPath, record) {
 }
 
 function parseArgv(argv) {
-  const options = { preconditionsOnly: false, help: false };
+  const options = { preconditionsOnly: false, help: false, initIfMissing: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--preconditions-only") options.preconditionsOnly = true;
+    else if (arg === "--init-if-missing") options.initIfMissing = true;
     else if (arg === "--help" || arg === "-h") options.help = true;
     else if (arg === "--kit") options.kitRoot = argv[++index];
+    else if (arg === "--kit-npm") options.kitNpm = argv[++index];
     else if (arg === "--hyper") options.hyperRoot = argv[++index];
     else if (arg === "--record") options.record = argv[++index];
     else throw new Error(`unknown argument: ${arg}`);
+  }
+  if (options.kitRoot !== undefined && options.kitNpm !== undefined) {
+    throw new Error("--kit and --kit-npm name two different Kits; pass one");
   }
   return options;
 }
 
 const USAGE = `visp-hyper pair check
 
-  node scripts/pair-check.mjs [--kit <path>] [--hyper <path>] [--record <path>]
+  node scripts/pair-check.mjs [--kit <path> | --kit-npm <spec>] [--hyper <path>]
+                              [--record <path>] [--init-if-missing]
                               [--preconditions-only]
 
 Verifies this Hyper checkout against a real Visp Kit build and records which
@@ -266,8 +373,13 @@ surface made the claim. Exits non-zero when the pair cannot be verified,
 including when the contract tests would silently skip.
 
   --kit                 Kit checkout (default: $VISP_KIT_PATH, else ../visp-kit)
+  --kit-npm             Install a published Kit (e.g. visp-kit@latest) and check
+                        against that artifact. Needs no visp-kit checkout, so a
+                        fresh clone can run it: \`pnpm test:pair:served\`
   --hyper               Hyper checkout under test (default: this one)
   --record              Where to write the run record (default: ${DEFAULT_RECORD})
+  --init-if-missing     Initialize .visp/ in the Hyper checkout when it holds no
+                        Kit artifacts. Never touches an existing .visp/
   --preconditions-only  Report whether the pair COULD be verified here, and stop
                         without running the contract tests
 `;
@@ -285,8 +397,46 @@ export function main(argv = process.argv.slice(2)) {
     return 0;
   }
 
-  const inspection = inspectPair({ hyperRoot: options.hyperRoot ?? PACKAGE_ROOT, kitRoot: options.kitRoot });
+  const hyperRoot = resolve(options.hyperRoot ?? PACKAGE_ROOT);
   const { surface, detail } = describeSurface();
+
+  // A --kit-npm install lands inside the Hyper checkout's gitignored `.visp/`:
+  // cached between runs, never committed, and thrown away with the rest of
+  // `.visp/`.
+  let kitRoot = options.kitRoot;
+  let kitOrigin = { source: "path", spec: null, resolvedVersion: null, tarball: null, integrity: null };
+  const fetchBlockers = [];
+  if (options.kitNpm !== undefined) {
+    const cacheRoot = join(hyperRoot, ".visp", "hyper", "served-kit");
+    const resolved = resolveKitFromNpm(options.kitNpm, cacheRoot);
+    kitRoot = resolved.root ?? join(cacheRoot, "node_modules", "visp-kit");
+    kitOrigin = resolved.origin;
+    if (resolved.error) fetchBlockers.push(`[kit] ${resolved.error}`);
+  }
+
+  let inspection = inspectPair({ hyperRoot, kitRoot });
+
+  // A fresh clone has no `.visp/`, so the contract test would have nothing to
+  // read. Initializing is opt-in and only reachable when there is nothing
+  // there: an existing `.visp/` is never re-initialized.
+  if (
+    options.initIfMissing &&
+    inspection.kit.built &&
+    inspection.blockers.some((blocker) => blocker.startsWith("[artifacts]"))
+  ) {
+    process.stdout.write(
+      `pair-check: no Kit artifacts under ${hyperRoot}/.visp — initializing one with the Kit under test.\n`
+    );
+    const initError = initializeKitArtifacts(inspection.kit.entry, hyperRoot);
+    inspection = initError
+      ? { ...inspection, ready: false, blockers: [`[artifacts] ${initError}`, ...inspection.blockers] }
+      : inspectPair({ hyperRoot, kitRoot });
+  }
+
+  if (fetchBlockers.length > 0) {
+    inspection = { ...inspection, ready: false, blockers: [...fetchBlockers, ...inspection.blockers] };
+  }
+
   const recordPath = isAbsolute(options.record ?? DEFAULT_RECORD)
     ? options.record
     : join(inspection.hyper.path, options.record ?? DEFAULT_RECORD);
@@ -298,7 +448,7 @@ export function main(argv = process.argv.slice(2)) {
     node: process.version,
     platform: `${process.platform} ${process.arch}`,
     hyper: inspection.hyper,
-    kit: inspection.kit,
+    kit: { ...inspection.kit, origin: kitOrigin },
     verdict: "not-verified",
     reason: null,
     contract: { file: CONTRACT_TEST, counts: null },
@@ -328,7 +478,7 @@ export function main(argv = process.argv.slice(2)) {
     return 0;
   }
 
-  const { summary, spawnError } = runContractSuite(inspection.hyper.path);
+  const { summary, spawnError } = runContractSuite(inspection.hyper.path, inspection.kit.path);
   const outcome = spawnError
     ? { verified: false, reason: `the contract run could not complete: ${spawnError}`, counts: null }
     : interpretSuiteOutcome(summary);
@@ -342,12 +492,16 @@ export function main(argv = process.argv.slice(2)) {
     process.stderr.write(`pair-check: NOT VERIFIED — ${outcome.reason}.\nRecord: ${recordPath}\n`);
     return 1;
   }
+  const kitProvenance =
+    kitOrigin.source === "npm"
+      ? ` from npm ${kitOrigin.spec}${kitOrigin.integrity ? ` (${kitOrigin.integrity})` : ""}`
+      : "";
   process.stdout.write(
     `pair-check: VERIFIED on ${surface} (${detail}).\n` +
       `  Hyper ${record.hyper.version ?? "?"} @ ${record.hyper.commit ?? "no-git"}` +
       `${record.hyper.dirty ? " (DIRTY working tree)" : ""}\n` +
       `  Kit   ${record.kit.version ?? "?"} @ ${record.kit.commit ?? "no-git"}` +
-      `${record.kit.dirty ? " (DIRTY working tree)" : ""}\n` +
+      `${record.kit.dirty ? " (DIRTY working tree)" : ""}${kitProvenance}\n` +
       `  ${outcome.counts.passed}/${outcome.counts.total} contract tests executed and passed, 0 skipped.\n` +
       `Record: ${recordPath}\n`
   );

@@ -36,93 +36,60 @@ jobs:
 
       - run: pnpm test
 
-  # The Kit<->Hyper contract is the one thing neither repository can verify
-  # alone. `tests/visp-binary-contract.test.ts` self-skips unless a sibling Kit
-  # build and an initialized `.visp/` are both present, and neither exists in
-  # the `check` job -- so until this job, the real contract was never exercised
-  # automatically, only by hand.
-  contract:
+  # THE PAIR CHECK. `tests/visp-binary-contract.test.ts` is the only test that
+  # drives a real Kit binary, and it self-skips without one — so the `check`
+  # job above, which has no Kit, verifies the seam not at all and says nothing
+  # about it either way.
+  #
+  # This job used to check out the private `djkeshawa/visp-kit` behind a
+  # `VISP_KIT_TOKEN` secret, with every step conditional on that secret being
+  # present. Forks and outside contributors cannot have it, so for anyone but
+  # the owner every step skipped and the job still reported success: a green
+  # tick standing for a check nobody outside could run. That job now lives in
+  # `pair-source.yml`, is manual-only, and fails loudly without the token.
+  #
+  # What runs here instead needs no secret and no visp-kit checkout, because
+  # visp-kit's *source* is private but its *package* is public: the check
+  # installs the Kit npm actually serves and drives that artifact. It is
+  # stronger evidence, not weaker — it exercises the pair a user gets rather
+  # than two development branches — and anyone can reproduce it from a clone
+  # with `pnpm test:pair:served`.
+  pair:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux only, deliberately: this pair has never been observed passing
+        # on Windows or macOS, and a matrix entry is a claim. docs/pair-verification.md
+        # lists what is still uncovered.
+        node: [22, 24]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: visp-hyper-agent
-
-      # visp-kit is a private repository, and the default GITHUB_TOKEN is
-      # scoped to this one, so the cross-repository checkout needs a PAT with
-      # `repo` scope stored as VISP_KIT_TOKEN. Without it the contract cannot
-      # be verified -- say so loudly rather than reporting a green tick for a
-      # check that never ran.
-      - name: Check for the cross-repository token
-        id: kit_token
-        env:
-          VISP_KIT_TOKEN: ${{ secrets.VISP_KIT_TOKEN }}
-        run: |
-          if [ -n "$VISP_KIT_TOKEN" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Kit contract NOT verified::VISP_KIT_TOKEN is not set, so the private visp-kit repository cannot be checked out. The Kit<->Hyper contract was not exercised in this run. Add a PAT with repo scope as the VISP_KIT_TOKEN secret to enable it."
-          fi
-
-      - uses: actions/checkout@v4
-        if: steps.kit_token.outputs.available == 'true'
-        with:
-          repository: djkeshawa/visp-kit
-          ref: develop
-          token: ${{ secrets.VISP_KIT_TOKEN }}
-          path: visp-kit
 
       - uses: pnpm/action-setup@v4
-        if: steps.kit_token.outputs.available == 'true'
 
       - uses: actions/setup-node@v4
-        if: steps.kit_token.outputs.available == 'true'
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
+          cache: pnpm
 
-      # The test resolves `../visp-kit/dist/index.js` relative to the Hyper
-      # checkout, so Kit must be built and sit beside it.
-      - name: Build Visp Kit
-        if: steps.kit_token.outputs.available == 'true'
-        working-directory: visp-kit
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+      - run: pnpm install --frozen-lockfile
 
-      - name: Build Visp Hyper Agent
-        if: steps.kit_token.outputs.available == 'true'
-        working-directory: visp-hyper-agent
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+      # `--init-if-missing` initializes `.visp/` with the served Kit, which a
+      # fresh checkout does not have (`.visp/` is gitignored). It never touches
+      # an existing one. The pair check treats a skipped contract test as a
+      # failure, so this step cannot go green having verified nothing.
+      - name: Verify the pair npm serves
+        run: node scripts/pair-check.mjs --kit-npm visp-kit@latest --init-if-missing --record pair-check.json
 
-      # `.visp/` is gitignored, so the contract test has no Kit artifacts to
-      # read until a project is initialized inside the checkout.
-      - name: Initialize a Visp project for the contract fixture
-        if: steps.kit_token.outputs.available == 'true'
-        working-directory: visp-hyper-agent
-        run: node ../visp-kit/dist/index.js init . --agent none
-
-      # Run through the pair check rather than calling vitest directly.
-      # `tests/visp-binary-contract.test.ts` is guarded by `describe.skipIf`, so
-      # if the Kit build or the `.visp/` init above quietly produced nothing,
-      # vitest reports `success: true` with every test pending and this job goes
-      # green having verified nothing. The pair check treats a skip as a
-      # failure, and writes a record naming the two commits it exercised and the
-      # surface that ran it. See docs/pair-verification.md.
-      - name: Verify the Kit<->Hyper pair
-        if: steps.kit_token.outputs.available == 'true'
-        working-directory: visp-hyper-agent
-        run: node scripts/pair-check.mjs --record pair-check.json
-
-      # The record is the artifact that distinguishes "verified in CI" from
-      # "verified on somebody's laptop". Uploaded even on failure -- a
-      # not-verified record with its blockers is the useful one.
+      # The record is what distinguishes "verified in CI" from "verified on
+      # somebody's laptop", and it names the tarball and integrity hash of the
+      # exact Kit artifact that ran. Uploaded even on failure — a not-verified
+      # record with its blockers is the useful one.
       - name: Upload the pair-check record
-        if: always() && steps.kit_token.outputs.available == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pair-check-record
-          path: visp-hyper-agent/pair-check.json
+          name: pair-check-record-node${{ matrix.node }}
+          path: pair-check.json
           if-no-files-found: warn

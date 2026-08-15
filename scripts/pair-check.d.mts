@@ -24,9 +24,22 @@ export interface CheckoutIdentity {
   dirty: boolean | null;
 }
 
-export interface HyperIdentity extends CheckoutIdentity {
-  /** Hyper's declared `peerDependencies.visp-kit` range. Recorded, not enforced. */
-  kitPeerRange: string | null;
+/**
+ * Hyper carries no declared Kit version range to record: compatibility is an
+ * exact pair pinned by commit and artifact hash (visp-kit ADR 0007), so the
+ * record names commits and artifacts and nothing semver-shaped.
+ */
+export type HyperIdentity = CheckoutIdentity;
+
+/** Where the Kit under test came from, and — for npm — exactly which artifact. */
+export interface KitOrigin {
+  source: "path" | "npm";
+  /** The npm spec asked for, e.g. `visp-kit@latest`. `null` for a local path. */
+  spec: string | null;
+  resolvedVersion: string | null;
+  tarball: string | null;
+  /** The published tarball's integrity hash: the pinned artifact identity. */
+  integrity: string | null;
 }
 
 export interface KitIdentity extends CheckoutIdentity {
@@ -58,6 +71,16 @@ export interface SuiteOutcome {
 }
 
 export function describeSurface(env?: NodeJS.ProcessEnv): PairSurface;
+
+/**
+ * Commit, branch and dirtiness of the repository rooted exactly at `root`.
+ *
+ * All three are `null` when `root` is not itself a repository root — including
+ * when it merely sits inside one, as an npm-installed Kit under `.visp/` does.
+ * Inheriting the enclosing repository's commit would attribute one project's
+ * identity to another.
+ */
+export function gitIdentity(root: string): Pick<CheckoutIdentity, "commit" | "branch" | "dirty">;
 
 export function inspectPair(options?: { hyperRoot?: string; kitRoot?: string }): PairInspection;
 

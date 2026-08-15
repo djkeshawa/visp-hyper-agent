@@ -29,11 +29,16 @@ Requires Node 22 or later, Git, and [`visp-kit`](https://www.npmjs.com/package/v
 This package is the Visp coordinator. It provides the `visp-hyper` command; it
 decides nothing — Visp Kit is the engine.
 
-- **With Kit:** this bridge release drives Kit through either CLI identity —
-  `visp-kit` (Kit >= 0.4.0, after the rename) or `visp` (Kit <= 0.3.x, before
-  it). It probes `visp-kit` first and falls back to `visp`; override with the
-  `VISP_KIT_BINARY` environment variable or the `kitBinary` field in
-  `.visp/hyper/config.json`. Requires `visp-kit` >= 0.2.3.
+- **With Kit:** compatibility is an **exact pair**, pinned by commit and
+  artifact hash — never a version range. This package publishes no supported
+  range for `visp-kit`, in its manifest or anywhere else, because the pinned
+  evidence records no version strings to range over and a range would be a
+  support claim nobody measured. For the verdict on the pair you have
+  installed, run `visp-dev doctor`; to exercise it yourself, `pnpm
+  test:pair:served` from a clone. Hyper drives Kit through either CLI
+  identity, probing `visp-kit` first and falling back to `visp`, the name Kit
+  used before the rename; override with the `VISP_KIT_BINARY` environment
+  variable or the `kitBinary` field in `.visp/hyper/config.json`.
 - **With Memory:** optional. `visp-hyper` works without visp-memory installed;
   memory-backed features refuse visibly when it is absent.
 - **With Visp Dev:** not required for project work; machine setup and checks
@@ -125,10 +130,14 @@ claim you might read it as — is in [pair verification](docs/pair-verification.
 
 ## Honest limits
 
-- **Kit and Hyper are compatible in tested pairs**, pinned to exact commits. Do
-  not assume any two versions work together. The pair is verified by
-  `pnpm test:pair`, which fails rather than skips when Kit is absent; every
-  record on file so far was produced on one Linux developer machine, not in CI.
+- **Kit and Hyper are compatible in tested pairs**, pinned to exact commits and
+  artifact hashes. Do not assume any two versions work together; there is no
+  supported range, and this package deliberately declares none. The pair is
+  verified by `pnpm test:pair:served`, which drives the Kit npm serves and
+  fails rather than skips when it cannot. Every record on file so far was
+  produced on one Linux developer machine: the CI job that runs the same check
+  needs no secret and can be run by anyone, but no run of it has been observed
+  yet.
 - **Durable shared memory is not available yet.** File-based memory is the
   default. The legacy HTTP memory mode exists only for private migrations
   already using it.

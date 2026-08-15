@@ -16,7 +16,8 @@ import { fileURLToPath } from "node:url";
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { describeSurface, inspectPair, interpretSuiteOutcome } from "../scripts/pair-check.mjs";
+import { describeSurface, gitIdentity, inspectPair, interpretSuiteOutcome } from "../scripts/pair-check.mjs";
+import { resolveKitEntry } from "./helpers/kit-entry.js";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const PAIR_CHECK = join(PACKAGE_ROOT, "scripts", "pair-check.mjs");
@@ -35,7 +36,7 @@ async function fakeHyper(options: { artifacts: boolean }): Promise<string> {
   await writeFile(join(root, CONTRACT_TEST), "// stand-in for the real contract test\n", "utf8");
   await writeFile(
     join(root, "package.json"),
-    JSON.stringify({ name: "visp-hyper-agent", version: "9.9.9", peerDependencies: { "visp-kit": ">=0.2.3 <0.7.0" } }),
+    JSON.stringify({ name: "visp-hyper-agent", version: "9.9.9" }),
     "utf8"
   );
   if (options.artifacts) {
@@ -187,7 +188,51 @@ describe("preconditions are reported together, each naming its own repair", () =
 
     expect(inspection).toMatchObject({ ready: true, blockers: [] });
     expect(inspection.kit).toMatchObject({ built: true, version: "0.6.0" });
-    expect(inspection.hyper).toMatchObject({ version: "9.9.9", kitPeerRange: ">=0.2.3 <0.7.0" });
+    expect(inspection.hyper).toMatchObject({ version: "9.9.9" });
+  });
+
+  it("records no Kit version range, because Hyper no longer claims one", async () => {
+    // The inspection used to carry `kitPeerRange`, read from
+    // `peerDependencies.visp-kit`. That range is deleted (visp-kit ADR 0007:
+    // compatibility is an exact pair pinned by commit and artifact hash), and
+    // a record still carrying a range field would keep the claim alive in the
+    // one place people go looking for evidence.
+    const hyper = await fakeHyper({ artifacts: true });
+    const kit = await fakeKit({ answers: true });
+
+    const inspection = inspectPair({ hyperRoot: hyper, kitRoot: kit });
+
+    expect(inspection.hyper).not.toHaveProperty("kitPeerRange");
+    expect(JSON.stringify(inspection)).not.toMatch(/peerDependencies|>=\s*\d+\.\d+/u);
+  });
+});
+
+describe("a checkout's identity is its own, or it has none", () => {
+  function git(args: string[], cwd: string): void {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  }
+
+  it("never lends an enclosing repository's commit to a directory inside it", async () => {
+    // Measured, not hypothetical: the first served-pair record read
+    // `Kit 0.5.0 @ ea18ece (DIRTY working tree)`. `ea18ece` is HEAD of *Hyper*
+    // — the npm-installed Kit had landed under Hyper's `.visp/`, and `git -C`
+    // walked up to the nearest repository. The record named the right version
+    // beside the wrong commit, which is worse than naming no commit at all.
+    const outer = join(scratch, "outer-repo");
+    await mkdir(outer, { recursive: true });
+    git(["init", "--initial-branch=main"], outer);
+    git(["config", "user.email", "pair-check@example.invalid"], outer);
+    git(["config", "user.name", "Pair Check"], outer);
+    await writeFile(join(outer, "README.md"), "outer\n", "utf8");
+    git(["add", "."], outer);
+    git(["commit", "-m", "outer"], outer);
+
+    const nested = join(outer, "node_modules", "visp-kit");
+    await mkdir(nested, { recursive: true });
+
+    expect(gitIdentity(nested)).toEqual({ commit: null, branch: null, dirty: null });
+    expect(gitIdentity(outer).commit).toMatch(/^[0-9a-f]{40}$/u);
   });
 });
 
@@ -262,5 +307,76 @@ describe("the CLI", () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("unknown argument");
+  });
+
+  it("refuses two different Kits rather than silently preferring one", () => {
+    const result = runPairCheck(["--kit", "/somewhere", "--kit-npm", "visp-kit@latest"]);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("pass one");
+  });
+
+  it("records where the Kit came from, so a served artifact is not read as a checkout", async () => {
+    const hyper = await fakeHyper({ artifacts: true });
+    const kit = await fakeKit({ answers: true });
+    const record = join(scratch, "record.json");
+
+    runPairCheck(["--hyper", hyper, "--kit", kit, "--record", record, "--preconditions-only"]);
+
+    const written = JSON.parse(await readFile(record, "utf8"));
+    // A pair verified against a local build and one verified against the
+    // artifact npm serves are different claims; the record has to tell them
+    // apart, and name the artifact hash when there is one.
+    expect(written.kit.origin).toEqual({
+      source: "path",
+      spec: null,
+      resolvedVersion: null,
+      tarball: null,
+      integrity: null
+    });
+  });
+});
+
+/**
+ * The record names a Kit. This is the rule that makes the name true: the
+ * contract test drives the Kit the pair check handed it, or it refuses.
+ */
+describe("the contract test runs the Kit it was handed, or none", () => {
+  const present = (path: string) => path.includes("good-kit");
+
+  it("prefers an explicitly named Kit over the sibling checkout", () => {
+    const resolution = resolveKitEntry({
+      repoRoot: "/repo",
+      env: { VISP_KIT_PATH: "/elsewhere/good-kit" },
+      exists: () => true
+    });
+
+    expect(resolution).toEqual({ entry: join("/elsewhere/good-kit", "dist", "index.js"), source: "env" });
+  });
+
+  it("throws rather than falling back when the named Kit is not built", () => {
+    expect(() =>
+      resolveKitEntry({ repoRoot: "/repo", env: { VISP_KIT_PATH: "/elsewhere/stale-kit" }, exists: present })
+    ).toThrow(/Refusing to fall back to another Kit/u);
+  });
+
+  it("falls back to the sibling checkout only when no Kit was named", () => {
+    expect(resolveKitEntry({ repoRoot: "/repo", env: {}, exists: () => true })).toEqual({
+      entry: join("/repo", "..", "visp-kit", "dist", "index.js"),
+      source: "sibling"
+    });
+  });
+
+  it("reports no Kit rather than guessing when neither exists", () => {
+    expect(resolveKitEntry({ repoRoot: "/repo", env: {}, exists: () => false })).toEqual({
+      entry: null,
+      source: "none"
+    });
+  });
+
+  it("treats an empty VISP_KIT_PATH as unset", () => {
+    expect(resolveKitEntry({ repoRoot: "/repo", env: { VISP_KIT_PATH: "" }, exists: () => true }).source).toBe(
+      "sibling"
+    );
   });
 });

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { detectVisp, KitCommandBridge } from "../src/kit/kit-command-bridge.js";
+import { resolveKitEntry } from "./helpers/kit-entry.js";
 
 /**
  * Contract test against the REAL `visp` binary. The fixture shim
@@ -11,8 +12,12 @@ import { detectVisp, KitCommandBridge } from "../src/kit/kit-command-bridge.js";
  * invocation drift (flag names/order, output shape) is invisible to the rest of
  * the suite — three real bugs were historically only caught by live-testing.
  * This pins the read-only invocations (`status`, `policy validate`) against the
- * installed binary. It is SKIPPED when visp or an initialized kit is absent
- * (e.g. CI), so it never fails there; it runs locally where both are present.
+ * installed binary. It is SKIPPED when a Kit build or an initialized `.visp/`
+ * is absent, so a plain `pnpm test` on a fresh clone does not fail on their
+ * account — and because a skip is not a result, `scripts/pair-check.mjs` runs
+ * this file separately and treats any skip as a failure. `pnpm test:pair:served`
+ * supplies both preconditions from the published Kit, with no visp-kit
+ * checkout and no repository secret.
  *
  * Deliberately read-only: no `gate`/`verify`/`reconcile` calls, which would
  * mutate the working tree (e.g. .visp/reports/gate-report.md).
@@ -25,17 +30,28 @@ function vispOnPath(): boolean {
 const REPO_ROOT = process.cwd();
 const HAS_KIT_ARTIFACTS =
   existsSync(join(REPO_ROOT, ".visp", "policy.json")) || existsSync(join(REPO_ROOT, ".visp", "project.json"));
-const SIBLING_KIT = join(REPO_ROOT, "..", "visp-kit", "dist", "index.js");
+/**
+ * Which Kit this test drives, in order: `$VISP_KIT_PATH`, then the sibling
+ * checkout, then whatever `visp` is on PATH.
+ *
+ * `$VISP_KIT_PATH` exists so the Kit that was *probed* is the Kit that is
+ * *exercised*: `scripts/pair-check.mjs` accepts `--kit`/`--kit-npm`, records
+ * that Kit's identity, and spawns this file. Before that seam existed, a
+ * `--kit` pointing anywhere but the sibling produced a record naming one Kit
+ * and a run against another. See tests/helpers/kit-entry.ts.
+ */
+const KIT_ENTRY = resolveKitEntry({ repoRoot: REPO_ROOT }).entry;
+
 const LOCAL_BINARY = (() => {
-  if (existsSync(SIBLING_KIT)) {
+  if (KIT_ENTRY !== null) {
     const directory = mkdtempSync(join(tmpdir(), "visp-live-contract-"));
     if (process.platform === "win32") {
       const wrapper = join(directory, "visp.cmd");
-      writeFileSync(wrapper, `@echo off\r\nnode "${SIBLING_KIT}" %*\r\n`, "utf8");
+      writeFileSync(wrapper, `@echo off\r\nnode "${KIT_ENTRY}" %*\r\n`, "utf8");
       return wrapper;
     }
     const wrapper = join(directory, "visp");
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${SIBLING_KIT}" "$@"\n`, "utf8");
+    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${KIT_ENTRY}" "$@"\n`, "utf8");
     chmodSync(wrapper, 0o755);
     return wrapper;
   }

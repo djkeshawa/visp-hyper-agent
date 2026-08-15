@@ -1,0 +1,97 @@
+name: Pair check (private source)
+
+# Manual only, and never part of a pull request's checks.
+#
+# This is the pair check against the *development* branches of both
+# repositories rather than the published pair. It needs a cross-repository
+# checkout of `djkeshawa/visp-kit`, which is private: the default GITHUB_TOKEN
+# is scoped to this repository, so it needs a PAT with `repo` scope stored as
+# the VISP_KIT_TOKEN secret. Forks and outside contributors cannot have it.
+#
+# It used to live in `ci.yml` with every step wrapped in
+# `if: steps.kit_token.outputs.available == 'true'`, so that a fork would not
+# be blocked. The cost of that kindness was a job that reported success while
+# doing nothing — a green tick for a check nobody outside the owner could run.
+# Moving it here fixes both halves: nothing is gated on a secret any more
+# (missing token is a hard failure, below), and because the workflow is
+# `workflow_dispatch` only, it contributes no tick to anyone's pull request.
+#
+# The check every contributor can run lives in `ci.yml` as the `pair` job, and
+# on a laptop as `pnpm test:pair:served`. It drives the Kit npm serves.
+on:
+  workflow_dispatch:
+    inputs:
+      kit_ref:
+        description: The visp-kit ref to pair against
+        required: false
+        default: develop
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      # No `if:` guards anywhere in this job. A run that cannot reach Kit must
+      # fail, not skip: this workflow exists to produce evidence, and a skipped
+      # step produces none while looking like it did.
+      - name: Require the cross-repository token
+        env:
+          VISP_KIT_TOKEN: ${{ secrets.VISP_KIT_TOKEN }}
+        run: |
+          if [ -z "$VISP_KIT_TOKEN" ]; then
+            echo "::error title=Kit contract NOT verified::VISP_KIT_TOKEN is not set, so the private visp-kit repository cannot be checked out and the source pair cannot be exercised. Add a PAT with repo scope as the VISP_KIT_TOKEN secret, or use the secret-free served-pair check: the 'pair' job in ci.yml, or 'pnpm test:pair:served'."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          path: visp-hyper-agent
+
+      - uses: actions/checkout@v4
+        with:
+          repository: djkeshawa/visp-kit
+          ref: ${{ inputs.kit_ref }}
+          token: ${{ secrets.VISP_KIT_TOKEN }}
+          path: visp-kit
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build Visp Kit
+        working-directory: visp-kit
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Build Visp Hyper Agent
+        working-directory: visp-hyper-agent
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      # `.visp/` is gitignored, so the contract test has no Kit artifacts to
+      # read until a project is initialized inside the checkout.
+      - name: Initialize a Visp project for the contract fixture
+        working-directory: visp-hyper-agent
+        run: node ../visp-kit/dist/index.js init . --agent none
+
+      # Run through the pair check rather than calling vitest directly.
+      # `tests/visp-binary-contract.test.ts` is guarded by `describe.skipIf`, so
+      # if the Kit build or the `.visp/` init above quietly produced nothing,
+      # vitest reports `success: true` with every test pending and this job goes
+      # green having verified nothing. The pair check treats a skip as a
+      # failure, and writes a record naming the two commits it exercised and the
+      # surface that ran it. See docs/pair-verification.md.
+      - name: Verify the Kit<->Hyper pair
+        working-directory: visp-hyper-agent
+        run: node scripts/pair-check.mjs --kit ../visp-kit --record pair-check.json
+
+      - name: Upload the pair-check record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pair-check-record-source
+          path: visp-hyper-agent/pair-check.json
+          if-no-files-found: warn

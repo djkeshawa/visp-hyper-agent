@@ -76,8 +76,11 @@ See [docs/development.md](docs/development.md) for the build, and
 Before reporting something as a bug, it may be a known limit:
 
 - **Conformance is partial.** Some areas are proven and some are not.
-- **Kit and Hyper are compatible in tested pairs**, pinned to exact commits. Do
-  not assume any two versions work together.
+- **Kit and Hyper are compatible in tested pairs**, pinned to exact commits and
+  artifact hashes. Do not assume any two versions work together, and do not add
+  a `peerDependencies` range to say otherwise — `pnpm test:pair:served` is how
+  the claim gets made, and it needs no `visp-kit` checkout. See
+  [docs/pair-verification.md](docs/pair-verification.md).
 - **Durable shared memory is not available yet.** File-based memory is the
   default; the legacy HTTP mode exists only for private migrations.
 - **`inconclusive` is a deliberate verdict.** It means the evidence did not

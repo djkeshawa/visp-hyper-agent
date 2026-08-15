@@ -78,43 +78,56 @@ describe("npm pack smoke", () => {
     expect(serverInfo.version).toBe(manifest.version);
   });
 
-  it("declares the bridge-window Kit range as an optional peer", async () => {
-    const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as {
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-      optionalDependencies?: Record<string, string>;
-      peerDependencies?: Record<string, string>;
-      peerDependenciesMeta?: Record<string, { optional?: boolean }>;
-    };
+  // Kit↔Hyper compatibility is an exact pair, pinned by commit and artifact
+  // hash (visp-kit ADR 0007). The manifest used to carry
+  // `peerDependencies: { "visp-kit": ">=0.2.3 <0.7.0" }`, which npm never
+  // enforced (it was `optional: true`), which ranged over version strings the
+  // compatibility matrix deliberately does not record, and whose floor —
+  // `visp-kit@0.2.3` — is the one build that matrix marks hazardous, because
+  // it still declares the `visp` binary Hyper now owns. Narrowing it would
+  // have been the same claim with better bounds. It is gone, and this test is
+  // what keeps it gone.
+  it("publishes no supported-version range for visp-kit, in any dependency field", async () => {
+    const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as Record<
+      string,
+      unknown
+    >;
 
-    // The range must include the Kit this Hyper is meant to drive. It read
-    // "<0.5.0" while Kit moved to 0.5.0, which would have published an unmet
-    // peer dependency for every user installing the pair — caught at the
-    // publish gate, not by a test, which is why this assertion now exists.
-    expect(manifest.peerDependencies?.["visp-kit"]).toBe(">=0.2.3 <0.7.0");
-    expect(manifest.peerDependenciesMeta?.["visp-kit"]).toEqual({ optional: true });
-    expect(manifest.dependencies?.["visp-kit"]).toBeUndefined();
-    expect(manifest.devDependencies?.["visp-kit"]).toBeUndefined();
-    expect(manifest.optionalDependencies?.["visp-kit"]).toBeUndefined();
+    const dependencyFields = [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+      "peerDependenciesMeta",
+      "bundledDependencies",
+      "bundleDependencies"
+    ] as const;
+
+    for (const field of dependencyFields) {
+      const block = manifest[field];
+      if (block === undefined) continue;
+      const names = Array.isArray(block) ? block : Object.keys(block as Record<string, unknown>);
+      expect(names, `${field} must make no claim about visp-kit`).not.toContain("visp-kit");
+    }
+
+    // Belt and braces: no field anywhere in the manifest may key a semver
+    // range off Kit's name, whatever a future maintainer calls the block.
+    const manifestText = JSON.stringify(manifest);
+    expect(manifestText).not.toMatch(/"visp-kit"\s*:\s*"[^"]*\d/u);
   });
 
-  it("the peer range admits the Kit version this package is built against", async () => {
-    // A range that excludes the current Kit is invisible in this repo and only
-    // surfaces in a user's install. Derive it rather than restating a literal.
+  it("points at the pinned-pair check instead, and that check is runnable without a private repo", async () => {
+    // Deleting the range removes a (false) guarantee. What replaces it has to
+    // exist and be runnable, or the deletion is just a quieter silence:
+    // `pnpm test:pair:served` resolves the Kit npm actually serves and drives
+    // it, no repository secret and no visp-kit checkout involved.
     const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as {
-      peerDependencies?: Record<string, string>;
+      scripts?: Record<string, string>;
+      files?: string[];
     };
-    const range = manifest.peerDependencies?.["visp-kit"] ?? "";
-    const upper = /<\s*(\d+)\.(\d+)\.(\d+)/u.exec(range);
-    expect(upper).not.toBeNull();
 
-    const kitPackage = JSON.parse(
-      await readFile(join(packageRoot, "..", "visp-kit", "package.json"), "utf8")
-    ) as { version: string };
-    const [kMaj, kMin] = kitPackage.version.split(".").map(Number);
-    const [, uMaj, uMin] = (upper ?? []).map(Number);
-
-    const kitBelowUpperBound = kMaj < uMaj || (kMaj === uMaj && kMin < uMin);
-    expect(kitBelowUpperBound).toBe(true);
+    expect(manifest.scripts?.["test:pair:served"]).toMatch(/pair-check\.mjs/u);
+    expect(manifest.scripts?.["test:pair:served"]).toMatch(/--kit-npm/u);
+    expect(manifest.files).toContain("docs/pair-verification.md");
   });
 });

@@ -413,6 +413,76 @@ describe("WorkflowAction protocol negotiation", () => {
   });
 });
 
+/**
+ * The manifest used to answer "which Kit works with this Hyper?" with
+ * `peerDependencies: { "visp-kit": ">=0.2.3 <0.7.0" }`. That range is deleted
+ * (visp-kit ADR 0007: compatibility is an exact pair pinned by commit and
+ * artifact hash), and the runtime negotiation is what replaces it. A refusal
+ * that does not say so sends the reader looking for a version to bump — and
+ * there is no version that would help.
+ */
+describe("negotiation refusals point at the pinned pair, never at a version to bump", () => {
+  function refusalReason(contract: unknown, preference: "auto" | "3.0" | "3.4" = "auto"): string {
+    const result = selectWorkflowActionProtocol(contract, preference);
+    if (result.ok) throw new Error("expected the negotiation to refuse");
+    return result.reason;
+  }
+
+  const refusals: Array<[string, string]> = [
+    ["a contract version Hyper does not implement", refusalReason({ ...integrationContract(), contractVersion: "3.0" })],
+    [
+      "a foreign Kit identity",
+      refusalReason({ ...integrationContract(workflowActionAdvertisement()), kit: { packageName: "not-visp-kit", cliName: "visp" } })
+    ],
+    ["a legacy contract with no protocols block", refusalReason(integrationContract(), "3.0")],
+    [
+      "no mutually supported protocol",
+      refusalReason(
+        integrationContract(
+          workflowActionAdvertisement({ supported: ["9.9"], default: "9.9", schemaHashes: { "9.9": V2_HASH } })
+        )
+      )
+    ],
+    [
+      "a malformed advertisement",
+      refusalReason(integrationContract(workflowActionAdvertisement({ supported: [] })))
+    ],
+    [
+      "a schema hash that misses the local trust anchor",
+      refusalReason(
+        integrationContract(
+          workflowActionAdvertisement({
+            supported: ["2.0"],
+            default: "2.0",
+            schemaHashes: { "2.0": `sha256:${"0".repeat(64)}` }
+          })
+        )
+      )
+    ]
+  ];
+
+  it.each(refusals)("names the pinned model and the command that answers, for %s", (_label, reason) => {
+    expect(reason).toContain("pinned by commit and artifact hash");
+    expect(reason).toContain("visp-dev doctor");
+  });
+
+  it.each(refusals)("never tells the reader to upgrade Kit, for %s", (_label, reason) => {
+    expect(reason).not.toMatch(/upgrade|newer|at least \d|>=\s*\d/iu);
+  });
+
+  it("names both sides of the disagreement instead of only the verdict", () => {
+    const reason = refusalReason(
+      integrationContract(
+        workflowActionAdvertisement({ supported: ["9.9"], default: "9.9", schemaHashes: { "9.9": V2_HASH } })
+      )
+    );
+    expect(reason).toContain("9.9");
+    for (const version of WORKFLOW_ACTION_PROTOCOL_PREFERENCE) {
+      expect(reason).toContain(version);
+    }
+  });
+});
+
 describe("WorkflowAction strict schemas and adapters", () => {
   it("strictly rejects unknown v2 and nested v3 fields", () => {
     expect(workflowActionV2StrictSchema.safeParse({ ...workflowActionV2(), extra: true }).success).toBe(false);

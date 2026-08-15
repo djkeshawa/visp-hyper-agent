@@ -27,17 +27,24 @@ ignored workflow evidence: if it is deleted before a task closes, recreate the
 task and collect fresh evidence rather than claiming the earlier task complete.
 
 ```bash
-pnpm check     # typecheck + test
+pnpm check            # typecheck + test
 pnpm test
-pnpm test:pair # verify this checkout against a real sibling Kit build
+pnpm test:pair        # verify this checkout against a sibling visp-kit build
+pnpm test:pair:served # verify it against the Kit npm serves — no checkout needed
 pnpm exec vitest run tests/<file>.test.ts
 ```
 
 `pnpm check` does **not** cover the Kit<->Hyper seam. The one test that drives
-the real Kit binary skips when a built sibling Kit and an initialized `.visp/`
-are absent, and a skipped test reports as a pass. `pnpm test:pair` is the check
-that treats that skip as a failure and records which commits and which surface
-produced the result — see [pair verification](pair-verification.md).
+the real Kit binary skips when a built Kit and an initialized `.visp/` are
+absent, and a skipped test reports as a pass. The pair check treats that skip
+as a failure and records which artifacts and which surface produced the result
+— see [pair verification](pair-verification.md).
+
+`pnpm test:pair:served` is the one to reach for if you do not have visp-kit
+checked out, which includes every outside contributor: it installs the
+published Kit into the gitignored `.visp/hyper/served-kit/`, initializes
+`.visp/` if this checkout has none, and records the tarball and integrity hash
+of the artifact it drove.
 
 Every entry point above builds `dist/` first, including the single-file form.
 Several suites drive the published artifact — they spawn `node dist/index.js`,

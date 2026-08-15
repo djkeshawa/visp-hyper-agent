@@ -49,6 +49,7 @@
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm test",
     "test:pair": "node scripts/pair-check.mjs",
+    "test:pair:served": "node scripts/pair-check.mjs --kit-npm visp-kit@latest --init-if-missing",
     "prepack": "pnpm build",
     "test:coverage": "vitest run --coverage"
   },
@@ -60,14 +61,6 @@
   "dependencies": {
     "commander": "^12.1.0",
     "zod": "^3.25.76"
-  },
-  "peerDependencies": {
-    "visp-kit": ">=0.2.3 <0.7.0"
-  },
-  "peerDependenciesMeta": {
-    "visp-kit": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
