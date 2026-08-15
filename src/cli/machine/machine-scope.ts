@@ -1,8 +1,10 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { execFileResolved, resolveExecutable } from "../../core/executable-resolver.js";
+import { resolveInstalledPackageExport } from "../../core/installed-package.js";
 import { initializeProject, readConfig } from "../../core/session-manager.js";
 import {
   INTEL_MCP_TOOL_PREFIX,
@@ -21,6 +23,9 @@ import { KitCommandBridge, hasKitArtifacts } from "../../kit/kit-command-bridge.
 
 export const MACHINE_ADAPTER_SPECIFIER = "visp-dev/machine-scope";
 
+const MACHINE_ADAPTER_PACKAGE = "visp-dev";
+const MACHINE_ADAPTER_SUBPATH = "./machine-scope";
+
 type MachineScopeAdapter = {
   readonly runSetup: (input: {
     readonly projectPath: string;
@@ -28,14 +33,48 @@ type MachineScopeAdapter = {
   }) => Promise<{ readonly success: boolean; readonly report: string }>;
 };
 
+/**
+ * Load the adapter from Hyper's own module graph, and failing that from the
+ * globally installed visp-dev on PATH.
+ *
+ * The bare specifier alone was the whole of the first dead end a new user met:
+ * `npm install -g visp-dev` puts the command on PATH but not on Hyper's
+ * node_modules chain, so the import threw, setup reported the package "not
+ * installed", and its remedy was the install the user had already done.
+ * Nothing about that loop was visible from either message.
+ */
 async function loadAdapter(): Promise<MachineScopeAdapter | null> {
+  const bundled = await importAdapter(MACHINE_ADAPTER_SPECIFIER);
+  if (bundled !== null) return bundled;
+
+  const installed = await resolveInstalledPackageExport({
+    binary: MACHINE_ADAPTER_PACKAGE,
+    packageName: MACHINE_ADAPTER_PACKAGE,
+    subpath: MACHINE_ADAPTER_SUBPATH
+  });
+  return installed === null ? null : importAdapter(pathToFileURL(installed).href);
+}
+
+async function importAdapter(specifier: string): Promise<MachineScopeAdapter | null> {
   try {
-    const loaded = (await import(MACHINE_ADAPTER_SPECIFIER)) as Partial<MachineScopeAdapter>;
+    const loaded = (await import(specifier)) as Partial<MachineScopeAdapter>;
     if (typeof loaded.runSetup === "function") return loaded as MachineScopeAdapter;
     return null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether `setup` has a machine scope to run at all.
+ *
+ * Doctor asks so it can stop naming `visp setup` as the way forward on a
+ * machine where setup cannot run. Loading is the only honest test — the
+ * package can be present and still export nothing usable — and the adapter has
+ * no import-time side effects.
+ */
+export async function machineScopeAvailable(): Promise<boolean> {
+  return (await loadAdapter()) !== null;
 }
 
 export async function runSetupVerb(projectPath: string, args: readonly string[]): Promise<void> {
@@ -45,7 +84,10 @@ export async function runSetupVerb(projectPath: string, args: readonly string[])
       [
         "visp setup needs the Visp Dev machine-scope adapter, which is not installed.",
         "Install it with: npm install -g visp-dev",
-        "Then re-run: visp setup"
+        "Then re-run: visp setup",
+        "",
+        "Setup only covers the machine. To set this project up without it, run:",
+        "  visp-kit init ."
       ].join("\n")
     );
     process.exitCode = 1;
@@ -188,18 +230,6 @@ async function reportIntelProviderGap(projectPath: string): Promise<void> {
 }
 
 /**
- * Create the project's memory store when visp-memory is installed but has
- * never been initialised here.
- *
- * This is the missing first domino behind the setup/recall contradiction on a
- * FRESH project: `enableLlmMemory` (correctly) refuses to point `recall` at a
- * store that does not exist, but nothing ever created one — so setup still
- * printed "recall/learn available" and recall still said "not configured",
- * exactly the pair of sentences this whole path exists to prevent.
- * `visp-memory init` is idempotent, writes visp-memory.yaml beside the
- * project, and gitignores its own store.
- */
-/**
  * Install the generic (host-neutral) tool assets when none were ever
  * installed. Never forces: an existing installation, customised or not,
  * belongs to the user and to `visp-hyper init --tool <tool> --force-assets`.
@@ -217,8 +247,21 @@ async function installGenericAssets(projectPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Create the project's memory store when visp-memory is installed but has
+ * never been initialised here.
+ *
+ * This is the missing first domino behind the setup/recall contradiction on a
+ * FRESH project: `enableLlmMemory` (correctly) refuses to point `recall` at a
+ * store that does not exist, but nothing ever created one — so setup still
+ * printed "recall/learn available" and recall still said "not configured",
+ * exactly the pair of sentences this whole path exists to prevent.
+ * `visp-memory init` is idempotent, writes visp-memory.yaml beside the
+ * project, and gitignores its own store.
+ */
 async function initialiseMemoryStore(projectPath: string): Promise<boolean> {
   if (await pathExists(join(projectPath, "visp-memory.yaml"))) return false;
+
   if ((await resolveExecutable("visp-memory")) === null) return false;
 
   try {

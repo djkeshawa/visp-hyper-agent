@@ -166,6 +166,45 @@ export async function resolveExecutable(
 }
 
 /**
+ * Where `command` actually lives on PATH, or `null` when it lives nowhere.
+ *
+ * Deliberately a different question from {@link resolveExecutable}, which
+ * answers "what do I hand to execFile" and on POSIX hands back the bare name
+ * because execFile searches PATH itself. That answer cannot tell a caller
+ * whether the command exists, nor where its package sits on disk — and both
+ * gaps shipped: `visp setup` declared visp-dev missing while it sat on PATH,
+ * and doctor's "the visp-memory CLI is not installed" branch was unreachable
+ * on every non-Windows host.
+ */
+export async function findExecutableOnPath(command: string): Promise<string | null> {
+  const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  // On POSIX a command name is the filename. On win32 it is the filename minus
+  // one of PATHEXT, unless the caller already supplied the extension.
+  const extensions = !WINDOWS || extname(command) ? [""] : pathExtensions();
+
+  for (const dir of dirs) {
+    for (const ext of extensions) {
+      const candidate = join(dir, command + ext);
+      if (await isRunnableFile(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Existence is the whole test on win32, where the execute bit has no meaning;
+ * elsewhere a PATH entry that cannot be executed is not a hit.
+ */
+async function isRunnableFile(candidate: string): Promise<boolean> {
+  try {
+    await access(candidate, WINDOWS ? constants.F_OK : constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * `execFile`-compatible runner that first resolves `command` for the host
  * platform. Preserves execFile's throw-on-failure contract, including a
  * synthetic ENOENT error when nothing resolves. Newer Node throws `EINVAL` for
