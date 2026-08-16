@@ -59,6 +59,51 @@ jobs:
 
       - run: pnpm test
 
+  # THE COVERAGE GATE. `vitest.config.ts` carries coverage thresholds, and until
+  # this job existed nothing hosted ever ran `test:coverage` — the matrix above
+  # runs `pnpm test`, which does not evaluate a threshold. The numbers were
+  # therefore enforced on whichever laptop happened to type `pnpm check`, which
+  # is to say nowhere.
+  #
+  # ONE PLATFORM, DELIBERATELY, and it is the platform the thresholds were
+  # measured on. Coverage is not portable: `src/core/executable-resolver.ts`
+  # spends most of its body behind `if (!WINDOWS)`, so the same suite covers
+  # measurably different branches on Windows and on Linux. Running the threshold
+  # check across the matrix would pin four jobs to one job's measurement and
+  # produce failures that mean "different platform", not "coverage regressed".
+  # Windows and Node 24 are not less checked for it — they run the whole suite
+  # in `check` above; they are only not asked to reproduce a Linux percentage.
+  #
+  # The setup is kept identical to `check` on purpose: visp-memory and the build
+  # are preconditions of the suite, not of coverage, and a job that differs in
+  # setup would eventually disagree with `check` for a reason that is not the
+  # code.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # See the note in `check`: the memory contract test fails rather than
+      # skips without the real binary, deliberately.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install --upgrade visp-memory
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: pnpm test:coverage
+
   # THE PAIR CHECK. `tests/integration/kit/visp-binary-contract.test.ts` is the only test that
   # drives a real Kit binary, and it self-skips without one — so the `check`
   # job above, which has no Kit, verifies the seam not at all and says nothing
