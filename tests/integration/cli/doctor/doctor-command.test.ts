@@ -1,0 +1,726 @@
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { dirname, join } from "node:path";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { promisify } from "node:util";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runCli } from "../../../../src/cli/index.js";
+import { renderGitHookContent } from "../../../../src/cli/commands/hooks.js";
+import { defaultConfig } from "../../../../src/core/defaults.js";
+import { createWorkflowActionV3Id } from "../../../../src/kit/workflow-action-adapter.js";
+import { TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES } from "../../../../src/kit/workflow-action-protocol.js";
+import { createFakeHostBinaryDir } from "../../../helpers/fake-host-binary.js";
+import {
+  createVispShim,
+  gateResultFixture,
+  policyValidateFixture
+} from "../../../helpers/visp-shim.js";
+
+const originalPath = process.env.PATH;
+const execFileAsync = promisify(execFile);
+
+async function createProject(): Promise<string> {
+  const projectPath = await mkdtemp(join(tmpdir(), "visp-doctor-"));
+  await mkdir(join(projectPath, ".visp", "hyper"), { recursive: true });
+  await writeFile(
+    join(projectPath, ".visp", "hyper", "config.json"),
+    `${JSON.stringify(defaultConfig, null, 2)}\n`,
+    "utf8"
+  );
+  await writeFile(join(projectPath, ".visp", "hyper", "state.json"), "{}\n", "utf8");
+  await execFileAsync("git", ["init"], { cwd: projectPath });
+  return projectPath;
+}
+
+async function writeKitArtifacts(projectPath: string): Promise<void> {
+  const contextDir = join(projectPath, ".visp", "features", "001-demo", "context");
+  await mkdir(contextDir, { recursive: true });
+  await writeFile(join(projectPath, ".visp", "policy.json"), "{}\n", "utf8");
+  await writeFile(
+    join(contextDir, "T001.context.json"),
+    JSON.stringify({
+      taskId: "T001",
+      includedFiles: [{ path: "src/feature.ts", reason: "task target", content: "export {};\n" }],
+      validationCommands: ["pnpm test"]
+    }),
+    "utf8"
+  );
+}
+
+async function writeHyperGitHook(projectPath: string): Promise<void> {
+  await mkdir(join(projectPath, ".git", "hooks"), { recursive: true });
+  const hookPath = join(projectPath, ".git", "hooks", "pre-commit");
+  await writeFile(hookPath, renderGitHookContent(), "utf8");
+  await chmod(hookPath, 0o755);
+}
+
+function kitReadContractArtifacts(): Array<Record<string, unknown>> {
+  return [
+    {
+      id: "context-pack",
+      path: ".visp/features/001-demo/context/T001.context.json",
+      role: "context-pack",
+      mimeType: "application/json",
+      requiredFor: ["handoff", "implementation", "checkpoint"],
+      freshness: "hash-pinned"
+    },
+    {
+      id: "implementation-checklist",
+      path: ".visp/features/001-demo/context/T001.implementation-checklist.json",
+      role: "checklist",
+      mimeType: "application/json",
+      requiredFor: ["implementation", "pr"],
+      freshness: "gate-validated"
+    }
+  ];
+}
+
+function kit20IntegrationContract(
+  projectPath: string,
+  requiredArtifacts: Array<Record<string, unknown>> = kitReadContractArtifacts()
+): Record<string, unknown> {
+  return {
+    success: true,
+    contractVersion: "2.0",
+    protocols: {
+      workflowAction: {
+        supported: ["2.0", "3.0"],
+        default: "2.0",
+        schemaHashes: {
+          "2.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["2.0"],
+          "3.0": TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.0"]
+        }
+      }
+    },
+    kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.2" },
+    targetPath: projectPath,
+    initialized: true,
+    activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
+    activeTask: { id: "T001", title: "Demo task", status: "ready" },
+    commands: {},
+    capabilities: {
+      governance: { failClosedGates: true },
+      contextGrounding: {
+        taskScopedContextPacks: true,
+        artifactProvenance: true,
+        orchestratorReadContract: true
+      },
+      evidence: { verification: true, review: true, reconciliation: true },
+      enforcementSurfaces: { gitPreCommitHook: true, ciPolicyGate: true }
+    },
+    workflow: {
+      freshnessChecks: [
+        ".visp/features/<feature>/context/<task-id>.context.json",
+        "contextPack.artifactProvenance[]"
+      ]
+    },
+    artifacts: {
+      kitSignals: [".visp/policy.json", ".visp/project.json"],
+      projectStatus: ".visp/status.json",
+      projectProfile: ".visp/project.json",
+      featureRoot: ".visp/features",
+      featureDir: ".visp/features/001-demo",
+      taskGraph: ".visp/features/001-demo/task-graph.json",
+      contextPack: ".visp/features/001-demo/context/T001.context.json",
+      contextPrompt: ".visp/features/001-demo/context/T001.prompt.md"
+    },
+    orchestrator: {
+      readContractVersion: "0.1",
+      requiredArtifacts,
+      freshnessPolicy: {
+        contextPackHashPinned: true,
+        provenanceArtifactsHashPinned: true,
+        staleContextBlocks: ["implementation", "checkpoint", "pr"]
+      }
+    },
+    warnings: []
+  };
+}
+
+function doctorWorkflowActionV3(overrides: Record<string, unknown> = {}) {
+  const unavailable = { state: "unavailable", reasonCode: "not_in_source_artifact" } as const;
+  const action = {
+    protocolVersion: "3.0",
+    canonicalVersion: "1.0",
+    actionId: `sha256:${"0".repeat(64)}`,
+    phase: "implement",
+    feature: { id: "001", slug: "demo" },
+    task: {
+      id: "T001",
+      title: "Demo task",
+      status: "ready",
+      dependsOn: [],
+      parallelizable: false
+    },
+    taskClass: unavailable,
+    risk: { level: { state: "available", value: "medium" }, factors: unavailable },
+    assurance: {
+      level: "kit_strict",
+      profile: unavailable,
+      workflowStrictness: { state: "available", value: "strict" }
+    },
+    goal: "Implement the current task.",
+    baseCommit: { state: "unavailable", reasonCode: "not_captured" },
+    requiredReads: [],
+    scope: {
+      writablePaths: ["src/feature.ts"],
+      expectedPaths: unavailable,
+      forbiddenPaths: ["package.json"],
+      operationLimits: unavailable
+    },
+    claims: unavailable,
+    validationOracles: [],
+    validationCommands: ["pnpm test"],
+    requiredEvidence: unavailable,
+    policy: {
+      status: { state: "available", value: "valid" },
+      appliedOverrides: { state: "available", value: [] }
+    },
+    findings: [],
+    verdict: "ready",
+    nextCommand: "visp implement",
+    ...overrides
+  };
+  action.actionId = createWorkflowActionV3Id(action);
+  return action;
+}
+
+async function writeActiveKitReadContract(projectPath: string): Promise<void> {
+  await mkdir(join(projectPath, ".visp", "hyper", "current"), { recursive: true });
+  await writeFile(
+    join(projectPath, ".visp", "hyper", "current", "context-manifest.json"),
+    JSON.stringify({
+      version: "0.1",
+      sessionId: "vh_test",
+      kitReadContract: {
+        contractVersion: "2.0",
+        readContractVersion: "0.1",
+        requiredArtifacts: kitReadContractArtifacts(),
+        freshnessPolicy: {
+          contextPackHashPinned: true,
+          provenanceArtifactsHashPinned: true,
+          staleContextBlocks: ["implementation", "checkpoint", "pr"]
+        }
+      }
+    }),
+    "utf8"
+  );
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function prependToPath(dir: string): void {
+  process.env.PATH = `${dir}${process.platform === "win32" ? ";" : ":"}${originalPath ?? ""}`;
+}
+
+describe("doctor command", () => {
+  let logs: string[];
+
+  // Several cases install a real git hook, and `renderGitHookContent` resolves
+  // `dist/index.js` to write the hook's command line. That artifact is built by
+  // the suite's `globalSetup` (tests/setup/build-dist.ts) before any test file
+  // is collected, so there is nothing for this file to arrange.
+
+  beforeEach(() => {
+    logs = [];
+    process.exitCode = undefined;
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      logs.push(String(message));
+    });
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    process.exitCode = undefined;
+    vi.restoreAllMocks();
+  });
+
+  it("probes memory the way the verbs use it, not an invented HTTP default", async () => {
+    // On a freshly set-up project, `visp recall` answered fine through the
+    // visp-memory CLI while doctor reported "llm-memory unavailable at
+    // http://localhost:8000" — it probed a default port no verb ever uses.
+    // With no endpoint configured, doctor must check the CLI instead.
+    const projectPath = await createProject();
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "config.json"),
+      `${JSON.stringify({ ...defaultConfig, memoryMode: "llm-memory" }, null, 2)}\n`,
+      "utf8"
+    );
+    // The CLI is placed on PATH rather than inferred from the machine. This
+    // case is about WHICH surface doctor probes, and its expectation used to be
+    // computed from `resolveExecutable` — the same predicate production used,
+    // so oracle and subject agreed by construction and the assertion could not
+    // fail however the probe behaved. It also made the verdict depend on
+    // whatever the host happened to have installed. The absent-CLI verdict has
+    // its own coverage in tests/doctor-memory-gap.test.ts.
+    prependToPath(await createFakeHostBinaryDir("visp-memory", "0.5.0"));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    const memory = summary.checks.find((check) => check.id === "memory");
+    expect(memory?.detail).not.toContain("localhost:8000");
+    expect(memory?.status).toBe("pass");
+  });
+
+  it("checks the healthy Visp Kit bridge path", async () => {
+    const projectPath = await createProject();
+    await writeKitArtifacts(projectPath);
+    await writeActiveKitReadContract(projectPath);
+    await writeHyperGitHook(projectPath);
+    const shim = await createVispShim({
+      status: {
+        stdout: {
+          success: true,
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo" },
+          activeTask: { id: "T001", title: "Demo task", status: "ready" }
+        }
+      },
+      integration: {
+        stdout: kit20IntegrationContract(projectPath)
+      },
+      next: { stdout: doctorWorkflowActionV3() },
+      policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+      gate: {
+        stdout: gateResultFixture({
+          targetPath: projectPath,
+          stage: "next",
+          feature: { id: "001", slug: "demo" }
+        })
+      }
+    });
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    expect(summary.success).toBe(true);
+    expect(summary.checks.find((check) => check.id === "hyper-version")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "mcp")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "mcp")?.detail).toContain("surface hash");
+    expect(summary.checks.find((check) => check.id === "mcp")?.detail).toContain("input/output schemas");
+    expect(summary.checks.find((check) => check.id === "kit-binary")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("fail-closed gates");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("artifact provenance");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("orchestrator read contract");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("provenance freshness");
+    expect(summary.checks.find((check) => check.id === "kit-contract")?.detail).toContain("git+CI enforcement");
+    const actionProtocol = summary.checks.find((check) => check.id === "kit-workflow-action");
+    expect(actionProtocol?.status).toBe("pass");
+    expect(actionProtocol?.detail).toContain("visp-kit 0.1.2");
+    expect(actionProtocol?.detail).toContain("integration contract 2.0");
+    expect(actionProtocol?.detail).toContain("protocol 3.0");
+    expect(actionProtocol?.detail).toContain("advertised_verified");
+    expect(actionProtocol?.detail).toContain(TRUSTED_WORKFLOW_ACTION_SCHEMA_HASHES["3.0"]);
+    expect(actionProtocol?.detail).toContain("verdict ready");
+    expect(actionProtocol?.detail).toContain(
+      "Configured strict surfaces consume this negotiated canonical action."
+    );
+    expect(actionProtocol?.detail).not.toContain(
+      "remain on WorkflowAction 2.0 until P1-07"
+    );
+    expect(summary.checks.find((check) => check.id === "kit-read-contract")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "kit-read-contract")?.detail).toContain("2 required artifacts");
+    expect(summary.checks.find((check) => check.id === "kit-policy")?.status).toBe("pass");
+    expect(summary.checks.find((check) => check.id === "kit-context-pack")?.detail).toContain("T001");
+    expect(summary.checks.find((check) => check.id === "git-hook")?.status).toBe("pass");
+
+    const argvLog = await readFile(shim.argvLogPath, "utf8");
+    expect(argvLog).toContain('["policy","validate","--json"]');
+    expect(argvLog).toContain('["gate","next","--json"]');
+    expect(argvLog).toContain('["next","--format","json","--protocol","3.0","--json"]');
+  });
+
+  it("warns when the active handoff lacks the Kit read contract", async () => {
+    const projectPath = await createProject();
+    await writeKitArtifacts(projectPath);
+    await writeHyperGitHook(projectPath);
+    const shim = await createVispShim({
+      status: {
+        stdout: {
+          success: true,
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo" },
+          activeTask: { id: "T001", title: "Demo task", status: "ready" }
+        }
+      },
+      integration: {
+        stdout: kit20IntegrationContract(projectPath, kitReadContractArtifacts().slice(0, 1))
+      },
+      next: { stdout: doctorWorkflowActionV3() },
+      policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+      gate: {
+        stdout: gateResultFixture({
+          targetPath: projectPath,
+          stage: "next",
+          feature: { id: "001", slug: "demo" }
+        })
+      }
+    });
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+      nextCommand: string;
+    };
+    const readContract = summary.checks.find((check) => check.id === "kit-read-contract");
+    expect(summary.success).toBe(true);
+    expect(readContract?.status).toBe("warn");
+    expect(readContract?.detail).toContain("no context manifest");
+    expect(summary.nextCommand).toContain("visp work");
+  });
+
+  it("warns when the Kit contract lacks provenance freshness support", async () => {
+    const projectPath = await createProject();
+    await writeKitArtifacts(projectPath);
+    const shim = await createVispShim({
+      status: {
+        stdout: {
+          success: true,
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo" },
+          activeTask: { id: "T001", title: "Demo task", status: "ready" }
+        }
+      },
+      integration: {
+        stdout: {
+          success: true,
+          contractVersion: "2.0",
+          kit: { packageName: "visp-kit", cliName: "visp", version: "0.1.1" },
+          targetPath: projectPath,
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo", key: "001-demo", path: ".visp/features/001-demo" },
+          activeTask: { id: "T001", title: "Demo task", status: "ready" },
+          commands: {},
+          workflow: {
+            freshnessChecks: [".visp/features/<feature>/context/<task-id>.context.json"]
+          },
+          artifacts: {
+            kitSignals: [".visp/policy.json", ".visp/project.json"],
+            projectStatus: ".visp/status.json",
+            projectProfile: ".visp/project.json",
+            featureRoot: ".visp/features",
+            featureDir: ".visp/features/001-demo",
+            taskGraph: ".visp/features/001-demo/task-graph.json",
+            contextPack: ".visp/features/001-demo/context/T001.context.json",
+            contextPrompt: ".visp/features/001-demo/context/T001.prompt.md"
+          },
+          warnings: []
+        }
+      },
+      next: {
+        stdout: {
+          protocolVersion: "2.0",
+          phase: "implement",
+          taskId: "T001",
+          goal: "Implement the current task.",
+          requiredReads: [],
+          writablePaths: ["src/feature.ts"],
+          forbiddenPaths: [],
+          acceptanceOracles: [],
+          validationCommands: ["pnpm test"],
+          assuranceLevel: "kit_strict",
+          verdict: "ready",
+          findings: [],
+          nextCommand: "visp implement"
+        }
+      },
+      policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+      gate: {
+        stdout: gateResultFixture({
+          targetPath: projectPath,
+          stage: "next",
+          feature: { id: "001", slug: "demo" }
+        })
+      }
+    });
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+      nextCommand: string;
+    };
+    const contract = summary.checks.find((check) => check.id === "kit-contract");
+    const actionProtocol = summary.checks.find((check) => check.id === "kit-workflow-action");
+    expect(summary.success).toBe(true);
+    expect(contract?.status).toBe("warn");
+    expect(contract?.detail).toContain("does not advertise provenance freshness");
+    expect(actionProtocol?.status).toBe("pass");
+    expect(actionProtocol?.detail).toContain("protocol 2.0");
+    expect(actionProtocol?.detail).toContain("legacy_unadvertised");
+    expect(summary.nextCommand).toContain("provenance freshness");
+  });
+
+  it("warns, but does not fail, when the strict Kit backend is absent", async () => {
+    const projectPath = await createProject();
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string }>;
+      nextCommand: string;
+    };
+    expect(summary.success).toBe(true);
+    expect(summary.checks.find((check) => check.id === "kit-artifacts")?.status).toBe("warn");
+    // Was `visp init` — a command hidden from `visp --help`, so a user reading
+    // the documented thirteen verbs could not find it. Doctor must name a verb
+    // that exists.
+    //
+    // Which one it names depends on the machine, not on this project: `visp
+    // setup` when the visp-dev machine-scope adapter is loadable, `visp-kit
+    // init .` when it is not. So this asserts the property under test — a
+    // documented, reachable command — and leaves the choice between the two to
+    // tests/doctor-setup-route.test.ts, which controls the probe. A bare
+    // `toContain("visp setup")` would pass on either route, because the
+    // project-scope text mentions `visp setup` only to say it cannot help.
+    expect(summary.nextCommand).not.toContain("visp init ");
+    expect(summary.nextCommand).toMatch(/Run `visp setup`\.|Run `visp-kit init \.`/u);
+  });
+
+  it("validates the selected host manifest and detects modified installed assets", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "visp-doctor-assets-"));
+    await runCli([
+      "node",
+      "visp-hyper",
+      "--project",
+      projectPath,
+      "init",
+      "--tool",
+      "generic"
+    ]);
+    logs.length = 0;
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    let summary = JSON.parse(logs.join("")) as {
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    let assets = summary.checks.find((check) => check.id === "tool-assets");
+    expect(assets?.status).toBe("pass");
+    expect(assets?.detail).toContain("manifest 1.0");
+    expect(assets?.detail).toContain("validated 2026-07-25");
+
+    await writeFile(join(projectPath, "visp-hyper-instructions.md"), "tampered\n", "utf8");
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    summary = JSON.parse(logs.join("")) as {
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    assets = summary.checks.find((check) => check.id === "tool-assets");
+    expect(assets?.status).toBe("warn");
+    expect(assets?.detail).toContain("modified: visp-hyper-instructions.md");
+  });
+
+  it("fails when a visp-hyper-owned hook is marker-only or non-executable", async () => {
+    const projectPath = await createProject();
+    await mkdir(join(projectPath, ".git", "hooks"), { recursive: true });
+    const hookPath = join(projectPath, ".git", "hooks", "pre-commit");
+    await writeFile(hookPath, "# visp-hyper-guard hook\nexit 0\n", "utf8");
+    await chmod(hookPath, 0o755);
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+    let summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    expect(summary.success).toBe(false);
+    expect(summary.checks.find((check) => check.id === "git-hook")).toEqual(
+      expect.objectContaining({ status: "fail", detail: expect.stringContaining("modified") })
+    );
+
+    if (process.platform !== "win32") {
+      await writeFile(hookPath, renderGitHookContent(), "utf8");
+      await chmod(hookPath, 0o644);
+      logs.length = 0;
+      process.exitCode = undefined;
+      await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+      summary = JSON.parse(logs.join("")) as {
+        success: boolean;
+        checks: Array<{ id: string; status: string; detail: string }>;
+      };
+      expect(summary.success).toBe(false);
+      expect(summary.checks.find((check) => check.id === "git-hook")).toEqual(
+        expect.objectContaining({ status: "fail", detail: expect.stringContaining("not executable") })
+      );
+    }
+  });
+
+  it("reports selected host versions and a missing host binary without inventing compatibility", async () => {
+    const projectPath = await createProject();
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "config.json"),
+      `${JSON.stringify({ ...defaultConfig, defaultTool: "codex" })}\n`,
+      "utf8"
+    );
+    const hostBin = await createFakeHostBinaryDir("codex", "codex-cli 1.2.3");
+    prependToPath(hostBin);
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+    let summary = JSON.parse(logs.join("")) as {
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    let host = summary.checks.find((check) => check.id === "selected-host");
+    expect(host?.status).toBe("pass");
+    expect(host?.detail).toContain("codex-cli 1.2.3");
+    expect(host?.detail).toContain("no universal minimum host version");
+
+    process.env.PATH = await mkdtemp(join(tmpdir(), "visp-doctor-no-host-"));
+    logs.length = 0;
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+    summary = JSON.parse(logs.join("")) as {
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    host = summary.checks.find((check) => check.id === "selected-host");
+    expect(host?.status).toBe("warn");
+    expect(host?.detail).toContain("codex is unavailable");
+  });
+
+  it("fails doctor when project configuration is malformed or drops mandatory blocked paths", async () => {
+    const projectPath = await createProject();
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "config.json"),
+      JSON.stringify({ ...defaultConfig, blockedPaths: [".git"] }),
+      "utf8"
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    const config = summary.checks.find((check) => check.id === "hyper-config");
+    expect(summary.success).toBe(false);
+    expect(config?.status).toBe("fail");
+    expect(config?.detail).toContain("blockedPaths must retain .env");
+    expect(config?.detail).toContain("blockedPaths must retain node_modules");
+  });
+
+  it("fails closed when the selected advertised WorkflowAction hash is untrusted", async () => {
+    const projectPath = await createProject();
+    await writeKitArtifacts(projectPath);
+    const contract = kit20IntegrationContract(projectPath);
+    const protocols = contract.protocols as {
+      workflowAction: { schemaHashes: Record<string, string> };
+    };
+    protocols.workflowAction.schemaHashes = {
+      ...protocols.workflowAction.schemaHashes,
+      "3.0": `sha256:${"0".repeat(64)}`
+    };
+    const shim = await createVispShim({
+      status: {
+        stdout: {
+          success: true,
+          initialized: true,
+          activeFeature: { id: "001", slug: "demo" },
+          activeTask: { id: "T001", title: "Demo task", status: "ready" }
+        }
+      },
+      integration: { stdout: contract },
+      policy: { stdout: policyValidateFixture({ targetPath: projectPath }) },
+      gate: {
+        stdout: gateResultFixture({
+          targetPath: projectPath,
+          stage: "next",
+          feature: { id: "001", slug: "demo" }
+        })
+      }
+    });
+    prependToPath(dirname(shim.binary));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+    };
+    const protocol = summary.checks.find((check) => check.id === "kit-workflow-action");
+    expect(summary.success).toBe(false);
+    expect(protocol?.status).toBe("fail");
+    expect(protocol?.detail).toContain("workflow_action_schema_hash_mismatch");
+    expect((await readFile(shim.argvLogPath, "utf8"))).not.toContain('["next"');
+  });
+
+  it("fails when the active context artifact is stale", async () => {
+    const projectPath = await createProject();
+    const contextDir = join(projectPath, ".visp", "features", "001-demo", "context");
+    const contextPath = join(contextDir, "T001.context.json");
+    const originalContext = JSON.stringify({
+      taskId: "T001",
+      includedFiles: [{ path: "src/feature.ts", reason: "task target" }]
+    });
+    await mkdir(contextDir, { recursive: true });
+    await mkdir(join(projectPath, ".visp", "hyper", "current"), { recursive: true });
+    await writeFile(contextPath, originalContext, "utf8");
+    await mkdir(join(projectPath, ".visp", "hyper", "current"), { recursive: true });
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "current", "context-manifest.json"),
+      JSON.stringify({
+        version: "0.1",
+        sessionId: "vh_test",
+        contextArtifact: {
+          path: ".visp/features/001-demo/context/T001.context.json",
+          hash: sha256(originalContext),
+          hashAlgorithm: "sha256"
+        }
+      }),
+      "utf8"
+    );
+    await writeFile(
+      contextPath,
+      JSON.stringify({
+        taskId: "T001",
+        includedFiles: [{ path: "src/feature.ts", reason: "changed after handoff" }]
+      }),
+      "utf8"
+    );
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string; detail: string }>;
+      nextCommand: string;
+    };
+    const context = summary.checks.find((check) => check.id === "context-freshness");
+    expect(summary.success).toBe(false);
+    expect(context?.status).toBe("fail");
+    expect(context?.detail).toContain("context artifact changed since handoff");
+    expect(summary.nextCommand).toContain("visp work");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("fails when Kit artifacts exist but the visp binary cannot be executed", async () => {
+    const projectPath = await createProject();
+    await writeKitArtifacts(projectPath);
+    process.env.PATH = await mkdtemp(join(tmpdir(), "visp-empty-path-"));
+
+    await runCli(["node", "visp-hyper", "--project", projectPath, "doctor", "--json"]);
+
+    const summary = JSON.parse(logs.join("")) as {
+      success: boolean;
+      checks: Array<{ id: string; status: string }>;
+    };
+    expect(summary.success).toBe(false);
+    expect(summary.checks.find((check) => check.id === "kit-binary")?.status).toBe("fail");
+    expect(process.exitCode).toBe(1);
+  });
+});
