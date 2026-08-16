@@ -5,7 +5,7 @@
  *
  * WHY THIS EXISTS
  *
- * `tests/visp-binary-contract.test.ts` is the only test that exercises the
+ * `tests/integration/kit/visp-binary-contract.test.ts` is the only test that exercises the
  * Kit<->Hyper contract against the real Kit binary rather than the fixture shim
  * (`tests/helpers/visp-shim.ts`, which does not validate CLI flags — three real
  * bugs were historically caught only by live-testing). It is guarded by
@@ -72,7 +72,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const CONTRACT_TEST = "tests/visp-binary-contract.test.ts";
+const CONTRACT_TEST = "tests/integration/kit/visp-binary-contract.test.ts";
 const DEFAULT_RECORD = join(".visp", "hyper", "pair-check.json");
 
 /** Reads a package.json `version`, or null when the file is absent or unreadable. */

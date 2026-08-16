@@ -31,8 +31,32 @@ pnpm check            # typecheck + test with a coverage report
 pnpm test             # the same suite without coverage
 pnpm test:pair        # verify this checkout against a sibling visp-kit build
 pnpm test:pair:served # verify it against the Kit npm serves — no checkout needed
-pnpm exec vitest run tests/<file>.test.ts
+pnpm exec vitest run tests/<path>.test.ts
 ```
+
+### Where a test lives
+
+`tests/` is organised by level, and each level is subdivided so no folder is a
+heap of files.
+
+```
+tests/
+  unit/          mirrors src/ exactly — src/cockpit/sse.ts is covered by
+                 tests/unit/cockpit/sse.test.ts, so a test is found from the
+                 file it covers rather than by remembering its name
+  integration/   one folder per entry point the test drives: cli/ (split by
+                 command family), mcp/, cockpit/, kit/, memory/, package/,
+                 git/, conformance/
+  functional/    the product as a user meets it, grouped by journey — QE's
+  regression/    one file per reproduced defect — QE's
+  fixtures/ helpers/ setup/    shared scaffolding, not levels
+```
+
+**A test's level is what it does, not what it is called.** Spawning a process,
+putting a fake binary on PATH for production code to resolve, standing up a
+server, or driving `runCli` through a whole command lifecycle makes a test an
+integration test. Using a temp directory does not — a module whose contract is
+the file it writes cannot be tested without one.
 
 `pnpm check` does **not** cover the Kit<->Hyper seam. The one test that drives
 the real Kit binary skips when a built Kit and an initialized `.visp/` are
@@ -52,6 +76,6 @@ render a git hook's command line, or run `npm pack` against the file list on
 disk — so the suite builds once in `tests/setup/build-dist.ts`, registered as
 Vitest `globalSetup`, before any test file is collected. A new test that needs
 the artifact does not have to arrange anything, and no test may build on its own
-(`tests/build-precondition.test.ts` enforces both). It costs about five seconds
-per run and it is why a single test file passes from a clean clone on the first
-attempt.
+(`tests/integration/package/build-precondition.test.ts` enforces both). It
+costs about five seconds per run and it is why a single test file passes from a
+clean clone on the first attempt.
