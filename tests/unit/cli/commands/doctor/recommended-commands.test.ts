@@ -185,11 +185,27 @@ function valuesIntroducedBy(source: string, introducer: RegExp): string[] {
 
 /**
  * Every string doctor offers as a way forward: the value of each `recovery:`
- * field, plus the module-level route constants those fields are assigned from.
+ * field, plus **every module-level exported constant in `doctor/`**.
  *
  * The constants are here because `setup-route.ts` holds two recovery strings
  * under names — `recovery: route` is still a recovery string, and dropping them
  * would take `visp setup` and the hidden `visp init` out of the property.
+ *
+ * The second pattern used to be described as "the route constants those fields
+ * are assigned from" while matching every exported SCREAMING_CASE name. Both
+ * constants that exist today are routes, so the two readings agree and nothing
+ * was wrong — but a reader debugging a failure would have been told the guard
+ * was not looking where it was. **The breadth is what is kept and the sentence
+ * is what changed**, for the same reason `doctorSources` reads the whole
+ * directory: a name-shaped filter cannot fail loudly. `_ROUTE` in the pattern
+ * would silently drop a future recovery constant called `SETUP_HINT`, and the
+ * pinned counts below only catch the extraction shrinking, never its failing to
+ * grow.
+ *
+ * What the breadth costs: a constant in `doctor/` that is not user-facing text
+ * is scanned too. It contributes nothing unless it contains a backticked
+ * `visp …` command — and a constant in doctor's own directory naming a command
+ * this binary does not register is a defect wherever it is declared.
  */
 async function recoveryValues(): Promise<readonly string[]> {
   const sources = await doctorSources();
