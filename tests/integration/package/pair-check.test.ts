@@ -21,7 +21,7 @@ import { resolveKitEntry } from "../../helpers/kit-entry.js";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const PAIR_CHECK = join(PACKAGE_ROOT, "scripts", "pair-check.mjs");
-const CONTRACT_TEST = join("tests", "visp-binary-contract.test.ts");
+const CONTRACT_TEST = join("tests", "integration", "kit", "visp-binary-contract.test.ts");
 
 let scratch: string;
 
@@ -32,7 +32,7 @@ beforeEach(async () => {
 /** A Hyper-shaped checkout: has the contract test, and optionally Kit artifacts. */
 async function fakeHyper(options: { artifacts: boolean }): Promise<string> {
   const root = join(scratch, "hyper");
-  await mkdir(join(root, "tests"), { recursive: true });
+  await mkdir(join(root, dirname(CONTRACT_TEST)), { recursive: true });
   await writeFile(join(root, CONTRACT_TEST), "// stand-in for the real contract test\n", "utf8");
   await writeFile(
     join(root, "package.json"),
