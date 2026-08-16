@@ -24,6 +24,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { MEMORY_INSTALL_COMMAND } from "../src/memory/visp-memory-install.js";
+
 let tempDir: string;
 let originalPath: string | undefined;
 
@@ -150,7 +152,10 @@ describe("setup leaves the project genuinely set up", () => {
     const output = await runSetup();
 
     expect(output).toContain("visp-memory is not on PATH");
-    expect(output).toContain("pip install visp-memory");
+    // The full quoted command. `toContain("pip install visp-memory")` was
+    // satisfied by the unquoted form and by a form with no extras at all, so it
+    // could not have failed on either defect.
+    expect(output).toContain(MEMORY_INSTALL_COMMAND);
     expect(
       output,
       "advising a command that is not installed is what made the gap unactionable"
