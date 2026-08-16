@@ -53,15 +53,159 @@ const DOCTOR_CHECKS_DIR = join(COMMANDS_DIR, "doctor");
  * from quietly narrowing. The recovery text used to live in a single file; when
  * the checks were grouped into `doctor/`, a single-file read still found two
  * strings and would have kept "passing" over almost none of the surface.
+ *
+ * Returned per file, never concatenated, so a value at the end of one file
+ * cannot run into the next.
  */
-async function doctorSource(): Promise<string> {
+async function doctorSources(): Promise<readonly string[]> {
   const checkModules = (await readdir(DOCTOR_CHECKS_DIR)).filter((name) => name.endsWith(".ts"));
-  const sources = await Promise.all(
+  return await Promise.all(
     [DOCTOR_ENTRY, ...checkModules.map((name) => join(DOCTOR_CHECKS_DIR, name))].map((path) =>
       readFile(path, "utf8")
     )
   );
-  return sources.join("\n");
+}
+
+// --- Reading what doctor reports, not what its source happens to say --------
+//
+// This used to match backticks anywhere in the file text, comments included, so
+// a docstring that named a command was judged as if doctor recommended it. That
+// makes prose a test input: the only way to keep the suite green is to reword a
+// comment, which is editing the evidence rather than the behaviour. The scan is
+// now confined to the values doctor actually emits.
+//
+// This is a scanner, not a parser. It understands strings, template
+// substitutions and nesting — enough for the shapes in `doctor/` — and would be
+// defeated by a regular-expression literal containing a quote or bracket. That
+// failure mode is loud rather than silent: the extraction count drops and the
+// guard-the-guard test below fails.
+
+const QUOTES = new Set(["'", '"', "`"]);
+
+/** Index just past the string or template literal starting at `start`. */
+function endOfLiteral(source: string, start: number): number {
+  const quote = source[start];
+  let index = start + 1;
+  while (index < source.length) {
+    const char = source[index];
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    if (char === quote) return index + 1;
+    if (quote === "`" && char === "$" && source[index + 1] === "{") {
+      index = endOfGroup(source, index + 2);
+      continue;
+    }
+    index += 1;
+  }
+  return source.length;
+}
+
+/** Index just past the `}` closing a template substitution opened before `start`. */
+function endOfGroup(source: string, start: number): number {
+  let depth = 0;
+  let index = start;
+  while (index < source.length) {
+    const char = source[index]!;
+    if (QUOTES.has(char)) {
+      index = endOfLiteral(source, index);
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") depth += 1;
+    else if (char === ")" || char === "]") depth -= 1;
+    else if (char === "}") {
+      if (depth === 0) return index + 1;
+      depth -= 1;
+    }
+    index += 1;
+  }
+  return source.length;
+}
+
+/**
+ * Index of the delimiter ending the value expression that starts at `start` —
+ * a top-level `,` or `;`, or a closer this value did not open. Everything
+ * before it is the value, however many lines it spans.
+ */
+function endOfValue(source: string, start: number): number {
+  let depth = 0;
+  let index = start;
+  while (index < source.length) {
+    const char = source[index]!;
+    if (QUOTES.has(char)) {
+      index = endOfLiteral(source, index);
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") depth += 1;
+    else if (char === ")" || char === "]" || char === "}") {
+      if (depth === 0) return index;
+      depth -= 1;
+    } else if (depth === 0 && (char === "," || char === ";")) return index;
+    index += 1;
+  }
+  return source.length;
+}
+
+/** The same source with every comment removed and nothing else changed. */
+function withoutComments(source: string): string {
+  let kept = "";
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index]!;
+    if (QUOTES.has(char)) {
+      const end = endOfLiteral(source, index);
+      kept += source.slice(index, end);
+      index = end;
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "/") {
+      const end = source.indexOf("\n", index);
+      index = end === -1 ? source.length : end;
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "*") {
+      const end = source.indexOf("*/", index + 2);
+      index = end === -1 ? source.length : end + 2;
+      continue;
+    }
+    kept += char;
+    index += 1;
+  }
+  return kept;
+}
+
+function valuesIntroducedBy(source: string, introducer: RegExp): string[] {
+  const code = withoutComments(source);
+  return [...code.matchAll(introducer)].map((match) => {
+    const start = match.index + match[0].length;
+    return code.slice(start, endOfValue(code, start));
+  });
+}
+
+/**
+ * Every string doctor offers as a way forward: the value of each `recovery:`
+ * field, plus the module-level route constants those fields are assigned from.
+ *
+ * The constants are here because `setup-route.ts` holds two recovery strings
+ * under names — `recovery: route` is still a recovery string, and dropping them
+ * would take `visp setup` and the hidden `visp init` out of the property.
+ */
+async function recoveryValues(): Promise<readonly string[]> {
+  const sources = await doctorSources();
+  return sources.flatMap((source) => [
+    ...valuesIntroducedBy(source, /\brecovery\s*:/gu),
+    ...valuesIntroducedBy(source, /\bexport const [A-Z][A-Z0-9_]*\s*=/gu)
+  ]);
+}
+
+/** Every string doctor prints about a check: its recovery and its detail. */
+async function reportedValues(): Promise<readonly string[]> {
+  const sources = await doctorSources();
+  return [
+    ...(await recoveryValues()),
+    ...sources.flatMap((source) => valuesIntroducedBy(source, /\bdetail\s*:/gu))
+  ];
 }
 
 /**
@@ -88,7 +232,7 @@ function registeredCommands(): ReadonlySet<string> {
 }
 
 /**
- * Pull the command out of every `` `visp …` `` recovery string in the source.
+ * Pull the command out of every `` `visp …` `` doctor reports.
  *
  * Reading the source rather than driving doctor through every possible broken
  * project state is deliberate: the states that produce these strings are
@@ -96,25 +240,47 @@ function registeredCommands(): ReadonlySet<string> {
  * in one of them.
  */
 async function recommendedCommands(): Promise<readonly string[]> {
-  const source = await doctorSource();
-  return [...source.matchAll(/`(visp(?:-hyper|-kit|-memory)?\s+[^`]+)`/gu)].map(([, command]) =>
-    // Inside a template literal the backtick is escaped, so a match can end
-    // with the escaping backslash. Strip it rather than reporting `visp
-    // doctor\` as an unregistered command.
-    command.replace(/\\$/u, "").trim()
+  return (await reportedValues()).flatMap((value) =>
+    [...value.matchAll(/`(visp(?:-hyper|-kit|-memory)?\s+[^`]+)`/gu)].map(([, command]) =>
+      // Inside a template literal the backtick is escaped, so a match can end
+      // with the escaping backslash. Strip it rather than reporting `visp
+      // doctor\` as an unregistered command.
+      command.replace(/\\$/u, "").trim()
+    )
   );
 }
 
+// The extraction as it stands today. A floor of `> 5` was the old guard, and
+// it was met by six of the forty-odd commands doctor reports — so an extraction
+// that lost most of the surface still passed. Pinned to the measured counts
+// instead: growth is fine, shrinking is the failure this test exists to catch.
+const EXTRACTED_COMMANDS = 26;
+const EXTRACTED_RECOVERY_VALUES = 31;
+
 describe("every command doctor recommends is a real command", () => {
-  it("finds recovery commands to check", async () => {
-    // Guards the guard: if the extraction silently matched nothing, every
-    // assertion below would pass while checking nothing at all.
+  it("still finds every recovery command it used to", async () => {
+    // Guards the guard: if the extraction silently narrowed, every assertion
+    // below would pass while checking less than it used to — or nothing at all.
     const commands = await recommendedCommands();
     expect(
       commands.length,
-      "No recovery commands were extracted from doctor.ts. The source shape moved and this " +
-        "property is no longer being checked — fix the extraction rather than deleting the test."
-    ).toBeGreaterThan(5);
+      `Extraction found ${commands.length} reported commands, below the ${EXTRACTED_COMMANDS} ` +
+        "this property was pinned at. The source shape moved and part of doctor is no longer " +
+        "being checked — fix the extraction rather than lowering the floor."
+    ).toBeGreaterThanOrEqual(EXTRACTED_COMMANDS);
+  });
+
+  it("still inspects every recovery value it used to", async () => {
+    // The two narrow assertions below read recovery values one at a time. They
+    // previously anchored on `recovery:[^\n]*` and so had never seen a value
+    // spanning more than one line — `checkMemory`'s among them. Count the
+    // values, not just the commands, or that blind spot can reopen silently.
+    const values = await recoveryValues();
+    expect(
+      values.length,
+      `Extraction found ${values.length} recovery values, below the ${EXTRACTED_RECOVERY_VALUES} ` +
+        "this property was pinned at."
+    ).toBeGreaterThanOrEqual(EXTRACTED_RECOVERY_VALUES);
   });
 
   it("recommends no command this binary does not register", async () => {
@@ -144,11 +310,12 @@ describe("every command doctor recommends is a real command", () => {
     // "Run `visp init` or `visp agent bootstrap <tool>`" gave two commands with
     // no basis for choosing — the undecidable-message defect fixed in Phase 12,
     // resurfaced. One cause, one command.
-    const source = await doctorSource();
-    const undecidable = [...source.matchAll(/recovery:[^\n]*`[^`]+`\s+or\s+`[^`]+`/gu)];
+    const undecidable = (await recoveryValues()).filter((value) =>
+      /`[^`]+`[\s\S]*?\bor\b[\s\S]*?`[^`]+`/u.test(value)
+    );
 
     expect(
-      undecidable.map((match) => match[0]),
+      undecidable,
       "A recovery message offers two commands without telling the reader how to choose."
     ).toEqual([]);
   });
@@ -156,11 +323,12 @@ describe("every command doctor recommends is a real command", () => {
   it("does not leave a bare <tool> placeholder the user cannot resolve", async () => {
     // `--tool <tool>` rejected the obvious value `claude` and revealed the
     // allowed set only after failing. Where a tool must be named, name it.
-    const source = await doctorSource();
-    const placeholders = [...source.matchAll(/recovery:[^\n]*--tool <tool>/gu)];
+    const placeholders = (await recoveryValues()).filter((value) =>
+      value.includes("--tool <tool>")
+    );
 
     expect(
-      placeholders.map((match) => match[0]),
+      placeholders,
       "A recovery message asks for --tool <tool> without saying which values are accepted."
     ).toEqual([]);
   });

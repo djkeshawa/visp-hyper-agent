@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { readTextIfExists, vispPath, writeText } from "../../../core/fs-utils.js";
 import { getActiveSession, readConfig } from "../../../core/session-manager.js";
 import { collectChangedFiles } from "../../../governance/scope-guard.js";
+import { findMemoryGap } from "../../memory/memory-readiness.js";
 
 /**
  * Format the compact completion memory for a verified task. Pure so the
@@ -53,17 +54,20 @@ export async function recordCompletionMemory(projectPath: string, taskId: string
   try {
     const config = await readConfig(projectPath);
     if (config.memoryMode !== "llm-memory") return;
-    const { resolveExecutable, execFileResolved } = await import(
-      "../../../core/executable-resolver.js"
-    );
-    // Deliberately `resolveExecutable`, which on POSIX never returns null — so
-    // this guard only fires on win32 and the spawn below is what actually
-    // reports absence elsewhere. Switching to `findExecutableOnPath` would
-    // return silently here instead of reaching the catch, trading a loud wrong
-    // path for a silent one, and a memory that was never recorded must not be
-    // indistinguishable from one that was. LC-26 decides whether to keep the
-    // guard with this comment or delete it and let the catch do the work.
-    if ((await resolveExecutable("visp-memory")) === null) return;
+    const { execFileResolved } = await import("../../../core/executable-resolver.js");
+    // Ask why Memory is unreachable, not merely whether a name resolves. The
+    // guard here used to be `resolveExecutable`, which on POSIX returns the
+    // bare name for anything at all: the check never fired, the spawn below
+    // failed, and the catch reported `spawn visp-memory ENOENT` — accidentally
+    // loud, and no help at all. Detecting the gap without saying so would have
+    // been worse: a memory that was never recorded must never look like one
+    // that was. So detect it properly and print the same diagnosis `recall`
+    // and `learn` print, remedy included.
+    const gap = await findMemoryGap(projectPath, config.memoryMode);
+    if (gap) {
+      console.log([`warning: memory was not recorded: ${gap.missing}`, gap.remedy].join("\n"));
+      return;
+    }
     const record = async (content: string, category: string, importance: string) =>
       execFileResolved(
         "visp-memory",

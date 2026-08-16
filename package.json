@@ -47,7 +47,7 @@
     "build": "tsup",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check": "pnpm typecheck && pnpm test",
+    "check": "pnpm typecheck && pnpm test:coverage",
     "test:pair": "node scripts/pair-check.mjs",
     "test:pair:served": "node scripts/pair-check.mjs --kit-npm visp-kit@latest --init-if-missing",
     "prepack": "pnpm build",

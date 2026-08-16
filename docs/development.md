@@ -27,8 +27,8 @@ ignored workflow evidence: if it is deleted before a task closes, recreate the
 task and collect fresh evidence rather than claiming the earlier task complete.
 
 ```bash
-pnpm check            # typecheck + test
-pnpm test
+pnpm check            # typecheck + test with a coverage report
+pnpm test             # the same suite without coverage
 pnpm test:pair        # verify this checkout against a sibling visp-kit build
 pnpm test:pair:served # verify it against the Kit npm serves — no checkout needed
 pnpm exec vitest run tests/<file>.test.ts
