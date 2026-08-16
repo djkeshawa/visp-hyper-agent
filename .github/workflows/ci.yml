@@ -24,7 +24,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
 
-      # tests/memory-contract-integration.test.ts drives the REAL published
+      # tests/integration/memory/memory-contract-integration.test.ts drives the REAL published
       # visp-memory binary through Hyper's real contract client, and it FAILS
       # rather than skips when that binary is absent — deliberately, because a
       # silently skipped integration test is how a seam goes unchecked for
@@ -59,7 +59,7 @@ jobs:
 
       - run: pnpm test
 
-  # THE PAIR CHECK. `tests/visp-binary-contract.test.ts` is the only test that
+  # THE PAIR CHECK. `tests/integration/kit/visp-binary-contract.test.ts` is the only test that
   # drives a real Kit binary, and it self-skips without one — so the `check`
   # job above, which has no Kit, verifies the seam not at all and says nothing
   # about it either way.

@@ -78,7 +78,7 @@ jobs:
         run: node ../visp-kit/dist/index.js init . --agent none
 
       # Run through the pair check rather than calling vitest directly.
-      # `tests/visp-binary-contract.test.ts` is guarded by `describe.skipIf`, so
+      # `tests/integration/kit/visp-binary-contract.test.ts` is guarded by `describe.skipIf`, so
       # if the Kit build or the `.visp/` init above quietly produced nothing,
       # vitest reports `success: true` with every test pending and this job goes
       # green having verified nothing. The pair check treats a skip as a

@@ -10,7 +10,7 @@ on each surface, and what is still not covered.
 
 ## The one test that touches the real Kit
 
-`tests/visp-binary-contract.test.ts` drives the actual Kit binary — not
+`tests/integration/kit/visp-binary-contract.test.ts` drives the actual Kit binary — not
 `tests/helpers/visp-shim.ts`, which answers with fixed JSON and does not
 validate CLI flags. Three real bugs in this repository's history were caught
 only by live-testing, because bridge invocation drift is invisible to a shim
