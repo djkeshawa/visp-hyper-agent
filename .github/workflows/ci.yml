@@ -24,6 +24,29 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
 
+      # tests/memory-contract-integration.test.ts drives the REAL published
+      # visp-memory binary through Hyper's real contract client, and it FAILS
+      # rather than skips when that binary is absent — deliberately, because a
+      # silently skipped integration test is how a seam goes unchecked for
+      # months. This job never installed it, so those six tests had failed on
+      # every platform since the file was added, and the matrix reported the
+      # seam as broken while it was merely unbuilt.
+      #
+      # Installing it is the fix the test asks for. Skipping it instead would
+      # replace a red that means something with a green that means less.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # DELIBERATELY UNPINNED. This test exists to catch Memory's envelope
+      # drifting from what Hyper's parser accepts, so pinning the version would
+      # remove the only thing it detects. The cost is real and is named here
+      # rather than discovered later: a visp-memory release can turn this
+      # matrix red without visp-hyper-agent changing. That is the coupling
+      # LC-34 is about, and it is accepted because the alternative is a seam
+      # check that cannot fail.
+      - run: python -m pip install --upgrade visp-memory
+
       - run: pnpm install --frozen-lockfile
 
       # Not the test suite's build precondition — that lives in the suite
