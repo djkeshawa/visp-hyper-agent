@@ -36,7 +36,12 @@ export async function describeMemoryGap(projectPath: string): Promise<MemoryGap>
   if ((await findExecutableOnPath("visp-memory")) === null) {
     return {
       missing: "the visp-memory CLI is not installed on this machine.",
-      remedy: "Install it with `pip install visp-memory[mcp,capture]`, then run `visp setup`."
+      // The extras spec is quoted because zsh globs `[...]`, finds no match, and
+      // aborts the line with `no matches found` before pip runs. zsh is macOS's
+      // default login shell, so an unquoted remedy is a command half our users
+      // cannot paste. bash passes it through literally, which is why this is
+      // invisible on Linux.
+      remedy: "Install it with `pip install 'visp-memory[mcp,capture]'`, then run `visp setup`."
     };
   }
 

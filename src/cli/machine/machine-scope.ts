@@ -274,7 +274,9 @@ async function initialiseMemoryStore(projectPath: string): Promise<boolean> {
       [
         "note: visp-memory is not on PATH, so this project has no memory store and",
         "      `visp recall` and `visp learn` will refuse until it is.",
-        "      Install it with `pip install visp-memory[mcp,capture]`, then re-run `visp setup`."
+        // Quoted extras: zsh globs `[...]` and aborts the line before pip runs.
+        // See src/cli/memory/memory-readiness.ts for the full reason.
+        "      Install it with `pip install 'visp-memory[mcp,capture]'`, then re-run `visp setup`."
       ].join("\n")
     );
     return false;

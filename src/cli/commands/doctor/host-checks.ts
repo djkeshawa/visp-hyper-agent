@@ -166,8 +166,10 @@ export async function checkMemory(
       // Not `visp setup`: setup configures what is installed, and it has never
       // installed the Python package. Naming it here sent the user to a command
       // that would report the same absence back.
+      // Quoted extras: zsh globs `[...]` and aborts the line before pip runs.
+      // See src/cli/memory/memory-readiness.ts for the full reason.
       recovery:
-        "Install it with `pip install visp-memory[mcp,capture]`, then run `visp setup`. " +
+        "Install it with `pip install 'visp-memory[mcp,capture]'`, then run `visp setup`. " +
         "Until then run `visp init --memory-mode file` so recall and learn stop claiming a provider."
     };
   }
