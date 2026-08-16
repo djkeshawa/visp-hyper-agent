@@ -124,9 +124,9 @@ export function buildBatchExecArgs(batchPath: string, args: string[]): string[] 
  * existence was written against that sentence: doctor's "visp-memory is not
  * installed" branch became unreachable code on POSIX, `setup` spawned a binary
  * it had just confirmed, and the checkpoint memory ledger left the spawn's
- * ENOENT to do the reporting. All four now use {@link findExecutableOnPath}.
- * Both functions return a nullable, so the types cannot tell the two questions
- * apart — only this sentence can.
+ * ENOENT to do the reporting. All four now reach {@link findExecutableOnPath},
+ * the ledger through `findMemoryGap`. Both functions return a nullable, so the
+ * types cannot tell the two questions apart — only this sentence can.
  *
  * On win32 `null` means the PATH/PATHEXT probe matched no file on disk. That
  * is a spawn answer, not an install answer, and it is never available on
