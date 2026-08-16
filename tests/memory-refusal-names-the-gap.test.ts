@@ -16,7 +16,7 @@
 // PATH and the store file are both controlled here, so the assertions do not
 // depend on what the machine running the suite happens to have installed.
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,7 +24,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { initializeProject } from "../src/core/session-manager.js";
 import { runLearnVerb, runRecallVerb } from "../src/cli/memory/memory-verbs.js";
-import { MEMORY_STORE_MANIFEST } from "../src/cli/memory/memory-readiness.js";
+import {
+  MEMORY_INSTALL_COMMAND,
+  MEMORY_STORE_MANIFEST
+} from "../src/memory/visp-memory-install.js";
 import { createFakeHostBinaryDir } from "./helpers/fake-host-binary.js";
 
 let tempDir: string;
@@ -50,9 +53,21 @@ type Machine = {
   readonly cliInstalled: boolean;
   /** Whether this project has a store. */
   readonly storePresent: boolean;
+  /** The mode the project is configured for. Defaults to file, as a fresh project is. */
+  readonly memoryMode?: "file" | "llm-memory";
 };
 
 async function arrange(machine: Machine): Promise<void> {
+  if (machine.memoryMode === "llm-memory") {
+    const configPath = join(tempDir, ".visp", "hyper", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    await writeFile(
+      configPath,
+      `${JSON.stringify({ ...config, memoryMode: "llm-memory" }, null, 2)}\n`,
+      "utf8"
+    );
+  }
+
   process.env.PATH = machine.cliInstalled
     ? await createFakeHostBinaryDir("visp-memory", "0.5.0")
     : await mkdtemp(join(tmpdir(), "visp-no-memory-cli-"));
@@ -78,7 +93,7 @@ describe("recall and learn when memory is unreachable", () => {
 
     expect(output).toContain("the visp-memory CLI is not installed on this machine");
     expect(output, "the remedy has to be the install, not a setup that cannot help yet").toContain(
-      "pip install visp-memory"
+      MEMORY_INSTALL_COMMAND
     );
   });
 
@@ -102,7 +117,12 @@ describe("recall and learn when memory is unreachable", () => {
     const output = await refusalFrom(() => runRecallVerb(tempDir, "why jwt"));
 
     expect(output).toContain("memoryMode");
-    expect(output).toContain("visp setup");
+    // `arrange` replaces PATH with a directory holding only visp-memory, so
+    // there is no visp-dev and `visp setup` genuinely cannot run on this
+    // simulated machine. The remedy has to be the one that does work — a
+    // remedy chain for LC-14 that terminates in LC-9's dead end is the defect
+    // both tickets exist to remove.
+    expect(output).toContain("visp init --memory-mode llm-memory");
   });
 
   it("tells learn's reader the same three things, and that nothing was recorded", async () => {
@@ -125,6 +145,50 @@ describe("recall and learn when memory is unreachable", () => {
     await refusalFrom(() => runRecallVerb(tempDir, "why jwt"));
 
     expect(process.exitCode).toBe(1);
+  });
+
+  // The mode a user sets in order to GET Memory. The diagnosis above used to
+  // sit behind `if (memoryMode !== "llm-memory")`, so none of it ran here: the
+  // verbs fell through to the CLI contract and printed a bare install line with
+  // no extras, or a raw `Command failed: visp-memory contract recall …` dump.
+  // Same machine, minutes apart from the good message. LC-14's origin was
+  // Memory absent for a whole session, which is exactly this path.
+  describe("in llm-memory mode", () => {
+    it("names the missing CLI, not a bare contract failure", async () => {
+      await arrange({ cliInstalled: false, storePresent: false, memoryMode: "llm-memory" });
+
+      const output = await refusalFrom(() => runRecallVerb(tempDir, "why jwt"));
+
+      expect(output).toContain("the visp-memory CLI is not installed on this machine");
+      expect(
+        output,
+        "the contract's own message names no extras, and pip without `capture` installs a " +
+          "visp-memory that captures no git history while still reporting success"
+      ).toContain(MEMORY_INSTALL_COMMAND);
+      expect(output).not.toContain("Command failed");
+    });
+
+    it("names the missing store rather than dumping the failed subprocess", async () => {
+      await arrange({ cliInstalled: true, storePresent: false, memoryMode: "llm-memory" });
+
+      const output = await refusalFrom(() => runRecallVerb(tempDir, "why jwt"));
+
+      expect(output).toContain(MEMORY_STORE_MANIFEST);
+      expect(output).toContain("visp-memory init");
+      expect(
+        output,
+        "a raw `Command failed: visp-memory contract recall …` tells the reader nothing they " +
+          "can act on"
+      ).not.toContain("Command failed");
+    });
+
+    it("still refuses out loud rather than answering emptily", async () => {
+      await arrange({ cliInstalled: false, storePresent: false, memoryMode: "llm-memory" });
+
+      await refusalFrom(() => runLearnVerb(tempDir, "screen wraps on four edges"));
+
+      expect(process.exitCode).toBe(1);
+    });
   });
 
   it("gives the three causes three different answers", async () => {

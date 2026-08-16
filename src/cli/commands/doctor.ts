@@ -79,9 +79,9 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
   }
 
   checks.push(await checkGitHook(projectPath));
-  checks.push(await checkSelectedHost(projectPath, config));
-  checks.push(await checkToolAssets(projectPath, config));
-  checks.push(await checkMemory(projectPath, config));
+  checks.push(await checkSelectedHost(projectPath, config, route));
+  checks.push(await checkToolAssets(projectPath, config, route));
+  checks.push(await checkMemory(projectPath, config, route));
   checks.push(await checkIntelMcpProvider(projectPath));
   checks.push(await checkMcp(projectPath));
 

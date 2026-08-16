@@ -10,6 +10,7 @@
 import { z } from "zod";
 
 import { execFileResolved } from "../core/executable-resolver.js";
+import { MEMORY_INSTALL_COMMAND } from "./visp-memory-install.js";
 
 export const MEMORY_CONTRACT_VERSION = "1.0";
 const CONTRACT_TIMEOUT_MS = 20_000;
@@ -106,7 +107,8 @@ async function runContract(projectPath: string, args: readonly string[]): Promis
         ok: false,
         usageError: false,
         reason:
-          "visp-memory is not installed (the visp-memory command was not found). Install it with: pip install visp-memory"
+          "visp-memory is not installed (the visp-memory command was not found). " +
+          `Install it with: ${MEMORY_INSTALL_COMMAND}`
       };
     }
     return {

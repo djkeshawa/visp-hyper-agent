@@ -16,9 +16,12 @@ import { join } from "node:path";
 
 import { findExecutableOnPath } from "../../core/executable-resolver.js";
 import { fileExists } from "../../core/fs-utils.js";
-
-/** The file `visp-memory init` writes beside a project it has a store for. */
-export const MEMORY_STORE_MANIFEST = "visp-memory.yaml";
+import {
+  MEMORY_INSTALL_COMMAND,
+  MEMORY_OPT_OUT_CLAUSE,
+  MEMORY_STORE_MANIFEST
+} from "../../memory/visp-memory-install.js";
+import { machineScopeAvailable } from "../machine/machine-scope.js";
 
 export type MemoryGap = {
   /** What is absent, stated so the reader can check it themselves. */
@@ -28,37 +31,66 @@ export type MemoryGap = {
 };
 
 /**
- * Why Memory is unreachable here. Called only once a verb has decided to
- * refuse, so it always has something to report — the mode being wrong is
- * itself the last cause.
+ * How to finish a repair once the missing piece is in place.
+ *
+ * `visp setup` is the short answer only on a machine that can run it. On one
+ * without the Visp Dev machine-scope adapter it is the LC-9 dead end, and
+ * pointing Memory's remedy at it would end LC-14's chain in LC-9's bug — a
+ * report that says "`visp setup` cannot help here" and three lines later says
+ * to run `visp setup`.
  */
-export async function describeMemoryGap(projectPath: string): Promise<MemoryGap> {
+async function finishClause(directAlternative: string): Promise<string> {
+  return (await machineScopeAvailable())
+    ? "then run `visp setup`."
+    : `then run \`${directAlternative}\` — \`visp setup\` cannot help here, because it needs ` +
+        "the Visp Dev machine-scope adapter and nothing on this machine provides it.";
+}
+
+/**
+ * The gap that stops Memory being reachable here, or `null` when nothing is
+ * missing and the verb should go ahead.
+ *
+ * Checked in the order a user would fix them, and deliberately independent of
+ * `memoryMode`: the configuration being wrong is the LAST cause, not the gate.
+ * It used to be the gate, and that made this whole diagnosis unreachable in
+ * `llm-memory` mode — the mode a user sets in order to get Memory, and the one
+ * LC-14 is actually about. In that mode the verbs fell through to the contract
+ * and printed either a bare install line with no extras or a raw subprocess
+ * dump, on the same machine, minutes apart from the good message.
+ */
+export async function findMemoryGap(
+  projectPath: string,
+  memoryMode: "file" | "llm-memory"
+): Promise<MemoryGap | null> {
   if ((await findExecutableOnPath("visp-memory")) === null) {
     return {
       missing: "the visp-memory CLI is not installed on this machine.",
-      // The extras spec is quoted because zsh globs `[...]`, finds no match, and
-      // aborts the line with `no matches found` before pip runs. zsh is macOS's
-      // default login shell, so an unquoted remedy is a command half our users
-      // cannot paste. bash passes it through literally, which is why this is
-      // invisible on Linux.
-      remedy: "Install it with `pip install 'visp-memory[mcp,capture]'`, then run `visp setup`."
+      remedy: [
+        `Install it with \`${MEMORY_INSTALL_COMMAND}\`, ${await finishClause("visp init --memory-mode llm-memory")}`,
+        MEMORY_OPT_OUT_CLAUSE
+      ].join("\n")
     };
   }
 
   if (!(await fileExists(join(projectPath, MEMORY_STORE_MANIFEST)))) {
     return {
-      missing:
-        `visp-memory is installed, but this project has no memory store — there is no ${MEMORY_STORE_MANIFEST} here.`,
-      remedy: "Run `visp-memory init` in this project, then `visp setup`."
+      missing: `visp-memory is installed, but this project has no memory store — there is no ${MEMORY_STORE_MANIFEST} here.`,
+      remedy: `Run \`visp-memory init\` in this project, ${await finishClause("visp init --memory-mode llm-memory")}`
     };
   }
 
-  return {
-    missing:
-      "visp-memory is installed and this project has a store, but the project is still " +
-      'configured for file memory (memoryMode is not "llm-memory").',
-    remedy: "Run `visp setup` to point this project at the store it already has."
-  };
+  if (memoryMode !== "llm-memory") {
+    return {
+      missing:
+        "visp-memory is installed and this project has a store, but the project is still " +
+        'configured for file memory (memoryMode is not "llm-memory").',
+      remedy: (await machineScopeAvailable())
+        ? "Run `visp setup` to point this project at the store it already has."
+        : "Run `visp init --memory-mode llm-memory` to point this project at the store it already has."
+    };
+  }
+
+  return null;
 }
 
 /** The refusal both verbs print, so the two never drift apart. */

@@ -7,6 +7,7 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileResolved, findExecutableOnPath } from "../../../core/executable-resolver.js";
+import { MEMORY_INSTALL_COMMAND, MEMORY_OPT_OUT_CLAUSE } from "../../../memory/visp-memory-install.js";
 import { readTextIfExists } from "../../../core/fs-utils.js";
 import type { HyperConfig } from "../../../core/types.js";
 import { INTEL_MCP_TOOL_PREFIX, MCP_CONFIG_FILENAME, describeIntelProvider } from "../../../install/intel-mcp-registration.js";
@@ -14,7 +15,11 @@ import { planInstall, readHostCapabilityManifest } from "../../../install/tool-a
 import type { ToolName } from "../../../install/tool-asset-installer.js";
 import type { DoctorCheck } from "./types.js";
 
-export async function checkSelectedHost(projectPath: string, config: HyperConfig | null): Promise<DoctorCheck> {
+export async function checkSelectedHost(
+  projectPath: string,
+  config: HyperConfig | null,
+  setupRoute: string
+): Promise<DoctorCheck> {
   const tool = config?.defaultTool;
   if (!tool) {
     return {
@@ -22,7 +27,10 @@ export async function checkSelectedHost(projectPath: string, config: HyperConfig
       label: "Selected coding host",
       status: "fail",
       detail: "A trusted defaultTool is unavailable.",
-      recovery: "Fix .visp/hyper/config.json, then run `visp setup`."
+      // The route, not a bare `visp setup`: on a machine without the
+      // machine-scope adapter that is the LC-9 dead end, and one report must
+      // not say setup cannot help and then recommend it.
+      recovery: `Fix .visp/hyper/config.json, then: ${setupRoute}`
     };
   }
   if (tool === "generic") {
@@ -73,7 +81,11 @@ export async function checkSelectedHost(projectPath: string, config: HyperConfig
   }
 }
 
-export async function checkToolAssets(projectPath: string, config: HyperConfig | null): Promise<DoctorCheck> {
+export async function checkToolAssets(
+  projectPath: string,
+  config: HyperConfig | null,
+  setupRoute: string
+): Promise<DoctorCheck> {
   const tool = config?.defaultTool;
   if (!isToolName(tool)) {
     return {
@@ -81,7 +93,7 @@ export async function checkToolAssets(projectPath: string, config: HyperConfig |
       label: "Tool assets",
       status: "warn",
       detail: "No valid defaultTool found in .visp/hyper/config.json.",
-      recovery: "Run `visp setup`."
+      recovery: setupRoute
     };
   }
 
@@ -131,7 +143,8 @@ export async function checkToolAssets(projectPath: string, config: HyperConfig |
 
 export async function checkMemory(
   projectPath: string,
-  config: HyperConfig | null
+  config: HyperConfig | null,
+  setupRoute: string
 ): Promise<DoctorCheck> {
   const mode = config?.memoryMode;
   if (mode !== "llm-memory") {
@@ -163,14 +176,15 @@ export async function checkMemory(
       label: "Memory provider",
       status: "warn",
       detail: "memoryMode is llm-memory, but the visp-memory CLI is not on PATH.",
-      // Not `visp setup`: setup configures what is installed, and it has never
-      // installed the Python package. Naming it here sent the user to a command
-      // that would report the same absence back.
-      // Quoted extras: zsh globs `[...]` and aborts the line before pip runs.
-      // See src/cli/memory/memory-readiness.ts for the full reason.
-      recovery:
-        "Install it with `pip install 'visp-memory[mcp,capture]'`, then run `visp setup`. " +
-        "Until then run `visp init --memory-mode file` so recall and learn stop claiming a provider."
+      // The install first, not `visp setup`: setup configures what is
+      // installed and has never installed the Python package, so naming it
+      // alone sent the user to a command that reported the same absence back.
+      // The route follows, because on a machine that cannot run setup even
+      // that much is the LC-9 dead end.
+      recovery: [
+        `Install it with \`${MEMORY_INSTALL_COMMAND}\`, then: ${setupRoute}`,
+        MEMORY_OPT_OUT_CLAUSE
+      ].join(" ")
     };
   }
 

@@ -19,7 +19,8 @@ export const MACHINE_SCOPE_ROUTE = "Run `visp setup`.";
  * needs next.
  */
 export const PROJECT_SCOPE_ROUTE =
-  "Run `visp-kit init .` to set this project up. `visp setup` cannot help here: " +
+  "Run `visp-kit init .` to set this project up (install it first if needed: " +
+  "`npm install -g visp-kit`). `visp setup` cannot help here: " +
   "it needs the Visp Dev machine-scope adapter, and nothing on this machine provides it.";
 
 export async function setupRoute(): Promise<string> {

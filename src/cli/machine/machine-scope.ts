@@ -6,7 +6,14 @@ import { readTextIfExists, vispPath, writeText } from "../../core/fs-utils.js";
 import { execFileResolved, findExecutableOnPath } from "../../core/executable-resolver.js";
 import { resolveInstalledPackageExport } from "../../core/installed-package.js";
 import { initializeProject, readConfig } from "../../core/session-manager.js";
-import { MEMORY_STORE_MANIFEST } from "../memory/memory-readiness.js";
+// From the neutral module, not from `../memory/memory-readiness.js`: that file
+// now needs the setup route, which is resolved from this one, and importing it
+// back would close a cycle.
+import {
+  MEMORY_INSTALL_COMMAND,
+  MEMORY_OPT_OUT_CLAUSE,
+  MEMORY_STORE_MANIFEST
+} from "../../memory/visp-memory-install.js";
 import {
   INTEL_MCP_TOOL_PREFIX,
   MCP_CONFIG_FILENAME,
@@ -274,9 +281,8 @@ async function initialiseMemoryStore(projectPath: string): Promise<boolean> {
       [
         "note: visp-memory is not on PATH, so this project has no memory store and",
         "      `visp recall` and `visp learn` will refuse until it is.",
-        // Quoted extras: zsh globs `[...]` and aborts the line before pip runs.
-        // See src/cli/memory/memory-readiness.ts for the full reason.
-        "      Install it with `pip install 'visp-memory[mcp,capture]'`, then re-run `visp setup`."
+        `      Install it with \`${MEMORY_INSTALL_COMMAND}\`, then re-run \`visp setup\`.`,
+        `      ${MEMORY_OPT_OUT_CLAUSE}`
       ].join("\n")
     );
     return false;
