@@ -79,9 +79,14 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
   }
 
   checks.push(await checkGitHook(projectPath));
-  checks.push(await checkSelectedHost(projectPath, config, route));
-  checks.push(await checkToolAssets(projectPath, config, route));
-  checks.push(await checkMemory(projectPath, config, route));
+  // No route here. These three fail on a project that IS set up — a bad
+  // defaultTool, missing assets, an absent Memory CLI — and each needs the
+  // command that repairs its own subsystem, not the one that sets a project up
+  // from nothing. Threading the route through them gave three unrelated
+  // failures identical advice.
+  checks.push(await checkSelectedHost(projectPath, config));
+  checks.push(await checkToolAssets(projectPath, config));
+  checks.push(await checkMemory(projectPath, config));
   checks.push(await checkIntelMcpProvider(projectPath));
   checks.push(await checkMcp(projectPath));
 

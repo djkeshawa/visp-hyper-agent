@@ -13,7 +13,7 @@
 // test is what doctor SAYS about a machine, and the real answer depends on
 // whatever happens to be installed on the machine running the suite.
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -75,6 +75,36 @@ describe("doctor's next step on an uninitialised project", () => {
 
     expect(recoveryFor(summary, "hyper-state")).toBe(PROJECT_SCOPE_ROUTE);
     expect(recoveryFor(summary, "kit-artifacts")).toBe(PROJECT_SCOPE_ROUTE);
+  });
+
+  it("names the Hyper step as well as Kit's, because Kit's alone does not clear the check", async () => {
+    // Assay followed this route rather than reading it. `visp-kit init .` sets
+    // up Kit and reports success; `visp doctor` then still says "Visp Hyper has
+    // not been initialized in this project" and recommends `visp-kit init .`
+    // again — forever, because Kit artifacts existing never satisfies the Hyper
+    // state check that generates this route. That is LC-9's defect verbatim,
+    // reintroduced on the project-scope side by the fix for the machine-scope
+    // side. `visp init` is what finishes the job.
+    const summary = await doctorOn("unavailable");
+
+    expect(summary.nextCommand).toContain("visp-kit init .");
+    expect(
+      summary.nextCommand,
+      "the route stops at Kit, so a user who follows it lands back on the same advice with " +
+        "nothing changed — a loop, not a route"
+    ).toContain("visp init");
+  });
+
+  it("does not repeat itself once Kit's step is done", async () => {
+    // The state after `visp-kit init .`: Kit artifacts present, Hyper still
+    // uninitialised. The advice must have moved on.
+    await mkdir(join(tempDir, ".visp"), { recursive: true });
+    await writeFile(join(tempDir, ".visp", "policy.json"), "{}\n", "utf8");
+
+    const summary = await doctorOn("unavailable");
+
+    expect(recoveryFor(summary, "hyper-state")).toContain("visp init");
+    expect(summary.checks.find((check) => check.id === "kit-artifacts")?.status).toBe("pass");
   });
 
   it("says why setup is unavailable, not merely that something else should be run", async () => {

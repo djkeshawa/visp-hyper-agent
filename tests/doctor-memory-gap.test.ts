@@ -39,9 +39,6 @@ afterEach(async () => {
   await rm(projectDir, { recursive: true, force: true });
 });
 
-/** Stand-in for whatever runDoctor resolved; these cases do not vary it. */
-const SETUP_ROUTE = "Run `visp setup`.";
-
 const llmMemoryConfig: HyperConfig = {
   defaultTool: "generic",
   tokenBudget: 100_000,
@@ -56,7 +53,7 @@ describe("doctor's memory provider check", () => {
   it("warns when the project is configured for llm-memory but the CLI is not on PATH", async () => {
     process.env.PATH = await mkdtemp(join(tmpdir(), "visp-no-memory-cli-"));
 
-    const check = await checkMemory(projectDir, llmMemoryConfig, SETUP_ROUTE);
+    const check = await checkMemory(projectDir, llmMemoryConfig);
 
     expect(
       check.status,
@@ -71,7 +68,7 @@ describe("doctor's memory provider check", () => {
     // Python package. Sending the user there repeats the LC-9 dead end.
     process.env.PATH = await mkdtemp(join(tmpdir(), "visp-no-memory-cli-"));
 
-    const check = await checkMemory(projectDir, llmMemoryConfig, SETUP_ROUTE);
+    const check = await checkMemory(projectDir, llmMemoryConfig);
 
     // The FULL command, quoted. `toContain("pip install visp-memory")` is
     // satisfied by the unquoted form and by a form with no extras at all —
@@ -83,7 +80,7 @@ describe("doctor's memory provider check", () => {
   it("passes when the CLI is genuinely there", async () => {
     process.env.PATH = await createFakeHostBinaryDir("visp-memory", "0.5.0");
 
-    const check = await checkMemory(projectDir, llmMemoryConfig, SETUP_ROUTE);
+    const check = await checkMemory(projectDir, llmMemoryConfig);
 
     expect(check.status).toBe("pass");
     expect(check.recovery).toBeUndefined();
@@ -92,7 +89,7 @@ describe("doctor's memory provider check", () => {
   it("says nothing is wrong in file mode, which needs no provider at all", async () => {
     process.env.PATH = await mkdtemp(join(tmpdir(), "visp-no-memory-cli-"));
 
-    const check = await checkMemory(projectDir, { ...llmMemoryConfig, memoryMode: "file" }, SETUP_ROUTE);
+    const check = await checkMemory(projectDir, { ...llmMemoryConfig, memoryMode: "file" });
 
     expect(check.status).toBe("pass");
   });

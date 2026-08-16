@@ -93,7 +93,7 @@ describe("commands Visp tells a user to paste", () => {
   it("quotes them in doctor's recovery too, which is a different code path", async () => {
     process.env.PATH = await mkdtemp(join(tmpdir(), "visp-no-memory-cli-"));
 
-    const check = await checkMemory(projectDir, config, "Run `visp setup`.");
+    const check = await checkMemory(projectDir, config);
 
     expect(unquotedExtras(check.recovery ?? "")).toEqual([]);
     expect(check.recovery).toContain(MEMORY_INSTALL_COMMAND);

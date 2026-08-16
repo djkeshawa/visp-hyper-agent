@@ -33,13 +33,19 @@ export type MemoryGap = {
 /**
  * How to finish a repair once the missing piece is in place.
  *
+ * Exported because doctor's Memory check needs the same sentence. It used to
+ * splice the generic project-setup route in instead, which produced one 350
+ * character `next:` line carrying three unrelated subjects — install a Python
+ * package, initialise Kit, initialise Hyper — for a failure that is about none
+ * of the last two.
+ *
  * `visp setup` is the short answer only on a machine that can run it. On one
  * without the Visp Dev machine-scope adapter it is the LC-9 dead end, and
  * pointing Memory's remedy at it would end LC-14's chain in LC-9's bug — a
  * report that says "`visp setup` cannot help here" and three lines later says
  * to run `visp setup`.
  */
-async function finishClause(directAlternative: string): Promise<string> {
+export async function memoryFinishClause(directAlternative: string): Promise<string> {
   return (await machineScopeAvailable())
     ? "then run `visp setup`."
     : `then run \`${directAlternative}\` — \`visp setup\` cannot help here, because it needs ` +
@@ -54,9 +60,13 @@ async function finishClause(directAlternative: string): Promise<string> {
  * `memoryMode`: the configuration being wrong is the LAST cause, not the gate.
  * It used to be the gate, and that made this whole diagnosis unreachable in
  * `llm-memory` mode — the mode a user sets in order to get Memory, and the one
- * LC-14 is actually about. In that mode the verbs fell through to the contract
- * and printed either a bare install line with no extras or a raw subprocess
- * dump, on the same machine, minutes apart from the good message.
+ * LC-14 is actually about. In that mode the verbs fell through to the contract,
+ * which answered either with a bare install line carrying no extras or, for a
+ * missing store, with "visp-memory answered outside contract 1.0; upgrade
+ * visp-memory (needs >= 0.4.0)" — a confident misdiagnosis telling the user to
+ * upgrade a correctly installed binary when the real gap is that this project
+ * has no store. Worse than an unhelpful message: a wrong one, on the same
+ * machine and minutes apart from the right one.
  */
 export async function findMemoryGap(
   projectPath: string,
@@ -66,7 +76,7 @@ export async function findMemoryGap(
     return {
       missing: "the visp-memory CLI is not installed on this machine.",
       remedy: [
-        `Install it with \`${MEMORY_INSTALL_COMMAND}\`, ${await finishClause("visp init --memory-mode llm-memory")}`,
+        `Install it with \`${MEMORY_INSTALL_COMMAND}\`, ${await memoryFinishClause("visp init --memory-mode llm-memory")}`,
         MEMORY_OPT_OUT_CLAUSE
       ].join("\n")
     };
@@ -75,7 +85,7 @@ export async function findMemoryGap(
   if (!(await fileExists(join(projectPath, MEMORY_STORE_MANIFEST)))) {
     return {
       missing: `visp-memory is installed, but this project has no memory store — there is no ${MEMORY_STORE_MANIFEST} here.`,
-      remedy: `Run \`visp-memory init\` in this project, ${await finishClause("visp init --memory-mode llm-memory")}`
+      remedy: `Run \`visp-memory init\` in this project, ${await memoryFinishClause("visp init --memory-mode llm-memory")}`
     };
   }
 

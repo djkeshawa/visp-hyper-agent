@@ -8,6 +8,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileResolved, findExecutableOnPath } from "../../../core/executable-resolver.js";
 import { MEMORY_INSTALL_COMMAND, MEMORY_OPT_OUT_CLAUSE } from "../../../memory/visp-memory-install.js";
+import { memoryFinishClause } from "../../memory/memory-readiness.js";
 import { readTextIfExists } from "../../../core/fs-utils.js";
 import type { HyperConfig } from "../../../core/types.js";
 import { INTEL_MCP_TOOL_PREFIX, MCP_CONFIG_FILENAME, describeIntelProvider } from "../../../install/intel-mcp-registration.js";
@@ -17,8 +18,7 @@ import type { DoctorCheck } from "./types.js";
 
 export async function checkSelectedHost(
   projectPath: string,
-  config: HyperConfig | null,
-  setupRoute: string
+  config: HyperConfig | null
 ): Promise<DoctorCheck> {
   const tool = config?.defaultTool;
   if (!tool) {
@@ -27,10 +27,11 @@ export async function checkSelectedHost(
       label: "Selected coding host",
       status: "fail",
       detail: "A trusted defaultTool is unavailable.",
-      // The route, not a bare `visp setup`: on a machine without the
-      // machine-scope adapter that is the LC-9 dead end, and one report must
-      // not say setup cannot help and then recommend it.
-      recovery: `Fix .visp/hyper/config.json, then: ${setupRoute}`
+      // `visp init`, not the project-setup route. This check fails on a
+      // project that IS set up and whose config went bad, so a route that
+      // says "run `visp-kit init .` and then `visp init`" answers a question
+      // nobody asked; the file needs rewriting, which is what init does.
+      recovery: "Fix .visp/hyper/config.json, or run `visp init --force` to regenerate it."
     };
   }
   if (tool === "generic") {
@@ -83,8 +84,7 @@ export async function checkSelectedHost(
 
 export async function checkToolAssets(
   projectPath: string,
-  config: HyperConfig | null,
-  setupRoute: string
+  config: HyperConfig | null
 ): Promise<DoctorCheck> {
   const tool = config?.defaultTool;
   if (!isToolName(tool)) {
@@ -93,7 +93,10 @@ export async function checkToolAssets(
       label: "Tool assets",
       status: "warn",
       detail: "No valid defaultTool found in .visp/hyper/config.json.",
-      recovery: setupRoute
+      // Same reason as the host check above: a defaultTool that is missing or
+      // unrecognised is written by `visp init --tool`, not by setting the
+      // project up again.
+      recovery: "Run `visp init --tool generic` (or your host) to write a valid defaultTool."
     };
   }
 
@@ -143,8 +146,7 @@ export async function checkToolAssets(
 
 export async function checkMemory(
   projectPath: string,
-  config: HyperConfig | null,
-  setupRoute: string
+  config: HyperConfig | null
 ): Promise<DoctorCheck> {
   const mode = config?.memoryMode;
   if (mode !== "llm-memory") {
@@ -182,7 +184,7 @@ export async function checkMemory(
       // The route follows, because on a machine that cannot run setup even
       // that much is the LC-9 dead end.
       recovery: [
-        `Install it with \`${MEMORY_INSTALL_COMMAND}\`, then: ${setupRoute}`,
+        `Install it with \`${MEMORY_INSTALL_COMMAND}\`, ${await memoryFinishClause("visp-memory init")}`,
         MEMORY_OPT_OUT_CLAUSE
       ].join(" ")
     };

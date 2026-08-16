@@ -150,7 +150,9 @@ describe("recall and learn when memory is unreachable", () => {
   // The mode a user sets in order to GET Memory. The diagnosis above used to
   // sit behind `if (memoryMode !== "llm-memory")`, so none of it ran here: the
   // verbs fell through to the CLI contract and printed a bare install line with
-  // no extras, or a raw `Command failed: visp-memory contract recall …` dump.
+  // no extras, or — for a missing store — "visp-memory answered outside
+  // contract 1.0; upgrade visp-memory (needs >= 0.4.0)", which is a wrong
+  // answer rather than merely a poor one.
   // Same machine, minutes apart from the good message. LC-14's origin was
   // Memory absent for a whole session, which is exactly this path.
   describe("in llm-memory mode", () => {
@@ -165,21 +167,26 @@ describe("recall and learn when memory is unreachable", () => {
         "the contract's own message names no extras, and pip without `capture` installs a " +
           "visp-memory that captures no git history while still reporting success"
       ).toContain(MEMORY_INSTALL_COMMAND);
-      expect(output).not.toContain("Command failed");
     });
 
-    it("names the missing store rather than dumping the failed subprocess", async () => {
+    it("names the missing store instead of blaming the version of a correct binary", async () => {
       await arrange({ cliInstalled: true, storePresent: false, memoryMode: "llm-memory" });
 
       const output = await refusalFrom(() => runRecallVerb(tempDir, "why jwt"));
 
       expect(output).toContain(MEMORY_STORE_MANIFEST);
       expect(output).toContain("visp-memory init");
+      // The contract's answer for this case was "visp-memory answered outside
+      // contract 1.0; upgrade visp-memory (needs >= 0.4.0)" — not merely
+      // unhelpful but wrong, sending the user to upgrade a binary that is
+      // installed and current when the real gap is that this project has no
+      // store. That is the string to keep out, and unlike "Command failed" it
+      // is one this codebase really produces.
       expect(
         output,
-        "a raw `Command failed: visp-memory contract recall …` tells the reader nothing they " +
-          "can act on"
-      ).not.toContain("Command failed");
+        "an upgrade instruction for a correctly installed binary is a confident misdiagnosis, " +
+          "which costs more than saying nothing"
+      ).not.toContain("upgrade visp-memory");
     });
 
     it("still refuses out loud rather than answering emptily", async () => {
