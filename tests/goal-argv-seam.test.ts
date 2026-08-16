@@ -9,13 +9,14 @@
 // BETWEEN them, at the whitespace split — so only a test that watches what
 // actually crosses the process boundary can see it.
 
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { KitCommandBridge } from "../src/kit/kit-command-bridge.js";
+import { putNodeExecutableOnPath } from "./helpers/fake-executable.js";
 
 const originalPath = process.env.PATH;
 let tempDir: string;
@@ -23,21 +24,15 @@ let tempDir: string;
 /** A stand-in engine that records exactly the argv it was handed. */
 async function argvRecordingKit(dir: string): Promise<string> {
   const logPath = join(dir, "argv.json");
-  const binDir = join(dir, "bin");
-  await mkdir(binDir, { recursive: true });
-  const shim = join(binDir, "visp-kit");
-  await writeFile(
-    shim,
+  await putNodeExecutableOnPath(
+    join(dir, "bin"),
+    "visp-kit",
     [
-      "#!/usr/bin/env node",
       'const { writeFileSync } = require("node:fs");',
       `writeFileSync(${JSON.stringify(logPath)}, JSON.stringify(process.argv.slice(2)));`,
-      'process.stdout.write(JSON.stringify({ success: true }));'
-    ].join("\n"),
-    "utf8"
+      "process.stdout.write(JSON.stringify({ success: true }));"
+    ].join("\n")
   );
-  await chmod(shim, 0o755);
-  process.env.PATH = `${binDir}${delimiter}${process.env.PATH}`;
   return logPath;
 }
 

@@ -10,9 +10,9 @@
 // costs another server, and the tool namespace the scout declares stays tied
 // to the server name that provides it.
 
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -25,6 +25,7 @@ import {
   describeIntelProvider,
   registerIntelMcpServer
 } from "../src/install/intel-mcp-registration.js";
+import { putNodeExecutableOnPath } from "./helpers/fake-executable.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const originalPath = process.env.PATH;
@@ -40,13 +41,8 @@ afterEach(() => {
 });
 
 /** Put a runnable `visp-intel` on PATH so the registration guard can resolve it. */
-async function stubVispIntel(): Promise<void> {
-  const binDir = join(project, "bin");
-  await mkdir(binDir, { recursive: true });
-  const shim = join(binDir, "visp-intel");
-  await writeFile(shim, "#!/usr/bin/env node\nprocess.stdout.write('0.1.0\\n');\n", "utf8");
-  await chmod(shim, 0o755);
-  process.env.PATH = `${binDir}${delimiter}${process.env.PATH}`;
+async function stubVispIntel(body = "process.stdout.write('0.1.0\\n');"): Promise<void> {
+  await putNodeExecutableOnPath(join(project, "bin"), "visp-intel", body);
 }
 
 async function stubStore(): Promise<string> {
@@ -157,16 +153,7 @@ describe("the visp-intel MCP server is registered, not assumed", () => {
     // commander quirk). The guard asks whether the host can SPAWN the binary,
     // not whether it liked the probe — treating a non-zero exit as "not
     // installed" refused every real installation.
-    const binDir = join(project, "bin");
-    await mkdir(binDir, { recursive: true });
-    const shim = join(binDir, "visp-intel");
-    await writeFile(
-      shim,
-      "#!/usr/bin/env node\nprocess.stdout.write('0.1.0\\n');\nprocess.exit(2);\n",
-      "utf8"
-    );
-    await chmod(shim, 0o755);
-    process.env.PATH = `${binDir}${delimiter}${process.env.PATH}`;
+    await stubVispIntel("process.stdout.write('0.1.0\\n');\nprocess.exit(2);");
     const store = await stubStore();
 
     const result = await registerIntelMcpServer(project, { store, repository });
