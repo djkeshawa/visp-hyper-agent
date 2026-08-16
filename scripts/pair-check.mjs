@@ -156,13 +156,29 @@ function initializeKitArtifacts(kitEntry, hyperPath) {
   return null;
 }
 
-/** Resolves a path through symlinks where possible, so two spellings compare equal. */
+/**
+ * Resolves a path through symlinks where possible, so two spellings compare
+ * equal.
+ *
+ * `realpathSync.native`, not `realpathSync`, and the difference is the whole
+ * point on Windows. The JS implementation walks the path resolving symlinks
+ * and leaves everything else alone; the native one asks the OS for the final
+ * name, which also expands an 8.3 short path. The two sides compared here come
+ * from different programs and spell that differently: `os.tmpdir()` hands Node
+ * `C:\Users\RUNNER~1\...`, while git prints the long `C:/Users/runneradmin/...`
+ * it resolved for itself. Under the JS implementation those stayed unequal, so
+ * a repository's own root read as "not this directory" and every identity on
+ * Windows came back null — the exact silence this function exists to prevent.
+ */
 function canonicalPath(path) {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
+  for (const resolver of [realpathSync.native, realpathSync]) {
+    try {
+      return resolver(path);
+    } catch {
+      // Not resolvable this way; fall through to the next attempt.
+    }
   }
+  return resolve(path);
 }
 
 /**
