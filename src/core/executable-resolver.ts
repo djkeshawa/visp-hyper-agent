@@ -112,7 +112,21 @@ export function buildBatchExecArgs(batchPath: string, args: string[]): string[] 
  * - win32 path **without** an extension, or a bare command name: probed against
  *   PATH (bare names only) and PATHEXT until a real file is found.
  *
- * Returns `null` when nothing on disk matches (caller treats this like ENOENT).
+ * **This does not tell you whether `command` exists.** On non-win32 it returns
+ * a resolution for any name at all, because execFile searches PATH itself — so
+ * a `!== null` test here is always true on Linux and macOS, whatever is
+ * installed. Use {@link findExecutableOnPath} to ask whether something is
+ * there.
+ *
+ * That distinction is not decoration. This docstring used to end "returns
+ * `null` when nothing on disk matches (caller treats this like ENOENT)", which
+ * is true only on win32, and four call sites were written against it: doctor's
+ * "visp-memory is not installed" branch became unreachable code on POSIX, and
+ * `setup` spawned a binary it had just confirmed. Both return a nullable, so
+ * the types cannot tell the two questions apart — only this sentence can.
+ *
+ * Returns `null` on win32 when nothing on disk matches (caller treats this like
+ * ENOENT).
  */
 export async function resolveExecutable(
   command: string,
@@ -163,6 +177,45 @@ export async function resolveExecutable(
   }
 
   return null;
+}
+
+/**
+ * Where `command` actually lives on PATH, or `null` when it lives nowhere.
+ *
+ * Deliberately a different question from {@link resolveExecutable}, which
+ * answers "what do I hand to execFile" and on POSIX hands back the bare name
+ * because execFile searches PATH itself. That answer cannot tell a caller
+ * whether the command exists, nor where its package sits on disk — and both
+ * gaps shipped: `visp setup` declared visp-dev missing while it sat on PATH,
+ * and doctor's "the visp-memory CLI is not installed" branch was unreachable
+ * on every non-Windows host.
+ */
+export async function findExecutableOnPath(command: string): Promise<string | null> {
+  const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  // On POSIX a command name is the filename. On win32 it is the filename minus
+  // one of PATHEXT, unless the caller already supplied the extension.
+  const extensions = !WINDOWS || extname(command) ? [""] : pathExtensions();
+
+  for (const dir of dirs) {
+    for (const ext of extensions) {
+      const candidate = join(dir, command + ext);
+      if (await isRunnableFile(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Existence is the whole test on win32, where the execute bit has no meaning;
+ * elsewhere a PATH entry that cannot be executed is not a hit.
+ */
+async function isRunnableFile(candidate: string): Promise<boolean> {
+  try {
+    await access(candidate, WINDOWS ? constants.F_OK : constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

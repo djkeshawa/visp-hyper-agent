@@ -13,6 +13,7 @@ import {
   memoryContractPropose,
   type MemoryRecallScope
 } from "../../memory/memory-cli-contract.js";
+import { findMemoryGap, renderMemoryRefusal } from "./memory-readiness.js";
 
 /**
  * A4(a): a manual `visp recall` still happens inside a task, so tell Memory
@@ -33,14 +34,12 @@ async function activeSessionScope(projectPath: string): Promise<MemoryRecallScop
 
 export async function runRecallVerb(projectPath: string, query: string): Promise<void> {
   const config = await readConfig(projectPath);
-  if (config.memoryMode !== "llm-memory") {
-    console.error(
-      [
-        "visp recall needs visp-memory, which is not configured for this project.",
-        "Run `visp setup` — it installs what is missing and configures memory here.",
-        "Nothing was retrieved."
-      ].join("\n")
-    );
+  // One readiness gate for both modes. This used to be `if (config.memoryMode
+  // !== "llm-memory")`, which meant the diagnosis never ran in the mode a user
+  // sets in order to GET Memory — see findMemoryGap.
+  const gap = await findMemoryGap(projectPath, config.memoryMode);
+  if (gap !== null) {
+    console.error(renderMemoryRefusal("recall", gap, "Nothing was retrieved."));
     process.exitCode = 1;
     return;
   }
@@ -80,14 +79,9 @@ export async function runRecallVerb(projectPath: string, query: string): Promise
 
 export async function runLearnVerb(projectPath: string, note: string): Promise<void> {
   const config = await readConfig(projectPath);
-  if (config.memoryMode !== "llm-memory") {
-    console.error(
-      [
-        "visp learn needs visp-memory, which is not configured for this project.",
-        "Run `visp setup` — it installs what is missing and configures memory here.",
-        "Nothing was recorded."
-      ].join("\n")
-    );
+  const gap = await findMemoryGap(projectPath, config.memoryMode);
+  if (gap !== null) {
+    console.error(renderMemoryRefusal("learn", gap, "Nothing was recorded."));
     process.exitCode = 1;
     return;
   }

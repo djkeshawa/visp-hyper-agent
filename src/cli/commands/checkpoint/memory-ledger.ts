@@ -56,6 +56,13 @@ export async function recordCompletionMemory(projectPath: string, taskId: string
     const { resolveExecutable, execFileResolved } = await import(
       "../../../core/executable-resolver.js"
     );
+    // Deliberately `resolveExecutable`, which on POSIX never returns null — so
+    // this guard only fires on win32 and the spawn below is what actually
+    // reports absence elsewhere. Switching to `findExecutableOnPath` would
+    // return silently here instead of reaching the catch, trading a loud wrong
+    // path for a silent one, and a memory that was never recorded must not be
+    // indistinguishable from one that was. LC-26 decides whether to keep the
+    // guard with this comment or delete it and let the catch do the work.
     if ((await resolveExecutable("visp-memory")) === null) return;
     const record = async (content: string, category: string, importance: string) =>
       execFileResolved(

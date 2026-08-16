@@ -44,7 +44,10 @@ export function checkPackageVersion(): DoctorCheck {
  * it says which), and verbs run with no session to show for them (warn, in
  * full sentences).
  */
-export async function checkHyperInitialized(projectPath: string): Promise<DoctorCheck> {
+export async function checkHyperInitialized(
+  projectPath: string,
+  setupRoute: string
+): Promise<DoctorCheck> {
   const configPath = vispPath(projectPath, "hyper", "config.json");
   const statePath = vispPath(projectPath, "hyper", "state.json");
   const [configExists, stateExists] = await Promise.all([fileExists(configPath), fileExists(statePath)]);
@@ -54,7 +57,9 @@ export async function checkHyperInitialized(projectPath: string): Promise<Doctor
       label: "Visp Hyper state",
       status: "fail",
       detail: "Visp Hyper has not been initialized in this project.",
-      recovery: "Run `visp setup`."
+      // The caller decides between the machine-scope and project-scope route;
+      // this check knows the project is uninitialised, not what the machine has.
+      recovery: setupRoute
     };
   }
 

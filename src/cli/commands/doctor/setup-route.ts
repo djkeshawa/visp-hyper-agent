@@ -1,0 +1,37 @@
+/**
+ * Which command actually moves an uninitialised project forward.
+ *
+ * Doctor used to name `visp setup` unconditionally. On a machine without the
+ * Visp Dev machine-scope adapter that is a step doctor can know will fail, and
+ * naming it produced a closed loop: doctor said run setup, setup said install
+ * the adapter, and the user who had already installed it had nowhere to go.
+ * The project-scope route was reachable the whole time — no verb mentioned it.
+ */
+
+import { machineScopeAvailable } from "../../machine/machine-scope.js";
+
+/** What to recommend when `visp setup` has a machine scope to run. */
+export const MACHINE_SCOPE_ROUTE = "Run `visp setup`.";
+
+/**
+ * What to recommend when it does not.
+ *
+ * **Both commands, in that order.** `visp-kit init .` sets up Kit and nothing
+ * else; the Hyper state check reads `.visp/hyper/config.json` and `state.json`,
+ * which only `visp init` writes. Naming Kit's step alone reproduced LC-9's
+ * defect on the project-scope side: doctor recommended the command the user had
+ * just run, and would have gone on recommending it forever, because Kit
+ * artifacts existing never satisfies the check that generates this route.
+ *
+ * `visp init` is registered hidden, so it never appears in the root help. That
+ * is why it was easy to leave out, and why it has to be spelled out here: a
+ * user reading the documented thirteen verbs cannot discover it.
+ */
+export const PROJECT_SCOPE_ROUTE =
+  "Run `visp-kit init .` and then `visp init` to set this project up (install Kit first if " +
+  "needed: `npm install -g visp-kit`). `visp setup` cannot help here: it needs the Visp Dev " +
+  "machine-scope adapter, and nothing on this machine provides it.";
+
+export async function setupRoute(): Promise<string> {
+  return (await machineScopeAvailable()) ? MACHINE_SCOPE_ROUTE : PROJECT_SCOPE_ROUTE;
+}

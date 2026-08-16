@@ -26,6 +26,7 @@ import {
   checkTrustedConfig,
   readHyperConfigSnapshot
 } from "./doctor/project-checks.js";
+import { setupRoute } from "./doctor/setup-route.js";
 import { formatDoctorSummary, nextCommand } from "./doctor/summary.js";
 
 export function doctorCommand(): Command {
@@ -53,8 +54,12 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
   const configInspection = await readHyperConfigSnapshot(projectPath);
   const config = configInspection.config;
 
+  // Resolved once, because it probes the machine rather than the project and
+  // every check that recommends a way forward must recommend the same one.
+  const route = await setupRoute();
+
   checks.push(checkPackageVersion());
-  checks.push(await checkHyperInitialized(projectPath));
+  checks.push(await checkHyperInitialized(projectPath, route));
   checks.push(checkTrustedConfig(configInspection));
   checks.push(await checkActiveContextFreshness(projectPath));
 
@@ -66,7 +71,7 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
     detail: kitArtifactsPresent
       ? "Found .visp/policy.json or .visp/project.json."
       : "No Kit-owned artifacts found; Hyper will use quick/local mode instead of the strict Kit backend.",
-    recovery: kitArtifactsPresent ? undefined : "Run `visp setup` in this project."
+    recovery: kitArtifactsPresent ? undefined : route
   });
 
   if (kitArtifactsPresent) {
@@ -74,6 +79,11 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
   }
 
   checks.push(await checkGitHook(projectPath));
+  // No route here. These three fail on a project that IS set up — a bad
+  // defaultTool, missing assets, an absent Memory CLI — and each needs the
+  // command that repairs its own subsystem, not the one that sets a project up
+  // from nothing. Threading the route through them gave three unrelated
+  // failures identical advice.
   checks.push(await checkSelectedHost(projectPath, config));
   checks.push(await checkToolAssets(projectPath, config));
   checks.push(await checkMemory(projectPath, config));

@@ -6,7 +6,9 @@
 
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { execFileResolved, resolveExecutable } from "../../../core/executable-resolver.js";
+import { execFileResolved, findExecutableOnPath } from "../../../core/executable-resolver.js";
+import { MEMORY_INSTALL_COMMAND, MEMORY_OPT_OUT_CLAUSE } from "../../../memory/visp-memory-install.js";
+import { memoryFinishClause } from "../../memory/memory-readiness.js";
 import { readTextIfExists } from "../../../core/fs-utils.js";
 import type { HyperConfig } from "../../../core/types.js";
 import { INTEL_MCP_TOOL_PREFIX, MCP_CONFIG_FILENAME, describeIntelProvider } from "../../../install/intel-mcp-registration.js";
@@ -14,7 +16,10 @@ import { planInstall, readHostCapabilityManifest } from "../../../install/tool-a
 import type { ToolName } from "../../../install/tool-asset-installer.js";
 import type { DoctorCheck } from "./types.js";
 
-export async function checkSelectedHost(projectPath: string, config: HyperConfig | null): Promise<DoctorCheck> {
+export async function checkSelectedHost(
+  projectPath: string,
+  config: HyperConfig | null
+): Promise<DoctorCheck> {
   const tool = config?.defaultTool;
   if (!tool) {
     return {
@@ -22,7 +27,11 @@ export async function checkSelectedHost(projectPath: string, config: HyperConfig
       label: "Selected coding host",
       status: "fail",
       detail: "A trusted defaultTool is unavailable.",
-      recovery: "Fix .visp/hyper/config.json, then run `visp setup`."
+      // `visp init`, not the project-setup route. This check fails on a
+      // project that IS set up and whose config went bad, so a route that
+      // says "run `visp-kit init .` and then `visp init`" answers a question
+      // nobody asked; the file needs rewriting, which is what init does.
+      recovery: "Fix .visp/hyper/config.json, or run `visp init --force` to regenerate it."
     };
   }
   if (tool === "generic") {
@@ -73,7 +82,10 @@ export async function checkSelectedHost(projectPath: string, config: HyperConfig
   }
 }
 
-export async function checkToolAssets(projectPath: string, config: HyperConfig | null): Promise<DoctorCheck> {
+export async function checkToolAssets(
+  projectPath: string,
+  config: HyperConfig | null
+): Promise<DoctorCheck> {
   const tool = config?.defaultTool;
   if (!isToolName(tool)) {
     return {
@@ -81,7 +93,10 @@ export async function checkToolAssets(projectPath: string, config: HyperConfig |
       label: "Tool assets",
       status: "warn",
       detail: "No valid defaultTool found in .visp/hyper/config.json.",
-      recovery: "Run `visp setup`."
+      // Same reason as the host check above: a defaultTool that is missing or
+      // unrecognised is written by `visp init --tool`, not by setting the
+      // project up again.
+      recovery: "Run `visp init --tool generic` (or your host) to write a valid defaultTool."
     };
   }
 
@@ -150,14 +165,28 @@ export async function checkMemory(
   // unavailable at http://localhost:8000" one command after `visp recall` had
   // answered fine through the CLI. A doctor must examine the patient the
   // verbs actually visit: CLI installed, endpoint well-formed when present.
-  const resolved = await resolveExecutable("visp-memory");
+  // `findExecutableOnPath`, not `resolveExecutable`: the latter answers "what do
+  // I hand to execFile" and on POSIX hands back the bare name, so this branch
+  // could never be taken on Linux or macOS. Doctor therefore reported
+  // "llm-memory is available through the visp-memory CLI" on every host where
+  // the CLI was absent — the one report that would have shown that Memory was
+  // never reachable during a whole workflow run.
+  const resolved = await findExecutableOnPath("visp-memory");
   if (resolved === null) {
     return {
       id: "memory",
       label: "Memory provider",
       status: "warn",
-      detail: "memoryMode is llm-memory, but the visp-memory CLI is not installed.",
-      recovery: "Run `visp setup` — it installs what is missing and configures memory here."
+      detail: "memoryMode is llm-memory, but the visp-memory CLI is not on PATH.",
+      // The install first, not `visp setup`: setup configures what is
+      // installed and has never installed the Python package, so naming it
+      // alone sent the user to a command that reported the same absence back.
+      // The route follows, because on a machine that cannot run setup even
+      // that much is the LC-9 dead end.
+      recovery: [
+        `Install it with \`${MEMORY_INSTALL_COMMAND}\`, ${await memoryFinishClause("visp-memory init")}`,
+        MEMORY_OPT_OUT_CLAUSE
+      ].join(" ")
     };
   }
 
