@@ -26,8 +26,21 @@ export default defineConfig({
       reporter: ["text-summary", "lcov"],
       // Thresholds start at the measured baseline and only ever rise. A
       // threshold below what the suite already achieves silently permits
-      // regression, which is the failure mode a threshold exists to prevent.
-      thresholds: { lines: 0, statements: 0, functions: 0, branches: 0 }
+      // regression, which is the failure mode a threshold exists to prevent —
+      // and these sat at 0 under this very sentence until LC-54, so the comment
+      // described an intention nobody had implemented while reading as policy.
+      //
+      // Measured on this commit, Linux / Node 22, `pnpm test:coverage`:
+      //   statements 88.91% (16648/18723)   branches 84.23% (4295/5099)
+      //   functions  93.63% (795/849)       lines    88.91% (16648/18723)
+      // Written down to the hundredth and NOT rounded up. A threshold above the
+      // measurement fails the next honest run; a threshold rounded down for
+      // comfort is the regression gap this exists to close.
+      //
+      // Branches is below the crew's 85% floor. That is LC-50, raised as its own
+      // ticket: a threshold moved in the same commit as the coverage it measures
+      // is a number tuned against itself.
+      thresholds: { lines: 88.91, statements: 88.91, functions: 93.63, branches: 84.23 }
     }
   }
 });
