@@ -11,13 +11,14 @@
 // These tests pin the distinction. Wherever the coordinator or the user can
 // see scout state, an absent provider is named there.
 
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { registerIntelMcpServer } from "../src/install/intel-mcp-registration.js";
+import { putNodeExecutableOnPath } from "./helpers/fake-executable.js";
 import { handleMessage } from "../src/mcp/mcp-server.js";
 import { createToolContext } from "../src/mcp/tool-bridge.js";
 import { readScoutFindings, renderScoutState } from "../src/scout/scout-findings.js";
@@ -66,12 +67,11 @@ async function writeFindings(payload: unknown): Promise<void> {
 }
 
 async function registerProvider(): Promise<void> {
-  const binDir = join(project, "bin");
-  await mkdir(binDir, { recursive: true });
-  const shim = join(binDir, "visp-intel");
-  await writeFile(shim, "#!/usr/bin/env node\nprocess.stdout.write('0.1.0\\n');\n", "utf8");
-  await chmod(shim, 0o755);
-  process.env.PATH = `${binDir}${delimiter}${process.env.PATH}`;
+  await putNodeExecutableOnPath(
+    join(project, "bin"),
+    "visp-intel",
+    "process.stdout.write('0.1.0\\n');"
+  );
 
   const store = join(project, ".visp-intel", "intel.sqlite");
   await mkdir(join(project, ".visp-intel"), { recursive: true });

@@ -31,7 +31,7 @@
 // that ran, and both surfaces read what it says instead of that it is there.
 
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -43,6 +43,7 @@ import {
   canonicalKitSpec,
   createCanonicalProject
 } from "./helpers/canonical-action-fixture.js";
+import { putNodeExecutableOnPath } from "./helpers/fake-executable.js";
 import { createVispShim } from "./helpers/visp-shim.js";
 import { defaultConfig } from "../src/core/defaults.js";
 import {
@@ -202,13 +203,10 @@ describe("the head-to-head run itself, end to end", () => {
   async function stubKitStoppingAtClarify(): Promise<void> {
     await mkdir(join(projectPath, ".visp"), { recursive: true });
     await writeFile(join(projectPath, ".visp", "policy.json"), "{}", "utf8");
-    const binDir = join(projectPath, "bin");
-    await mkdir(binDir, { recursive: true });
-    const shim = join(binDir, "visp-kit");
-    await writeFile(
-      shim,
+    await putNodeExecutableOnPath(
+      join(projectPath, "bin"),
+      "visp-kit",
       [
-        "#!/usr/bin/env node",
         'const fs = require("node:fs");',
         `const marker = ${JSON.stringify(join(projectPath, ".visp", "scanned"))};`,
         "const sub = process.argv[2];",
@@ -238,11 +236,8 @@ describe("the head-to-head run itself, end to end", () => {
         "}",
         'process.stdout.write(JSON.stringify({ success: true }));',
         "process.exit(0);"
-      ].join("\n"),
-      "utf8"
+      ].join("\n")
     );
-    await chmod(shim, 0o755);
-    process.env.PATH = `${binDir}${delimiter}${process.env.PATH}`;
   }
 
   it("leaves a state file that answers 'did Hyper do anything here'", async () => {

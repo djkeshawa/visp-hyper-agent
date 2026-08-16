@@ -11,13 +11,14 @@
 // visp-memory too old to accept the flags degrades to today's behaviour with a
 // stated reason, never to a hard failure and never to silence.
 
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { memoryContractRecall } from "../src/memory/memory-cli-contract.js";
+import { putNodeExecutableOnPath } from "./helpers/fake-executable.js";
 
 const originalPath = process.env.PATH;
 let project: string;
@@ -34,12 +35,7 @@ const argvLog = () => join(project, "argv.json");
 
 /** A visp-memory that records its argv and answers with one entry. */
 async function stubVispMemory(body: string): Promise<void> {
-  const binDir = join(project, "bin");
-  await mkdir(binDir, { recursive: true });
-  const shim = join(binDir, "visp-memory");
-  await writeFile(shim, `#!/usr/bin/env node\n${body}\n`, "utf8");
-  await chmod(shim, 0o755);
-  process.env.PATH = `${binDir}${delimiter}${process.env.PATH}`;
+  await putNodeExecutableOnPath(join(project, "bin"), "visp-memory", body);
 }
 
 const recordArgv = (log: string) =>

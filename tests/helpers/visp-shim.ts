@@ -1,6 +1,8 @@
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { writeNodeExecutable } from "./fake-executable.js";
 
 export interface ShimResponse {
   stdout: object | string;
@@ -265,17 +267,11 @@ export function gateResultFixture(
   };
 }
 
-const WINDOWS = process.platform === "win32";
-
 /**
  * Writes an executable shim that switches on its first argument and prints
  * canned JSON. Pass `binary` to KitCommandBridge / detectVisp directly.
  *
- * On win32 an extensionless shebang script is not executable, so we emit the
- * logic as a plain `.js` file and a sibling `visp.cmd` wrapper that runs
- * `node <script>` — the shape a real `npm i -g` install produces, which the
- * executable-resolver runs through `cmd.exe`. On POSIX we keep the historical
- * extensionless `#!/usr/bin/env node` script.
+ * {@link writeNodeExecutable} owns the platform shape.
  */
 export async function createVispShim(spec: ShimSpec): Promise<VispShim> {
   const dir = await mkdtemp(join(tmpdir(), "visp-shim-"));
@@ -313,24 +309,7 @@ if (typeof response.delayMs === "number" && response.delayMs > 0) {
 }
 `;
 
-  if (WINDOWS) {
-    // A `.cmd` wrapper is what a real global npm install writes; the resolver
-    // runs it through cmd.exe. Point `binary` at the `.cmd` so callers that
-    // treat it as an absolute path resolve correctly.
-    const scriptPath = join(dir, "visp-shim.js");
-    const binary = join(dir, "visp.cmd");
-    await writeFile(scriptPath, body, "utf8");
-    // `%~dp0` keeps the wrapper location-independent; `%*` forwards args
-    // verbatim. No user input is interpolated — this is a fixed template.
-    const cmdWrapper = `@echo off\r\nnode "%~dp0visp-shim.js" %*\r\n`;
-    await writeFile(binary, cmdWrapper, "utf8");
-    return { binary, argvLogPath };
-  }
-
-  const binary = join(dir, "visp");
-  const script = `#!/usr/bin/env node\n${body}`;
-  await writeFile(binary, script, "utf8");
-  await chmod(binary, 0o755);
+  const binary = await writeNodeExecutable(dir, "visp", body);
 
   return { binary, argvLogPath };
 }

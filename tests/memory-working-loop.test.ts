@@ -7,15 +7,16 @@
 // WROTE work memories: agents were told to run `visp learn` and mostly did
 // not, so the next feature re-discovered the project from scratch.
 
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { taskCompletionMemory } from "../src/cli/commands/checkpoint.js";
 import { recallViaContract } from "../src/cli/commands/start.js";
 import { defaultConfig } from "../src/core/defaults.js";
+import { putNodeExecutableOnPath } from "./helpers/fake-executable.js";
 
 const originalPath = process.env.PATH;
 let tempDir: string;
@@ -29,16 +30,11 @@ afterEach(() => {
 });
 
 async function stubVispMemory(envelope: unknown): Promise<void> {
-  const binDir = join(tempDir, "bin");
-  await mkdir(binDir, { recursive: true });
-  const shim = join(binDir, "visp-memory");
-  await writeFile(
-    shim,
-    `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(envelope))});\n`,
-    "utf8"
+  await putNodeExecutableOnPath(
+    join(tempDir, "bin"),
+    "visp-memory",
+    `process.stdout.write(${JSON.stringify(JSON.stringify(envelope))});`
   );
-  await chmod(shim, 0o755);
-  process.env.PATH = `${binDir}${delimiter}${process.env.PATH}`;
 }
 
 describe("memory fusion speaks the CLI contract a standard install has", () => {

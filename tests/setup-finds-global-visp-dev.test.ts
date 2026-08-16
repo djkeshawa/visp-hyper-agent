@@ -123,7 +123,12 @@ describe("visp setup on a machine where visp-dev was installed globally", () => 
       "setup denied an adapter that was installed and on PATH. That is the closed loop LC-9 " +
         "reports: doctor sends the user to setup, setup sends them to an install they have done."
     ).not.toContain("not installed");
-    expect(await readFile(witness, "utf8")).toContain(projectDir);
+    // Parse the witness rather than substring-matching its bytes: the adapter
+    // records `JSON.stringify(input)`, and JSON escapes every backslash — so
+    // on Windows the recorded `C:\Users\...` is spelled `C:\\Users\\...` on
+    // disk and a raw `toContain` reports the right path as absent.
+    const recorded = JSON.parse(await readFile(witness, "utf8")) as { projectPath?: string };
+    expect(recorded.projectPath).toBe(projectDir);
   });
 
   it("does not fail the command when the adapter came from PATH", async () => {

@@ -22,13 +22,14 @@
 // generated all-TBD draft failing its own validation is the NORMAL path, not
 // an error. It must exit 0 and say what to do next.
 
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { KitCommandBridge } from "../src/kit/kit-command-bridge.js";
+import { putNodeExecutableOnPath } from "./helpers/fake-executable.js";
 
 const originalPath = process.env.PATH;
 let tempDir: string;
@@ -82,12 +83,7 @@ async function stubKitWorkflow(stageEnvelope: unknown): Promise<void> {
 }
 
 async function writeShim(body: string): Promise<void> {
-  const binDir = join(tempDir, "bin");
-  await mkdir(binDir, { recursive: true });
-  const shim = join(binDir, "visp-kit");
-  await writeFile(shim, `#!/usr/bin/env node\n${body}\n`, "utf8");
-  await chmod(shim, 0o755);
-  process.env.PATH = `${binDir}${delimiter}${process.env.PATH}`;
+  await putNodeExecutableOnPath(join(tempDir, "bin"), "visp-kit", body);
 }
 
 describe("the bridge keeps what Kit already told it", () => {

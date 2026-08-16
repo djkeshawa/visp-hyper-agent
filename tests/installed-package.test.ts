@@ -12,7 +12,7 @@
 // the two layouts differ in exactly the way that matters — POSIX symlinks the
 // bin into the package, win32 writes a shim beside `node_modules/`.
 
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,7 +28,13 @@ let prefix: string;
 let originalPath: string | undefined;
 
 beforeEach(async () => {
-  prefix = await mkdtemp(join(tmpdir(), "visp-global-install-"));
+  // realpath, because the code under test canonicalises the binary it finds
+  // and this fixture has to be able to compare paths with what it returns.
+  // On Windows `os.tmpdir()` hands back the 8.3 short form —
+  // `C:\Users\RUNNER~1\...` — while realpath expands it to
+  // `C:\Users\runneradmin\...`, so an unresolved fixture path is spelled
+  // differently from the identical location the resolver reports.
+  prefix = await realpath(await mkdtemp(join(tmpdir(), "visp-global-install-")));
   originalPath = process.env.PATH;
 });
 
@@ -40,6 +46,8 @@ afterEach(async () => {
 type GlobalInstall = {
   /** Directory to put on PATH. */
   readonly binDir: string;
+  /** The installed package's root, wherever this platform's npm puts it. */
+  readonly root: string;
   /** The file the subpath export should resolve to. */
   readonly adapter: string;
 };
@@ -68,7 +76,7 @@ async function installGlobally(exportsValue: unknown = "./src/adapter.mjs"): Pro
     const root = join(prefix, "node_modules", PACKAGE_NAME);
     const adapter = await writePackage(root, exportsValue);
     await writeFile(join(prefix, `${PACKAGE_NAME}.cmd`), "@echo off\r\n", "utf8");
-    return { binDir: prefix, adapter };
+    return { binDir: prefix, root, adapter };
   }
 
   const root = join(prefix, "lib", "node_modules", PACKAGE_NAME);
@@ -80,7 +88,7 @@ async function installGlobally(exportsValue: unknown = "./src/adapter.mjs"): Pro
   const binDir = join(prefix, "bin");
   await mkdir(binDir, { recursive: true });
   await symlink(entry, join(binDir, PACKAGE_NAME));
-  return { binDir, adapter };
+  return { binDir, root, adapter };
 }
 
 function onlyOnPath(directory: string): void {
@@ -124,9 +132,12 @@ describe("resolving a subpath export of a globally installed package", () => {
   it("refuses a directory that only shares the package's name", async () => {
     // A parent directory called `demo-adapter` is not the package. Matching on
     // the name in package.json is what keeps a coincidence off the import path.
-    const { binDir } = await installGlobally();
+    // Overwrite where THIS platform's npm put the package. Reaching for the
+    // POSIX `lib/node_modules` spelling wrote into a directory Windows does
+    // not have, so the test failed on the fixture rather than on the claim.
+    const { binDir, root } = await installGlobally();
     await writeFile(
-      join(prefix, "lib", "node_modules", PACKAGE_NAME, "package.json"),
+      join(root, "package.json"),
       `${JSON.stringify({ name: "something-else" })}\n`,
       "utf8"
     );
