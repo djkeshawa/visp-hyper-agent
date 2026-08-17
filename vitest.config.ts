@@ -31,16 +31,24 @@ export default defineConfig({
       // described an intention nobody had implemented while reading as policy.
       //
       // Measured on this commit, Linux / Node 22, `pnpm test:coverage`:
-      //   statements 88.91% (16648/18723)   branches 84.23% (4295/5099)
-      //   functions  93.63% (795/849)       lines    88.91% (16648/18723)
+      //   statements 89.47% (16802/18778)   branches 85.20% (4395/5158)
+      //   functions  93.67% (800/854)       lines    89.47% (16802/18778)
       // Written down to the hundredth and NOT rounded up. A threshold above the
       // measurement fails the next honest run; a threshold rounded down for
       // comfort is the regression gap this exists to close.
       //
-      // Branches is below the crew's 85% floor. That is LC-50, raised as its own
-      // ticket: a threshold moved in the same commit as the coverage it measures
-      // is a number tuned against itself.
-      thresholds: { lines: 88.91, statements: 88.91, functions: 93.63, branches: 84.23 }
+      // Branches is pinned at 85.2 and not at the 85.21 a second run of the same
+      // commit reported: the v8 provider's branch TOTAL moved between two runs
+      // of identical code (5158 then 5159), and the first pin at 85.21 failed
+      // the very next run at 85.20. A threshold inside that jitter is a flaky
+      // gate, which teaches people to lower thresholds — the one habit this
+      // ratchet exists to prevent.
+      //
+      // Branches crossed the crew's 85% floor here for the first time, carried
+      // by LC-93/LC-94's own tests rather than by work aimed at the number. That
+      // does not close LC-50: this is one measurement on one platform, and a
+      // threshold is a ratchet, not a verdict on the gap it was raised for.
+      thresholds: { lines: 89.47, statements: 89.47, functions: 93.67, branches: 85.2 }
     }
   }
 });

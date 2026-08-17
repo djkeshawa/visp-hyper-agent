@@ -139,7 +139,10 @@ claim you might read it as — is in [pair verification](docs/pair-verification.
   needs no secret and can be run by anyone, but no run of it has been observed
   yet.
 - **Durable shared memory is not available yet.** File-based memory is the
-  default. The legacy HTTP memory mode exists only for private migrations
+  default where nothing else is present. A project that has already installed
+  `visp-memory` and initialised a store starts in `llm-memory` mode instead, and
+  `visp doctor` warns rather than passes when such a project is left on file
+  memory. The legacy HTTP memory mode exists only for private migrations
   already using it.
 - **Conformance is partial**, and non-Linux systems are not yet covered.
 

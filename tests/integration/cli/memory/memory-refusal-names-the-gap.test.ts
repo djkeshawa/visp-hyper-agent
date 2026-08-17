@@ -36,8 +36,13 @@ let originalPath: string | undefined;
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "visp-memory-gap-"));
   originalPath = process.env.PATH;
-  // The default mode is file memory, which is the state every one of these
-  // cases starts from.
+  // File memory, which is the state every one of these cases starts from.
+  //
+  // ORDER IS LOAD-BEARING since LC-93: the default is file only because this
+  // project has no store YET. `arrange` writes the store manifest afterwards.
+  // Initialising after that would select llm-memory and none of these refusals
+  // would be reached — and it would do so only on a machine with visp-memory
+  // installed, so it would pass here and fail in CI, which installs it.
   await initializeProject(tempDir, false);
 });
 
