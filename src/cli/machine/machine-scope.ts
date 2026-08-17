@@ -14,6 +14,7 @@ import {
   MEMORY_OPT_OUT_CLAUSE,
   MEMORY_STORE_MANIFEST
 } from "../../memory/visp-memory-install.js";
+import { memoryStoreIsReachable } from "../../memory/memory-mode-default.js";
 import {
   INTEL_MCP_TOOL_PREFIX,
   MCP_CONFIG_FILENAME,
@@ -305,14 +306,14 @@ async function initialiseMemoryStore(projectPath: string): Promise<boolean> {
  * Two conditions, both required, because the failure this repairs was `setup`
  * certifying a capability `recall` then denied. The binary being installed is
  * not enough — an uninitialised store would make `visp recall` fail in a new
- * way rather than the old one.
+ * way rather than the old one. Both now come from `memoryStoreIsReachable`,
+ * which is the same pair a fresh project's default and doctor's Memory check
+ * ask about; three copies of one fact is three chances for them to disagree.
  */
 async function enableLlmMemory(projectPath: string): Promise<boolean> {
   const configPath = vispPath(projectPath, "hyper", "config.json");
   if (!(await pathExists(configPath))) return false;
-  if (!(await pathExists(join(projectPath, MEMORY_STORE_MANIFEST)))) return false;
-
-  if ((await findExecutableOnPath("visp-memory")) === null) return false;
+  if (!(await memoryStoreIsReachable(projectPath))) return false;
 
   const config = await readConfig(projectPath);
   if (config.memoryMode === "llm-memory") return false;

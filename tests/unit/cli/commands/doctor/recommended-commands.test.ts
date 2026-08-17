@@ -15,9 +15,11 @@
 // The property asserted here is that every command doctor prints can actually
 // RUN — not that it is visible in the help. Those are different concerns and
 // conflating them would force `visp-hyper init --force`, a deliberately
-// advanced and destructive escape hatch, into the documented thirteen. The
-// visibility question is tracked separately; a command that does not exist is
-// a defect today.
+// advanced and destructive escape hatch, into the documented thirteen.
+//
+// The visibility half was tracked separately and is LC-94, fixed in
+// `tests/unit/cli/index.test.ts`: `--help` now names every registered command.
+// The two properties still say different things — this one is about existence.
 
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -25,20 +27,7 @@ import { dirname, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { THIRTEEN_VERBS } from "../../../../../src/cli/index.js";
-import { checkpointCommand } from "../../../../../src/cli/commands/checkpoint.js";
-import { challengeCommand } from "../../../../../src/cli/commands/challenge.js";
-import { guardCommand } from "../../../../../src/cli/commands/guard.js";
-import { hooksCommand } from "../../../../../src/cli/commands/hooks.js";
-import { initCommand } from "../../../../../src/cli/commands/init.js";
-import { quickCommand } from "../../../../../src/cli/commands/quick.js";
-import { rememberCommand } from "../../../../../src/cli/commands/remember.js";
-import { reportCommand } from "../../../../../src/cli/commands/report.js";
-import { resumeCommand } from "../../../../../src/cli/commands/resume.js";
-import { reviewCommand } from "../../../../../src/cli/commands/review.js";
-import { runCommand } from "../../../../../src/cli/commands/run.js";
-import { serveCommand } from "../../../../../src/cli/commands/serve.js";
-import { startCommand } from "../../../../../src/cli/commands/start.js";
+import { buildProgram } from "../../../../../src/cli/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const COMMANDS_DIR = join(here, "..", "..", "..", "..", "..", "src", "cli", "commands");
@@ -225,26 +214,16 @@ async function reportedValues(): Promise<readonly string[]> {
 }
 
 /**
- * Every command name Hyper registers — the thirteen verbs plus the legacy
- * surface that is hidden from `--help` but still runnable.
+ * Every command name Hyper registers, read from the program the binary builds.
+ *
+ * This used to re-import each command factory and rebuild the list by hand —
+ * one copy of the registry maintained beside another, which is the same drift
+ * LC-94 found in `--help`. A command registered and forgotten here would have
+ * been reported as one doctor must not recommend; a command REMOVED would never
+ * have been reported at all.
  */
 function registeredCommands(): ReadonlySet<string> {
-  const hidden = [
-    initCommand(),
-    startCommand(),
-    runCommand(),
-    quickCommand(),
-    resumeCommand(),
-    checkpointCommand(),
-    challengeCommand(),
-    guardCommand(),
-    hooksCommand(),
-    reviewCommand(),
-    rememberCommand(),
-    reportCommand(),
-    serveCommand()
-  ].map((command) => command.name());
-  return new Set([...THIRTEEN_VERBS, ...hidden]);
+  return new Set(buildProgram().commands.map((command) => command.name()));
 }
 
 /**
@@ -270,8 +249,10 @@ async function recommendedCommands(): Promise<readonly string[]> {
 // it was met by six of the forty-odd commands doctor reports — so an extraction
 // that lost most of the surface still passed. Pinned to the measured counts
 // instead: growth is fine, shrinking is the failure this test exists to catch.
-const EXTRACTED_COMMANDS = 26;
-const EXTRACTED_RECOVERY_VALUES = 31;
+// Re-measured on this commit after LC-93 added the file-mode-with-a-store
+// warning to `checkMemory`: 26 -> 29 commands, 31 -> 32 recovery values.
+const EXTRACTED_COMMANDS = 29;
+const EXTRACTED_RECOVERY_VALUES = 32;
 
 describe("every command doctor recommends is a real command", () => {
   it("still finds every recovery command it used to", async () => {

@@ -7,6 +7,7 @@ import { ensureDir, readTextIfExists, vispPath, writeText } from "./fs-utils.js"
 import { parseJsonStore } from "./json-store.js";
 import { withStoreLock } from "./store-lock.js";
 import { kitTaskSchema } from "../kit/kit-schemas.js";
+import { defaultMemoryMode } from "../memory/memory-mode-default.js";
 import type {
   HyperConfig,
   HyperState,
@@ -105,12 +106,26 @@ export async function initializeProject(projectPath: string, force = false): Pro
   const statePath = vispPath(projectPath, "hyper", "state.json");
 
   if (force || !(await readTextIfExists(configPath))) {
-    await writeText(configPath, `${JSON.stringify(defaultConfig, null, 2)}\n`);
+    await writeText(configPath, `${JSON.stringify(await initialConfig(projectPath), null, 2)}\n`);
   }
 
   if (force || !(await readTextIfExists(statePath))) {
     await writeText(statePath, `${JSON.stringify({ activeSessionId: null, sessions: {} }, null, 2)}\n`);
   }
+}
+
+/**
+ * The config written for a project that has never had one.
+ *
+ * Everything comes from `defaultConfig` except the memory mode, which is chosen
+ * against what this project actually has. A flat `"file"` here is what left an
+ * installed visp-memory and an initialised store unreachable: the bridge was
+ * off by default in exactly the projects that had already paid for it. Only the
+ * FIRST write consults the store — a config that exists records a decision, and
+ * this function never sees it.
+ */
+async function initialConfig(projectPath: string): Promise<HyperConfig> {
+  return { ...defaultConfig, memoryMode: await defaultMemoryMode(projectPath) };
 }
 
 function emptyState(): HyperState {

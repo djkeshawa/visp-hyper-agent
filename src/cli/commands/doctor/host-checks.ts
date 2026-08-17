@@ -7,7 +7,12 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileResolved, findExecutableOnPath } from "../../../core/executable-resolver.js";
-import { MEMORY_INSTALL_COMMAND, MEMORY_OPT_OUT_CLAUSE } from "../../../memory/visp-memory-install.js";
+import {
+  MEMORY_INSTALL_COMMAND,
+  MEMORY_OPT_OUT_CLAUSE,
+  MEMORY_STORE_MANIFEST
+} from "../../../memory/visp-memory-install.js";
+import { memoryStoreIsReachable } from "../../../memory/memory-mode-default.js";
 import { memoryFinishClause } from "../../memory/memory-readiness.js";
 import { readTextIfExists } from "../../../core/fs-utils.js";
 import type { HyperConfig } from "../../../core/types.js";
@@ -150,6 +155,27 @@ export async function checkMemory(
 ): Promise<DoctorCheck> {
   const mode = config?.memoryMode;
   if (mode !== "llm-memory") {
+    // A PASS on the setting that switches Memory off. Doctor printed exactly
+    // that — "File memory mode is active." — in a project holding an
+    // initialised visp-memory store, so the one surface built to notice the
+    // bridge was disabled certified it instead, and `visp recall` refused for a
+    // whole session with nothing having warned.
+    //
+    // File mode is a legitimate choice and stays a PASS on its own. What is not
+    // legitimate is silence when it contradicts a store the user already
+    // created: the capability is paid for and unreachable.
+    if (await memoryStoreIsReachable(projectPath)) {
+      return {
+        id: "memory",
+        label: "Memory provider",
+        status: "warn",
+        detail:
+          `File memory mode is active, but visp-memory is installed and this project has a store (${MEMORY_STORE_MANIFEST}). ` +
+          "Memory is switched off here: `visp recall` and `visp learn` refuse, and nothing is written to that store.",
+        recovery:
+          "Run `visp init --memory-mode llm-memory` to point this project at the store it already has."
+      };
+    }
     return {
       id: "memory",
       label: "Memory provider",
