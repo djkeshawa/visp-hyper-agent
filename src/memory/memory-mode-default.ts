@@ -9,11 +9,17 @@
  * worked; only the default was wrong.
  *
  * SELECTING, NOT CREATING. Nothing here installs the CLI, initialises a store
- * or edits an existing configuration. It reports two facts that are already
- * true of this machine and this project, and a `memoryMode` already recorded in
- * `config.json` is never overwritten from here — that value is the user's
- * choice, and `visp doctor` is what tells them when it disagrees with the store
- * they already have.
+ * or edits a configuration. It reports two facts that are already true of this
+ * machine and this project, and the caller decides what to do with them.
+ *
+ * WHO ASKS. `initialConfig` consults this only when `config.json` is being
+ * WRITTEN — a project that has never had one, and `visp init --force`, which
+ * replaces the file wholesale. On the force path a recorded `file` can
+ * therefore become `llm-memory`, which is what `--force` means; ordinary reads
+ * never come here, so a recorded mode survives everything short of an explicit
+ * regeneration. An earlier version of this note claimed a recorded mode "is
+ * never overwritten from here", which was true of the first-write path and
+ * wrong about the force path standing right beside it.
  */
 
 import { join } from "node:path";

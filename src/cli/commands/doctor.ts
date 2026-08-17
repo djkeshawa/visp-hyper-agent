@@ -28,6 +28,7 @@ import {
 } from "./doctor/project-checks.js";
 import { setupRoute } from "./doctor/setup-route.js";
 import { formatDoctorSummary, nextCommand } from "./doctor/summary.js";
+import { doctorVerdict } from "./doctor/verdict.js";
 
 export function doctorCommand(): Command {
   return new Command("doctor")
@@ -43,7 +44,10 @@ export function doctorCommand(): Command {
         console.log(formatDoctorSummary(summary));
       }
 
-      if (!summary.success) {
+      // Non-zero on anything but PASS, which is what `visp status` already
+      // does with an unready verdict. A caller that gates on the exit status
+      // and a caller that reads the top line now get the same answer.
+      if (summary.verdict !== "pass") {
         process.exitCode = 1;
       }
     });
@@ -90,8 +94,10 @@ export async function runDoctor(projectPath: string): Promise<DoctorSummary> {
   checks.push(await checkIntelMcpProvider(projectPath));
   checks.push(await checkMcp(projectPath));
 
+  const verdict = doctorVerdict(checks);
   return {
-    success: checks.every((check) => check.status !== "fail"),
+    success: verdict === "pass",
+    verdict,
     projectPath,
     version: packageVersion(),
     checks,

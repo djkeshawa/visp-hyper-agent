@@ -14,6 +14,7 @@ import { PINNED_PAIR_GUIDANCE } from "../../../kit/workflow-action-protocol.js";
 import { KitCommandBridge, detectVisp } from "../../../kit/kit-command-bridge.js";
 import type { KitIntegrationContract } from "../../../kit/kit-schemas.js";
 import { contextPackPathIfExists } from "../shared.js";
+import { activeHandoffExists } from "./active-handoff.js";
 import type { DoctorCheck } from "./types.js";
 
 export async function checkKitBackend(projectPath: string, checks: DoctorCheck[]): Promise<void> {
@@ -210,6 +211,20 @@ async function checkActiveKitReadContract(
   const recovery = "Regenerate the active handoff with `visp work \"<goal>\"`.";
   const manifestPath = vispPath(projectPath, "hyper", "current", "context-manifest.json");
   const manifestText = await readTextIfExists(manifestPath);
+
+  // A project that has never been handed off carries no read contract because
+  // there is nothing to carry one, which is not the same as a handoff that
+  // lost it. See `./active-handoff.ts` — this finding is verdict-bearing.
+  if (!manifestText && !(await activeHandoffExists(projectPath))) {
+    return {
+      id: "kit-read-contract",
+      label: "Active Kit read contract",
+      status: "pass",
+      detail:
+        `Kit advertises orchestrator read contracts (${contract.orchestrator?.readContractVersion}), ` +
+        "and this project has no handoff yet for one to be carried in."
+    };
+  }
 
   if (!manifestText) {
     return {

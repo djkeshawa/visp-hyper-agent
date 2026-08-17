@@ -400,12 +400,41 @@ export type KitVerifySummary = z.infer<typeof kitVerifySummarySchema>;
 export const kitReviewSummarySchema = z.object(kitSummaryBaseShape);
 export type KitReviewSummary = z.infer<typeof kitReviewSummarySchema>;
 
+/**
+ * Kit's own account of whether reconciliation moved the task's status.
+ *
+ * LC-135. `result` above was added because `visp save` printed PASSED while a
+ * passed-with-warnings reconcile deliberately left the task open — and that
+ * fix inferred the task's fate from `result`, which is a proxy. Kit LC-107
+ * added the direct answer, and stripping it here reproduced the same defect
+ * one layer down: a reconcile that skipped the status write for any reason
+ * other than warnings was still reported as a clean close.
+ *
+ * Every field optional and the object `.passthrough()`, because this is a
+ * REPORTING mirror. It informs a sentence the reader sees; it decides nothing.
+ * The surfaces that decide permission, evidence sufficiency, completion or PR
+ * readiness are the negotiated WorkflowAction schemas, which are `.strict()`
+ * and stay that way.
+ */
+const kitTaskStatusUpdateSchema = z
+  .object({
+    requested: z.boolean().optional(),
+    performed: z.boolean().optional(),
+    taskId: z.string().nullish(),
+    previousStatus: z.string().nullish(),
+    newStatus: z.string().nullish(),
+    skippedReason: z.string().nullish()
+  })
+  .passthrough();
+export type KitTaskStatusUpdate = z.infer<typeof kitTaskStatusUpdateSchema>;
+
 // `result` distinguishes a clean pass from passed-with-warnings — the state
 // in which Kit deliberately leaves the task open unless forced. Without it,
 // `visp save` printed PASSED while the task silently stayed pending.
 export const kitReconcileSummarySchema = z.object({
   ...kitSummaryBaseShape,
-  result: z.string().optional()
+  result: z.string().optional(),
+  taskStatusUpdate: kitTaskStatusUpdateSchema.nullish()
 });
 export type KitReconcileSummary = z.infer<typeof kitReconcileSummarySchema>;
 

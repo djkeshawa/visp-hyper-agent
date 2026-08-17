@@ -129,6 +129,28 @@ describe("the memory mode a new project is initialized with", () => {
     expect((await readConfig(projectPath)).memoryMode).toBe("file");
   });
 
+  it("re-derives the mode under --force, which is what regenerating the file means", async () => {
+    // The one path that DOES overwrite a recorded mode, and it had no test.
+    // `initializeProject(path, true)` is `visp init --force`: it rewrites
+    // config.json from `initialConfig`, which consults the store. A recorded
+    // `file` therefore becomes `llm-memory` here — correct for a command whose
+    // whole purpose is to replace the file, and worth pinning precisely
+    // because the module header used to claim a recorded mode was never
+    // overwritten from there.
+    process.env.PATH = await mkdtemp(join(tmpdir(), "visp-no-memory-cli-"));
+    const projectPath = await projectWithStore();
+    await initializeProject(projectPath);
+    expect((await readConfig(projectPath)).memoryMode).toBe("file");
+
+    process.env.PATH = await createFakeHostBinaryDir("visp-memory", "0.5.0");
+    await initializeProject(projectPath, true);
+
+    expect(
+      (await readConfig(projectPath)).memoryMode,
+      "--force regenerates config.json, so the store-aware default applies again"
+    ).toBe("llm-memory");
+  });
+
   it("leaves a mode already recorded in config.json alone", async () => {
     // The store-aware choice is a DEFAULT, not an override. A user who ran
     // `visp init --memory-mode file` with a store present chose that, and

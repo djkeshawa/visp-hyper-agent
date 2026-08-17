@@ -36,14 +36,6 @@ let originalPath: string | undefined;
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "visp-memory-gap-"));
   originalPath = process.env.PATH;
-  // File memory, which is the state every one of these cases starts from.
-  //
-  // ORDER IS LOAD-BEARING since LC-93: the default is file only because this
-  // project has no store YET. `arrange` writes the store manifest afterwards.
-  // Initialising after that would select llm-memory and none of these refusals
-  // would be reached — and it would do so only on a machine with visp-memory
-  // installed, so it would pass here and fail in CI, which installs it.
-  await initializeProject(tempDir, false);
 });
 
 afterEach(async () => {
@@ -62,24 +54,40 @@ type Machine = {
   readonly memoryMode?: "file" | "llm-memory";
 };
 
+/**
+ * Put the project into exactly the machine state described, in one call.
+ *
+ * Every precondition is WRITTEN here rather than inherited from what
+ * `initializeProject` happens to derive, and the store is created or removed
+ * either way so a second call cannot see the first one's leftovers. Setup used
+ * to be split between `beforeEach` (which initialised the project) and this
+ * function (which wrote the store afterwards), and the split was load-bearing:
+ * since LC-93 the default mode is derived from whether a store exists, so
+ * initialising after the store was written would select `llm-memory` and none
+ * of these refusals would be reached. That failure was invisible locally and
+ * would have appeared only on a machine with visp-memory installed. Ordering
+ * that has to be right is ordering a fixture should own.
+ */
 async function arrange(machine: Machine): Promise<void> {
-  if (machine.memoryMode === "llm-memory") {
-    const configPath = join(tempDir, ".visp", "hyper", "config.json");
-    const config = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
-    await writeFile(
-      configPath,
-      `${JSON.stringify({ ...config, memoryMode: "llm-memory" }, null, 2)}\n`,
-      "utf8"
-    );
+  const storePath = join(tempDir, MEMORY_STORE_MANIFEST);
+  if (machine.storePresent) {
+    await writeFile(storePath, "repo_id: demo\n", "utf8");
+  } else {
+    await rm(storePath, { force: true });
   }
+
+  await initializeProject(tempDir, true);
+  const configPath = join(tempDir, ".visp", "hyper", "config.json");
+  const config = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+  await writeFile(
+    configPath,
+    `${JSON.stringify({ ...config, memoryMode: machine.memoryMode ?? "file" }, null, 2)}\n`,
+    "utf8"
+  );
 
   process.env.PATH = machine.cliInstalled
     ? await createFakeHostBinaryDir("visp-memory", "0.5.0")
     : await mkdtemp(join(tmpdir(), "visp-no-memory-cli-"));
-
-  if (machine.storePresent) {
-    await writeFile(join(tempDir, MEMORY_STORE_MANIFEST), "repo_id: demo\n", "utf8");
-  }
 }
 
 /** Capture what a verb printed when it refused. */
@@ -210,7 +218,8 @@ describe("recall and learn when memory is unreachable", () => {
       { cliInstalled: true, storePresent: false },
       { cliInstalled: true, storePresent: true }
     ]) {
-      await rm(join(tempDir, MEMORY_STORE_MANIFEST), { force: true });
+      // No teardown between rounds: `arrange` states both halves of the machine
+      // and clears what it does not ask for.
       await arrange(machine);
       answers.push(await refusalFrom(() => runRecallVerb(tempDir, "why jwt")));
     }

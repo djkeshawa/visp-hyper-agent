@@ -12,7 +12,8 @@ import { resolveKitEntry } from "../../helpers/kit-entry.js";
  * invocation drift (flag names/order, output shape) is invisible to the rest of
  * the suite — three real bugs were historically only caught by live-testing.
  * This pins the read-only invocations (`status`, `policy validate`) against the
- * installed binary. It is SKIPPED when a Kit build or an initialized `.visp/`
+ * installed binary — including the warnings `status` returns, which is where a
+ * Kit that cannot read its own report artifacts announces itself (LC-135). It is SKIPPED when a Kit build or an initialized `.visp/`
  * is absent, so a plain `pnpm test` on a fresh clone does not fail on their
  * account — and because a skip is not a result, `scripts/pair-check.mjs` runs
  * this file separately and treats any skip as a failure. `pnpm test:pair:served`
@@ -66,6 +67,31 @@ describe.skipIf(!RUN_LIVE)("real visp binary contract", () => {
     if (result.available) {
       expect(result.status.initialized).toBe(true);
     }
+  });
+
+  it("does not call the pair verified while the live Kit cannot read its own artifacts", async () => {
+    // LC-135. Merged develop carried `reconcile report is unreadable:
+    // Unrecognized key(s) in object: 'taskStatusUpdate'` and the same for the
+    // review report's `scopeBasis` — reports written by one Kit and read by
+    // another — and this suite still recorded VERIFIED 3/3, because none of
+    // the three tests looked at the warnings `status` was already returning.
+    //
+    // Read-only, so it stays inside this file's no-mutation rule. It is
+    // vacuous on a `.visp/` that pair-check just initialized, since a project
+    // with no reports has none to be unreadable; it bites on a checkout that
+    // has actually been driven through verify/review/reconcile, which is where
+    // the break was found.
+    const result = await detectVisp(REPO_ROOT, { binary: LOCAL_BINARY ?? undefined });
+    const unreadable = (result.available ? result.status.warnings ?? [] : []).filter((warning) =>
+      warning.includes("is unreadable:")
+    );
+
+    expect(
+      unreadable,
+      "the live Kit reports an artifact it cannot parse. Whatever wrote that file and whatever " +
+        "is reading it are not the same Kit — a pair that cannot read its own reports is not a " +
+        "verified pair, however many contract tests pass beside it."
+    ).toEqual([]);
   });
 
   it("policyValidate parses a live `visp policy validate --json`", async () => {

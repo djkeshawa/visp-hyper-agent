@@ -4,11 +4,22 @@
  */
 
 import type { DoctorCheck, DoctorSummary } from "./types.js";
+import { isVerdictBearing } from "./verdict.js";
 
 export function nextCommand(checks: readonly DoctorCheck[]): string {
   const firstAction = checks.find((check) => check.status === "fail" && check.recovery);
   if (firstAction?.recovery) {
     return firstAction.recovery;
+  }
+  // Verdict-bearing warnings first, so the command offered is the one that
+  // clears the verdict. Offering an advisory remedy above the finding that
+  // made the report inconclusive sends the reader to fix something that was
+  // never holding the verdict down.
+  const firstBearingWarning = checks.find(
+    (check) => check.status === "warn" && check.recovery && isVerdictBearing(check.id)
+  );
+  if (firstBearingWarning?.recovery) {
+    return firstBearingWarning.recovery;
   }
   const firstWarning = checks.find((check) => check.status === "warn" && check.recovery);
   return firstWarning?.recovery ?? "visp work \"<goal>\"";
@@ -25,7 +36,7 @@ export function formatDoctorSummary(summary: DoctorSummary): string {
     "Scope: this project (visp-dev doctor covers the machine and package compatibility)",
     `Project: ${summary.projectPath}`,
     `Version: ${summary.version}`,
-    `Overall: ${summary.success ? "PASS" : "FAIL"}`,
+    `Overall: ${summary.verdict.toUpperCase()}`,
     ""
   ];
 

@@ -18,6 +18,7 @@ import { recordVerbActivity } from "../../core/session-manager.js";
 import { KitCommandBridge, detectVisp } from "../../kit/kit-command-bridge.js";
 import { kitUnavailableGuidance } from "../../kit/kit-guidance.js";
 import { resolveProjectPath } from "./shared.js";
+import { renderActionSummary } from "./status.js";
 
 /** Kit's next answer reduced to what the composite loop needs. */
 function bare(command: string): string {
@@ -107,18 +108,21 @@ async function kitAvailable(projectPath: string): Promise<string | null> {
   return guidance.message;
 }
 
+/** Kit's `next` answer, with every optional flag resolved to a value. */
+type KitNextAnswer = {
+  readonly nextCommand: string;
+  readonly implementationAllowed: boolean;
+  readonly prAllowed: boolean;
+  readonly success: boolean;
+};
+
 /**
  * The next-driven composite loop. Asks Kit what is next; executes it when it
  * is a mechanical preparation command; stops on the verb's goal, on anything
  * that needs a human, on a blocked answer, or when the answer stops changing
  * (a stall is reported honestly, never spun on).
  */
-async function askNext(bridge: KitCommandBridge): Promise<{
-  readonly nextCommand: string;
-  readonly implementationAllowed: boolean;
-  readonly prAllowed: boolean;
-  readonly success: boolean;
-} | null> {
+async function askNext(bridge: KitCommandBridge): Promise<KitNextAnswer | null> {
   const next = await bridge.next();
   if (next === null || next.nextCommand === undefined) return null;
   return {
@@ -129,14 +133,18 @@ async function askNext(bridge: KitCommandBridge): Promise<{
   };
 }
 
+/**
+ * What a verb makes of Kit's answer: a sentence when the verb's goal is
+ * reached, `null` to keep driving, or a stop when the verb has decided it must
+ * not continue. The third case exists because a goal test can need a second
+ * Kit surface to confirm itself, and a confirmation that comes back negative
+ * is an answer — not a reason to loop on the same command.
+ */
+type GoalDecision = string | null | CompositeStop;
+
 async function driveByNext(input: {
   readonly bridge: KitCommandBridge;
-  readonly isGoal: (next: {
-    readonly nextCommand: string;
-    readonly implementationAllowed: boolean;
-    readonly prAllowed: boolean;
-    readonly success: boolean;
-  }) => string | null;
+  readonly isGoal: (next: KitNextAnswer) => GoalDecision | Promise<GoalDecision>;
   readonly log: (line: string) => void;
 }): Promise<CompositeStop> {
   let previousCommand: string | null = null;
@@ -148,8 +156,9 @@ async function driveByNext(input: {
         detail: input.bridge.warnings.at(-1) ?? "Kit's next answer was unavailable."
       };
     }
-    const goal = input.isGoal(next);
-    if (goal !== null) return { kind: "goal-reached", detail: goal };
+    const goal = await input.isGoal(next);
+    if (typeof goal === "string") return { kind: "goal-reached", detail: goal };
+    if (goal !== null) return goal;
     if (!next.success) {
       return { kind: "blocked", detail: `Kit reports blocked: ${next.nextCommand}` };
     }
@@ -368,6 +377,51 @@ export function planVerbCommand(): Command {
     });
 }
 
+/**
+ * Kit's canonical verdict on this project, read the way `visp status` reads it.
+ *
+ * LC-110: within the same minute, `visp handoff` answered "the PR gate is open
+ * — the change is ready to hand off" while `visp status` answered
+ * `Verdict: inconclusive` over a task still pending. The two verbs were reading
+ * two different Kit surfaces — handoff the `prAllowed` flag on `visp-kit next`,
+ * status the negotiated canonical WorkflowAction — and a caller acting on
+ * handoff would have opened a PR that status said was not ready.
+ *
+ * There is one verdict, and this is where handoff reads it. Kit still decides:
+ * both `prAllowed` and the canonical verdict are Kit's own answers, and handoff
+ * declares readiness only where they agree. Combining a Kit flag into a
+ * readiness sentence the canonical action contradicts is Hyper holding a second
+ * opinion on PR readiness, which `kit_strict` forbids.
+ *
+ * An unreadable canonical action is not agreement. It fails closed, because the
+ * alternative is claiming readiness from the weaker of two surfaces precisely
+ * when the stronger one could not be consulted.
+ */
+async function canonicalHandoffReadiness(
+  bridge: KitCommandBridge
+): Promise<{ readonly ready: true } | { readonly ready: false; readonly detail: string }> {
+  const action = await bridge.nextCanonicalActionDiagnostic("auto");
+  if (!action.ok) {
+    return {
+      ready: false,
+      detail:
+        "Kit's canonical action could not be read, so handoff cannot say this is ready: " +
+        `${action.reasonCode}: ${action.reason}`
+    };
+  }
+  if (action.value.verdict === "ready") {
+    return { ready: true };
+  }
+  return {
+    ready: false,
+    detail: [
+      `Kit's canonical action does not agree that this is ready to hand off (verdict: ${action.value.verdict}).`,
+      "This is what `visp status` reports on the same project:",
+      renderActionSummary(action.value)
+    ].join("\n")
+  };
+}
+
 export function handoffVerbCommand(): Command {
   return new Command("handoff")
     .description("Assemble the evidence for review: verify, review, assurance — as far as Kit allows.")
@@ -401,13 +455,18 @@ export function handoffVerbCommand(): Command {
         // While Kit's next step IS the pr command, keep driving (pr is in the
         // mechanical allowlist); once Kit reports the feature complete, that
         // sentence is the goal.
-        isGoal: (next) => {
+        isGoal: async (next) => {
           if (next.nextCommand.startsWith("Feature complete")) return next.nextCommand;
           if (/assurance (?:decision|accept)|review --?accept/u.test(next.nextCommand)) {
             return `a human decision is next: ${next.nextCommand}`;
           }
           if (next.prAllowed && !/^visp(?:-kit)?\s+pr\b/u.test(next.nextCommand)) {
-            return "the PR gate is open — the change is ready to hand off";
+            // The one sentence in this file that claims the change may leave
+            // the workstation. It is Kit's to make, on both of Kit's surfaces.
+            const readiness = await canonicalHandoffReadiness(bridge);
+            return readiness.ready
+              ? "the PR gate is open — the change is ready to hand off"
+              : { kind: "blocked", detail: readiness.detail };
           }
           return null;
         },

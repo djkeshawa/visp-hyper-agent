@@ -186,13 +186,29 @@ function doctorWorkflowActionV3(overrides: Record<string, unknown> = {}) {
   return action;
 }
 
+/**
+ * A handoff Hyper has written and nothing has invalidated.
+ *
+ * The manifest carries the context artifact's real hash, not only the read
+ * contract. Without it freshness reads `untracked`, which is a verdict-bearing
+ * warning (LC-97) — so the "healthy" fixture would describe a project whose
+ * active handoff cannot be shown to still match disk, and call it healthy.
+ * Call after {@link writeKitArtifacts}: it hashes the context pack that writes.
+ */
 async function writeActiveKitReadContract(projectPath: string): Promise<void> {
   await mkdir(join(projectPath, ".visp", "hyper", "current"), { recursive: true });
+  const contextPath = ".visp/features/001-demo/context/T001.context.json";
+  const context = await readFile(join(projectPath, contextPath), "utf8");
   await writeFile(
     join(projectPath, ".visp", "hyper", "current", "context-manifest.json"),
     JSON.stringify({
       version: "0.1",
       sessionId: "vh_test",
+      contextArtifact: {
+        path: contextPath,
+        hash: sha256(context),
+        hashAlgorithm: "sha256"
+      },
       kitReadContract: {
         contractVersion: "2.0",
         readContractVersion: "0.1",
@@ -344,6 +360,16 @@ describe("doctor command", () => {
   it("warns when the active handoff lacks the Kit read contract", async () => {
     const projectPath = await createProject();
     await writeKitArtifacts(projectPath);
+    // An active handoff with no manifest, which is the case this test names.
+    // Without the session file there is no handoff at all, and "the handoff
+    // carries no read contract" would be a finding about work that has not
+    // happened yet.
+    await mkdir(join(projectPath, ".visp", "hyper", "current"), { recursive: true });
+    await writeFile(
+      join(projectPath, ".visp", "hyper", "current", "session.md"),
+      "# Current Session\n",
+      "utf8"
+    );
     await writeHyperGitHook(projectPath);
     const shim = await createVispShim({
       status: {
@@ -373,13 +399,19 @@ describe("doctor command", () => {
 
     const summary = JSON.parse(logs.join("")) as {
       success: boolean;
+      verdict: string;
       checks: Array<{ id: string; status: string; detail: string }>;
       nextCommand: string;
     };
     const readContract = summary.checks.find((check) => check.id === "kit-read-contract");
-    expect(summary.success).toBe(true);
     expect(readContract?.status).toBe("warn");
     expect(readContract?.detail).toContain("no context manifest");
+    expect(
+      summary.verdict,
+      "an active handoff that cannot be tied back to Kit's read contract used to sit under " +
+        "Overall: PASS — LC-97, the top line contradicting the report below it"
+    ).toBe("inconclusive");
+    expect(summary.success).toBe(false);
     expect(summary.nextCommand).toContain("visp work");
   });
 

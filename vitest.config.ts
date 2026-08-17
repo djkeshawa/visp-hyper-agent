@@ -61,7 +61,21 @@ export default defineConfig({
       // does not close LC-50: a threshold is a ratchet, not a verdict on the gap
       // it was raised for, and 85.18% is one point above the floor on a metric
       // that has moved 0.04 between runs of identical code.
-      thresholds: { lines: 89.45, statements: 89.45, functions: 93.67, branches: 85.18 }
+      //
+      // Re-measured on LC-97/LC-110, same procedure, run 31993397344:
+      //
+      //   hosted, the coverage job, Linux / Node 22:
+      //     statements 89.71% (16927/18867)   branches 85.29% (4448/5215)
+      //     functions  93.83% (807/860)       lines    89.71% (16927/18867)
+      //   local, `pnpm check`, Linux / Node 26:
+      //     statements 89.77% (16937/18867)   branches 85.29% (4449/5216)
+      //     functions  93.83% (807/860)       lines    89.77% (16937/18867)
+      //
+      // Lower of the two again: 89.71 / 85.29 / 93.83. The two runners agreed to
+      // the hundredth on branches and functions this time, which they did not on
+      // LC-93 — read that as the runners happening to agree, not as the spread
+      // having gone away.
+      thresholds: { lines: 89.71, statements: 89.71, functions: 93.83, branches: 85.29 }
     }
   }
 });
