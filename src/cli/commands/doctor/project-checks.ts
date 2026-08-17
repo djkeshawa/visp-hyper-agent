@@ -13,6 +13,7 @@ import { hyperConfigSchema, readState, renderDrivenWithoutSession, summarizeCoor
 import type { HyperConfig } from "../../../core/types.js";
 import { resolveGitHooksDirectory } from "../../../governance/git-hooks.js";
 import { GIT_HOOK_MARKER, renderGitHookContent } from "../hooks.js";
+import { activeHandoffExists } from "./active-handoff.js";
 import type { DoctorCheck } from "./types.js";
 
 export function checkPackageVersion(): DoctorCheck {
@@ -98,6 +99,17 @@ export async function checkActiveContextFreshness(projectPath: string): Promise<
   const warnings = freshness.warnings.length > 0
     ? ` Warnings: ${freshness.warnings.join("; ")}`
     : "";
+
+  if (freshness.status === "untracked" && !(await activeHandoffExists(projectPath))) {
+    return {
+      id: "context-freshness",
+      label: "Active context freshness",
+      status: "pass",
+      detail:
+        "No handoff has been generated in this project yet, so there is no active context that " +
+        "could be stale. `visp work \"<goal>\"` writes the first one."
+    };
+  }
 
   if (freshness.blocking) {
     return {

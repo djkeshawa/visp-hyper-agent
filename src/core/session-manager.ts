@@ -115,14 +115,17 @@ export async function initializeProject(projectPath: string, force = false): Pro
 }
 
 /**
- * The config written for a project that has never had one.
+ * The config written when there is no config to keep.
  *
  * Everything comes from `defaultConfig` except the memory mode, which is chosen
  * against what this project actually has. A flat `"file"` here is what left an
  * installed visp-memory and an initialised store unreachable: the bridge was
- * off by default in exactly the projects that had already paid for it. Only the
- * FIRST write consults the store — a config that exists records a decision, and
- * this function never sees it.
+ * off by default in exactly the projects that had already paid for it.
+ *
+ * Called on the first write, and on `visp init --force`, which regenerates the
+ * file wholesale — so a recorded mode can change there, and only there. An
+ * ordinary read never reaches this function, which is what makes a recorded
+ * mode the user's decision rather than a value re-derived from the machine.
  */
 async function initialConfig(projectPath: string): Promise<HyperConfig> {
   return { ...defaultConfig, memoryMode: await defaultMemoryMode(projectPath) };
