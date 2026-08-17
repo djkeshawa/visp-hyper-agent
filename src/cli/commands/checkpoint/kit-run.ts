@@ -24,6 +24,7 @@ import { DEFAULT_TIER, predictionForAttempt } from "./attempt-prediction.js";
 import { recordCompletionMemory } from "./memory-ledger.js";
 import { printRemainingTasks } from "./remaining-tasks.js";
 import { readStrictRoutingBinding, routingBindingFromAction, validateStrictCheckpointBinding } from "./strict-binding.js";
+import { taskStatusLine } from "./task-status-line.js";
 import type { StrictRoutingBinding } from "./strict-binding.js";
 
 /**
@@ -261,15 +262,17 @@ export async function runConfiguredKitCheckpoint(
   // Two surfaces must not tell different stories: save used to print PASSED
   // while reconcile — passing WITH WARNINGS — deliberately left the task
   // open, and nothing said so. Kit's conservatism stands; the reader learns
-  // about it here, with the one decision that closes the task.
-  if (
-    evidence.verdict === "passed" &&
-    reconcile?.result === "warnings" &&
-    actualModel.acceptWarnings !== true
-  ) {
-    console.log(
-      `task_status: still open — reconcile passed with warnings, and accepting them is a human call. Review the warnings, then close with: visp save --task ${taskId} --accept-warnings`
-    );
+  // about it here, with the one decision that closes the task. The sentence
+  // itself is in `./task-status-line.ts`, which now reads Kit's direct answer
+  // rather than inferring it from `result`.
+  const statusLine = taskStatusLine({
+    taskId,
+    verdict: evidence.verdict,
+    reconcile,
+    acceptWarnings: actualModel.acceptWarnings === true
+  });
+  if (statusLine !== null) {
+    console.log(statusLine);
   }
   if (evidence.verdict === "passed") {
     await printRemainingTasks(projectPath, taskId);
