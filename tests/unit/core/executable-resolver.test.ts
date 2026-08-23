@@ -1,7 +1,7 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { constants, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildBatchExecArgs,
   execFileResolved,
@@ -119,15 +119,51 @@ describe("findRunnableCommand", () => {
     });
   });
 
-  it("returns null on POSIX for a file without the execute bit", async () => {
-    const notExec = await mkdtemp(join(tmpdir(), "visp-noexec-"));
-    await writeFile(join(notExec, "visp-kit"), "#!/bin/sh\nexit 0\n", { mode: 0o644 });
-    process.env.PATH = notExec;
+  // `fs.access(X_OK)` is a POSIX kernel semantic. On Windows `chmod` is a no-op
+  // and `access` answers yes for every existing file, so "no execute bit"
+  // cannot be induced there at all — a fixture asserting it unconditionally
+  // would be asserting a fact the platform does not have. So the access result
+  // is INJECTED rather than asked of the OS, which keeps both assertions live
+  // on every platform and makes them about this module's decision instead.
+  describe("with X_OK denied by the filesystem", () => {
+    afterEach(() => {
+      vi.doUnmock("node:fs/promises");
+      vi.resetModules();
+    });
 
-    await withPlatform("linux", async () => {
-      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
-      expect(await findRunnableCommand("visp-kit")).toBeNull();
-      expect(await findRunnableCommand(join(notExec, "visp-kit"))).toBeNull();
+    function denyExecutePermission(): void {
+      vi.doMock("node:fs/promises", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("node:fs/promises")>();
+        return {
+          ...actual,
+          access: async (path: Parameters<typeof actual.access>[0], mode?: number) => {
+            if (mode === constants.X_OK) {
+              throw Object.assign(new Error(`EACCES: ${String(path)}`), { code: "EACCES" });
+            }
+            return await actual.access(path, mode);
+          }
+        };
+      });
+    }
+
+    it("returns null on POSIX, where the execute bit is the whole question", async () => {
+      denyExecutePermission();
+      await withPlatform("linux", async () => {
+        const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+        expect(await findRunnableCommand("visp-kit")).toBeNull();
+        expect(await findRunnableCommand(join(binDir, "visp-kit"))).toBeNull();
+      });
+    });
+
+    it("never consults X_OK on win32, so the .cmd still resolves", async () => {
+      denyExecutePermission();
+      await withPlatform("win32", async () => {
+        const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+        // Unchanged by the denial: win32 asks F_OK, because execute permission
+        // is not a concept there. If this ever went null, the module would be
+        // asking a question Windows cannot answer — the LC-60 defect itself.
+        expect(await findRunnableCommand("visp-kit")).toBe(join(binDir, "visp-kit.cmd"));
+      });
     });
   });
 });

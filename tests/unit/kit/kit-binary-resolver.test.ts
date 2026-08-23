@@ -3,7 +3,7 @@
 // identity in negotiation, and 3.4 verification with the wording-invariance
 // guarantee the projection exists to provide.
 
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,8 +11,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { isSelfInvocation, resolveKitBinary } from "../../../src/kit/kit-binary-resolver.js";
 import {
+  writeCmdShim,
   writeGlobalInstallShims,
   writeNodeExecutable,
+  writePackageResidentExecutable,
   writePosixShim
 } from "../../helpers/fake-executable.js";
 import { withPlatform } from "../../helpers/platform-override.js";
@@ -115,13 +117,18 @@ describe("resolveKitBinary", () => {
   // The trap the guard exists for: once `visp` is Hyper's own binary, an old
   // bridge spawning `visp` spawns itself. That must be a clean named failure,
   // never a schema-parse surprise.
+  //
+  // The fixture used to symlink an EXTENSIONLESS `visp` into a bin directory.
+  // Windows resolves no such entry, so once this resolver started honouring
+  // PATHEXT the fixture stopped putting a findable binary there at all and the
+  // assertion went red — the fixture was wrong, not the guard. It now goes
+  // through the helper, which arranges the same property in the shape each
+  // platform can actually resolve. The assertion below is unchanged and now
+  // holds on win32 too, where it previously could not pass.
   it("refuses a visp fallback that resolves into visp-hyper-agent itself", async () => {
-    const packageBin = join(tempDir, "node_modules", "visp-hyper-agent", "dist");
-    const realBinary = await writeNodeExecutable(packageBin, "index", "process.exit(0);");
-    const binDir = join(tempDir, "bin");
-    await mkdir(binDir);
-    await symlink(realBinary, join(binDir, "visp"));
-    process.env.PATH = binDir;
+    const packageDir = join(tempDir, "node_modules", "visp-hyper-agent", "dist");
+    const { pathDir } = await writePackageResidentExecutable(packageDir, join(tempDir, "bin"), "visp");
+    process.env.PATH = pathDir;
 
     expect(await isSelfInvocation("visp")).toBe(true);
     const resolution = await resolveKitBinary({});
@@ -205,18 +212,21 @@ describe("resolveKitBinary on win32", () => {
   // would start, so it is the observable that names the chosen file: only the
   // `.cmd` leads into visp-hyper-agent here, the POSIX shim beside it is an
   // ordinary file. Picking the extensionless one defeats the guard.
-  it("reads the .cmd shim, not the extensionless sibling, in the self-invocation guard", async () => {
-    const binDir = join(tempDir, "bin");
-    const { cmdShim } = await writeGlobalInstallShims(binDir, "visp");
+  // Composition: the guard consults whatever findRunnableCommand decided, so a
+  // Kit-shaped `.cmd` inside a visp-hyper-agent package is refused on win32.
+  //
+  // WHICH file the resolver picks when both siblings exist is asserted
+  // directly, and symlink-free, in tests/unit/core/executable-resolver.test.ts
+  // (findRunnableCommand returns the exact `.cmd` path). It is not re-asserted
+  // here, because making two siblings in ONE directory resolve to different
+  // packages requires a symlink, and a win32 symlink needs a privilege the
+  // runner may not have — see tests/helpers/tool-path.ts. Rather than let that
+  // degrade silently on Windows, the discrimination lives where it needs no
+  // link, and this case pins the composition on every platform.
+  it("refuses a package-resident .cmd through the self-invocation guard", async () => {
     const hyperDist = join(tempDir, "node_modules", "visp-hyper-agent", "dist");
-    await mkdir(hyperDist, { recursive: true });
-    const realBinary = join(hyperDist, "index.js");
-    await writeFile(realBinary, "#!/usr/bin/env node\n", "utf8");
-    // Only the .cmd half leads into visp-hyper-agent; the POSIX shim beside it
-    // is an ordinary file. So the guard can only say `true` if it read the .cmd.
-    await rm(cmdShim);
-    await symlink(realBinary, cmdShim);
-    process.env.PATH = binDir;
+    await writeCmdShim(hyperDist, "visp");
+    process.env.PATH = hyperDist;
 
     await withPlatform("win32", async () => {
       const { isSelfInvocation: guard, resolveKitBinary: resolve } = await importResolver();

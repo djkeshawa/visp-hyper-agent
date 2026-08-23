@@ -1,4 +1,4 @@
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 
 const WINDOWS = process.platform === "win32";
@@ -95,6 +95,45 @@ export async function writeGlobalInstallShims(
     posixShim: await writePosixShim(dir, name),
     cmdShim: await writeCmdShim(dir, name)
   };
+}
+
+/** A fake whose resolved path lives inside a package, plus the dir to put on PATH. */
+export interface PackageResidentExecutable {
+  /** The path the host will actually start. */
+  readonly executable: string;
+  /** The directory to place on PATH so the bare name resolves to it. */
+  readonly pathDir: string;
+}
+
+/**
+ * Put `name` where resolving it yields a path whose `realpath` lands inside
+ * `packageDir` — the shape the self-invocation guard exists to detect.
+ *
+ * POSIX gets the symlink `npm install -g` really writes, so the guard's
+ * `realpath` call is exercised against an actual link. Windows cannot have
+ * that: an extensionless PATH entry is not resolvable there at all, and a
+ * symlink is neither executable nor privilege-free (see tool-path.ts). So the
+ * executable is written inside the package and that directory goes on PATH.
+ *
+ * Both arms establish the same property, and the CALLER'S ASSERTION IS
+ * IDENTICAL on both — only the arrangement differs, which is this helper's
+ * whole reason to exist. A test using it is not platform-skipped.
+ */
+export async function writePackageResidentExecutable(
+  packageDir: string,
+  binDir: string,
+  name: string
+): Promise<PackageResidentExecutable> {
+  if (WINDOWS) {
+    const executable = await writeNodeExecutable(packageDir, name, "process.exit(0);");
+    return { executable, pathDir: packageDir };
+  }
+
+  const real = await writeNodeExecutable(packageDir, `${name}-real`, "process.exit(0);");
+  await mkdir(binDir, { recursive: true });
+  const link = join(binDir, name);
+  await symlink(real, link);
+  return { executable: link, pathDir: binDir };
 }
 
 /**
