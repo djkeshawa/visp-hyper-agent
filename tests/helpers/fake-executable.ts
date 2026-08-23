@@ -52,6 +52,52 @@ export async function writeNodeExecutable(
 }
 
 /**
+ * The three writers below are deliberately NOT platform-adaptive, unlike
+ * {@link writeNodeExecutable}. They exist to reproduce the ambiguity a real
+ * `npm install -g` creates — two files, same stem, only one of them startable
+ * on Windows — so a resolver can be asked which one it picks (LC-60). A test
+ * that wants "a fake that works here" wants `writeNodeExecutable` instead.
+ */
+
+/**
+ * The extensionless `#!/bin/sh` half, which npm writes for Git Bash. On win32
+ * it is inert: no shebang support, `chmod` a no-op, and the name is not on
+ * PATHEXT, so nothing can start it.
+ */
+export async function writePosixShim(dir: string, name: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const shim = join(dir, name);
+  await writeFile(shim, "#!/bin/sh\nexit 0\n", "utf8");
+  await chmod(shim, 0o755);
+  return shim;
+}
+
+/** The `.cmd` half — the only one `cmd.exe`/`CreateProcess` resolves. */
+export async function writeCmdShim(dir: string, name: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const shim = join(dir, `${name}.cmd`);
+  await writeFile(shim, "@echo off\r\nexit /b 0\r\n", "utf8");
+  return shim;
+}
+
+/** What a real `npm install -g` leaves in a global bin directory. */
+export interface GlobalInstallShims {
+  readonly posixShim: string;
+  readonly cmdShim: string;
+}
+
+/** Both halves at once, as installed. */
+export async function writeGlobalInstallShims(
+  dir: string,
+  name: string
+): Promise<GlobalInstallShims> {
+  return {
+    posixShim: await writePosixShim(dir, name),
+    cmdShim: await writeCmdShim(dir, name)
+  };
+}
+
+/**
  * Write a node-backed fake `name` into `binDir` and prepend that directory to
  * `process.env.PATH`, so production code resolving the bare command finds it.
  *

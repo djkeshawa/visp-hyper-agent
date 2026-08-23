@@ -7,6 +7,8 @@ import {
   execFileResolved,
   resolveExecutable
 } from "../../../src/core/executable-resolver.js";
+import { writeGlobalInstallShims, writePosixShim } from "../../helpers/fake-executable.js";
+import { withPlatform } from "../../helpers/platform-override.js";
 
 const WINDOWS = process.platform === "win32";
 const originalPath = process.env.PATH;
@@ -45,6 +47,88 @@ describe("resolveExecutable", () => {
     expect(resolved).not.toBeNull();
     expect(resolved!.batchPath).toBe(shim);
     expect(resolved!.file.toLowerCase()).toContain("cmd.exe");
+  });
+});
+
+// LC-60: the question `resolveExecutable` cannot answer ("is it there?") and
+// `findExecutableOnPath` cannot answer for an explicit path (joining a PATH
+// directory to an absolute path yields nonsense). Windows resolution is asserted
+// with the platform injected — see tests/helpers/platform-override.ts for why
+// `it.runIf(WINDOWS)` is not an option for a decision this load-bearing.
+describe("findRunnableCommand", () => {
+  let binDir: string;
+  const originalPathExt = process.env.PATHEXT;
+
+  beforeEach(async () => {
+    binDir = await mkdtemp(join(tmpdir(), "visp-runnable-"));
+    // The shape `npm install -g` leaves: an extensionless `#!/bin/sh` script
+    // for Git Bash, and the `.cmd` wrapper Windows actually starts.
+    await writeGlobalInstallShims(binDir, "visp-kit");
+    process.env.PATH = binDir;
+  });
+
+  afterEach(() => {
+    if (originalPathExt === undefined) {
+      delete process.env.PATHEXT;
+    } else {
+      process.env.PATHEXT = originalPathExt;
+    }
+  });
+
+  it("picks the .cmd shim over the extensionless sibling on win32", async () => {
+    await withPlatform("win32", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand("visp-kit")).toBe(join(binDir, "visp-kit.cmd"));
+    });
+  });
+
+  it("PATHEXT-completes an explicit path with no extension on win32", async () => {
+    await withPlatform("win32", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand(join(binDir, "visp-kit"))).toBe(
+        join(binDir, "visp-kit.cmd")
+      );
+    });
+  });
+
+  it("returns null on win32 when only the unstartable extensionless file exists", async () => {
+    const shOnly = await mkdtemp(join(tmpdir(), "visp-shonly-"));
+    await writePosixShim(shOnly, "visp-kit");
+    process.env.PATH = shOnly;
+
+    await withPlatform("win32", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand("visp-kit")).toBeNull();
+      expect(await findRunnableCommand(join(shOnly, "visp-kit"))).toBeNull();
+    });
+  });
+
+  it("obeys the host PATHEXT rather than a list of its own", async () => {
+    process.env.PATHEXT = ".COM;.EXE";
+    await withPlatform("win32", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand("visp-kit")).toBeNull();
+    });
+  });
+
+  it("takes the extensionless executable on POSIX, where that is the real one", async () => {
+    await withPlatform("linux", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand("visp-kit")).toBe(join(binDir, "visp-kit"));
+      expect(await findRunnableCommand(join(binDir, "visp-kit"))).toBe(join(binDir, "visp-kit"));
+    });
+  });
+
+  it("returns null on POSIX for a file without the execute bit", async () => {
+    const notExec = await mkdtemp(join(tmpdir(), "visp-noexec-"));
+    await writeFile(join(notExec, "visp-kit"), "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+    process.env.PATH = notExec;
+
+    await withPlatform("linux", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand("visp-kit")).toBeNull();
+      expect(await findRunnableCommand(join(notExec, "visp-kit"))).toBeNull();
+    });
   });
 });
 

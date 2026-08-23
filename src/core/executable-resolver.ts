@@ -210,6 +210,36 @@ export async function findExecutableOnPath(command: string): Promise<string | nu
 }
 
 /**
+ * Where `command` actually lives when it may be either a bare PATH name **or**
+ * an explicit path — or `null` when nothing runnable matches on this platform.
+ *
+ * {@link findExecutableOnPath} cannot answer for an explicit path: joining a
+ * PATH directory to `/opt/kit/visp-kit` yields a nonsense candidate, so an
+ * absolute path always misses. Callers that accept a user-supplied binary
+ * (`VISP_KIT_BINARY`, a `kitBinary` config field) get both shapes and must ask
+ * this instead.
+ *
+ * The probe rules deliberately mirror {@link resolveExecutable}, because a
+ * caller asking "is it there" is really asking "will the spawn find it". On
+ * win32 that means an extensionless path is PATHEXT-completed — `CreateProcess`
+ * and `cmd.exe` resolve nothing else, and `fs.access` cannot be asked, because
+ * win32 ignores `X_OK` and reports every existing file as executable.
+ */
+export async function findRunnableCommand(command: string): Promise<string | null> {
+  const hasPathSeparator = command.includes("/") || command.includes("\\") || isAbsolute(command);
+  if (!hasPathSeparator) return await findExecutableOnPath(command);
+
+  if (!WINDOWS || extname(command)) {
+    return (await isRunnableFile(command)) ? command : null;
+  }
+  for (const ext of pathExtensions()) {
+    const candidate = command + ext;
+    if (await isRunnableFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
  * Existence is the whole test on win32, where the execute bit has no meaning;
  * elsewhere a PATH entry that cannot be executed is not a hit.
  */

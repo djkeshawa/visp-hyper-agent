@@ -3,13 +3,19 @@
 // identity in negotiation, and 3.4 verification with the wording-invariance
 // guarantee the projection exists to provide.
 
-import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { isSelfInvocation, resolveKitBinary } from "../../../src/kit/kit-binary-resolver.js";
+import {
+  writeGlobalInstallShims,
+  writeNodeExecutable,
+  writePosixShim
+} from "../../helpers/fake-executable.js";
+import { withPlatform } from "../../helpers/platform-override.js";
 import {
   createWorkflowActionV34Id,
   normalizeWorkflowAction
@@ -24,10 +30,20 @@ import { workflowActionV34Fixture } from "../../helpers/canonical-action-fixture
 
 const originalPath = process.env.PATH;
 const originalKitBinary = process.env.VISP_KIT_BINARY;
+const originalPathExt = process.env.PATHEXT;
 
-async function writeExecutable(filePath: string): Promise<void> {
-  await writeFile(filePath, "#!/bin/sh\nexit 0\n", "utf8");
-  await chmod(filePath, 0o755);
+/**
+ * Put `name` on PATH in `binDir` in whatever shape the HOST platform can
+ * actually start, and return the path a caller should name.
+ *
+ * These tests used to hand-roll an extensionless `#!/bin/sh` file plus `chmod`.
+ * That is not an executable on Windows in any sense — no shebang, `chmod` a
+ * no-op, and the name is not on PATHEXT — so the fake was silently absent
+ * there. LC-56 replaced that shape everywhere else with the single helper; this
+ * file and path-isolation.test.ts were the last two holdouts (LC-60).
+ */
+async function putOnPath(binDir: string, name: string): Promise<string> {
+  return await writeNodeExecutable(binDir, name, "process.exit(0);");
 }
 
 describe("resolveKitBinary", () => {
@@ -50,8 +66,8 @@ describe("resolveKitBinary", () => {
   it("prefers visp-kit on PATH over the visp fallback", async () => {
     const binDir = join(tempDir, "bin");
     await mkdir(binDir);
-    await writeExecutable(join(binDir, "visp-kit"));
-    await writeExecutable(join(binDir, "visp"));
+    await putOnPath(binDir, "visp-kit");
+    await putOnPath(binDir, "visp");
     process.env.PATH = binDir;
 
     const resolution = await resolveKitBinary({});
@@ -61,7 +77,7 @@ describe("resolveKitBinary", () => {
   it("falls back to visp when visp-kit is absent", async () => {
     const binDir = join(tempDir, "bin");
     await mkdir(binDir);
-    await writeExecutable(join(binDir, "visp"));
+    await putOnPath(binDir, "visp");
     process.env.PATH = binDir;
 
     const resolution = await resolveKitBinary({});
@@ -71,19 +87,18 @@ describe("resolveKitBinary", () => {
   it("VISP_KIT_BINARY overrides everything", async () => {
     const binDir = join(tempDir, "bin");
     await mkdir(binDir);
-    await writeExecutable(join(binDir, "visp-kit"));
+    const kit = await putOnPath(binDir, "visp-kit");
     process.env.PATH = binDir;
-    process.env.VISP_KIT_BINARY = join(binDir, "visp-kit");
+    process.env.VISP_KIT_BINARY = kit;
 
     const resolution = await resolveKitBinary({});
-    expect(resolution).toMatchObject({ ok: true, source: "env" });
+    expect(resolution).toMatchObject({ ok: true, source: "env", found: true });
   });
 
   it("reads kitBinary from .visp/hyper/config.json", async () => {
     const binDir = join(tempDir, "bin");
     await mkdir(binDir);
-    const custom = join(binDir, "my-kit");
-    await writeExecutable(custom);
+    const custom = await putOnPath(binDir, "my-kit");
     process.env.PATH = binDir;
     const projectPath = join(tempDir, "project");
     await mkdir(join(projectPath, ".visp", "hyper"), { recursive: true });
@@ -102,9 +117,7 @@ describe("resolveKitBinary", () => {
   // never a schema-parse surprise.
   it("refuses a visp fallback that resolves into visp-hyper-agent itself", async () => {
     const packageBin = join(tempDir, "node_modules", "visp-hyper-agent", "dist");
-    await mkdir(packageBin, { recursive: true });
-    const realBinary = join(packageBin, "index.js");
-    await writeExecutable(realBinary);
+    const realBinary = await writeNodeExecutable(packageBin, "index", "process.exit(0);");
     const binDir = join(tempDir, "bin");
     await mkdir(binDir);
     await symlink(realBinary, join(binDir, "visp"));
@@ -151,6 +164,141 @@ describe("resolveKitBinary", () => {
     if (resolution.ok) {
       expect(resolution.found).toBe(false);
     }
+  });
+});
+
+// LC-60. `npm install -g visp-kit` drops BOTH an extensionless `visp-kit` (a
+// `#!/bin/sh` script, there for Git Bash) and a `visp-kit.cmd` into the same
+// directory. On Windows only the second is startable: `CreateProcess` and
+// `cmd.exe` resolve by PATHEXT, and `fs.access(X_OK)` — which the resolver used
+// to ask — is not even a question Windows answers, it reports every existing
+// file as executable.
+//
+// The resolver therefore used to return `found: true` naming a file the host
+// cannot run, and `found` is documented as meaning LOCATED rather than guessed.
+// These assertions are about the resolution DECISION, so they run everywhere
+// with the platform injected rather than being skipped off Windows.
+describe("resolveKitBinary on win32", () => {
+  let tempDir: string;
+  const importResolver = async () => await import("../../../src/kit/kit-binary-resolver.js");
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "visp-binres-win-"));
+    delete process.env.VISP_KIT_BINARY;
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    if (originalPathExt === undefined) {
+      delete process.env.PATHEXT;
+    } else {
+      process.env.PATHEXT = originalPathExt;
+    }
+    if (originalKitBinary === undefined) {
+      delete process.env.VISP_KIT_BINARY;
+    } else {
+      process.env.VISP_KIT_BINARY = originalKitBinary;
+    }
+  });
+
+  // The self-invocation guard inspects whatever the resolver decided the host
+  // would start, so it is the observable that names the chosen file: only the
+  // `.cmd` leads into visp-hyper-agent here, the POSIX shim beside it is an
+  // ordinary file. Picking the extensionless one defeats the guard.
+  it("reads the .cmd shim, not the extensionless sibling, in the self-invocation guard", async () => {
+    const binDir = join(tempDir, "bin");
+    const { cmdShim } = await writeGlobalInstallShims(binDir, "visp");
+    const hyperDist = join(tempDir, "node_modules", "visp-hyper-agent", "dist");
+    await mkdir(hyperDist, { recursive: true });
+    const realBinary = join(hyperDist, "index.js");
+    await writeFile(realBinary, "#!/usr/bin/env node\n", "utf8");
+    // Only the .cmd half leads into visp-hyper-agent; the POSIX shim beside it
+    // is an ordinary file. So the guard can only say `true` if it read the .cmd.
+    await rm(cmdShim);
+    await symlink(realBinary, cmdShim);
+    process.env.PATH = binDir;
+
+    await withPlatform("win32", async () => {
+      const { isSelfInvocation: guard, resolveKitBinary: resolve } = await importResolver();
+      expect(await guard("visp")).toBe(true);
+      expect(await resolve({})).toMatchObject({ ok: false, reasonCode: "self_invocation" });
+    });
+  });
+
+  it("reports found:false when only the extensionless sh script is installed", async () => {
+    const binDir = join(tempDir, "sh-only");
+    await writePosixShim(binDir, "visp-kit");
+    process.env.PATH = binDir;
+
+    await withPlatform("win32", async () => {
+      const { resolveKitBinary: resolve } = await importResolver();
+      const resolution = await resolve({});
+      // Nothing PATHEXT-resolvable exists, so there is no located Kit at all —
+      // the resolver falls through to the `visp` guess and says so.
+      expect(resolution).toEqual({ ok: true, binary: "visp", source: "fallback", found: false });
+    });
+  });
+
+  it("reports found:true once the .cmd shim is there too", async () => {
+    const binDir = join(tempDir, "both");
+    await writeGlobalInstallShims(binDir, "visp-kit");
+    process.env.PATH = binDir;
+
+    await withPlatform("win32", async () => {
+      const { resolveKitBinary: resolve } = await importResolver();
+      expect(await resolve({})).toEqual({
+        ok: true,
+        binary: "visp-kit",
+        source: "probe",
+        found: true
+      });
+    });
+  });
+
+  it("PATHEXT-completes a configured absolute path with no extension", async () => {
+    const binDir = join(tempDir, "cfg");
+    const { posixShim } = await writeGlobalInstallShims(binDir, "my-kit");
+    process.env.PATH = binDir;
+
+    await withPlatform("win32", async () => {
+      const { resolveKitBinary: resolve } = await importResolver();
+      // The user names `<dir>/my-kit`; Windows starts `<dir>/my-kit.cmd`.
+      expect(await resolve({ configured: posixShim })).toMatchObject({
+        ok: true,
+        source: "config",
+        found: true
+      });
+    });
+  });
+
+  it("honours a PATHEXT that does not list .cmd", async () => {
+    const binDir = join(tempDir, "pathext");
+    await writeGlobalInstallShims(binDir, "visp-kit");
+    process.env.PATH = binDir;
+    process.env.PATHEXT = ".COM;.EXE";
+
+    await withPlatform("win32", async () => {
+      const { resolveKitBinary: resolve } = await importResolver();
+      // PATHEXT is the host's own list, not a constant this repository invents.
+      // With .CMD off it, the shim is not startable and must not count as found.
+      expect(await resolve({})).toMatchObject({ source: "fallback", found: false });
+    });
+  });
+
+  it("still finds the extensionless executable on POSIX", async () => {
+    const binDir = join(tempDir, "posix");
+    await writeGlobalInstallShims(binDir, "visp-kit");
+    process.env.PATH = binDir;
+
+    await withPlatform("linux", async () => {
+      const { resolveKitBinary: resolve } = await importResolver();
+      expect(await resolve({})).toEqual({
+        ok: true,
+        binary: "visp-kit",
+        source: "probe",
+        found: true
+      });
+    });
   });
 });
 
