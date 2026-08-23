@@ -32,50 +32,10 @@
 // binaries. Everything else on PATH survives untouched; only the ambient Kit
 // disappears. A test that wants a Kit still prepends its own shim, exactly as
 // before.
+//
+// Building and caching those twins is `./path-twin-farm.ts`, which is where the
+// one hard question lives: whether a twin already on disk may be believed.
 
-import { existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
-import { delimiter, join } from "node:path";
-import { tmpdir } from "node:os";
+import { sanitisePath } from "./path-twin-farm.js";
 
-/**
- * Binaries whose ambient presence changes what the suite tests.
- *
- * `visp-memory` is deliberately NOT here: the memory contract test drives the
- * real binary on purpose.
- */
-const SHADOWED = new Set(["visp", "visp-kit", "visp-hyper"]);
-
-/** Stable name so the farm is built once and shared across workers. */
-const FARM_ROOT = join(tmpdir(), "visp-hyper-test-path");
-
-function sanitisedTwin(directory: string, index: number): string {
-  const twin = join(FARM_ROOT, `dir-${index}`);
-  if (existsSync(twin)) return twin;
-
-  mkdirSync(twin, { recursive: true });
-  for (const entry of readdirSync(directory)) {
-    if (SHADOWED.has(entry)) continue;
-    try {
-      symlinkSync(join(directory, entry), join(twin, entry));
-    } catch {
-      // A parallel worker won the race, or the entry vanished. Either way the
-      // link either exists already or was never needed.
-    }
-  }
-  return twin;
-}
-
-function providesShadowedBinary(directory: string): boolean {
-  try {
-    return readdirSync(directory).some((entry) => SHADOWED.has(entry));
-  } catch {
-    return false;
-  }
-}
-
-const entries = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
-process.env.PATH = entries
-  .map((directory, index) =>
-    providesShadowedBinary(directory) ? sanitisedTwin(directory, index) : directory
-  )
-  .join(delimiter);
+process.env.PATH = sanitisePath({ path: process.env.PATH ?? "" });

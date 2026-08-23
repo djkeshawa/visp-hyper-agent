@@ -20,11 +20,18 @@
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MEMORY_INSTALL_COMMAND } from "../../../../src/memory/visp-memory-install.js";
+import {
+  MEMORY_INSTALL_COMMAND,
+  MEMORY_STORE_MANIFEST
+} from "../../../../src/memory/visp-memory-install.js";
+import {
+  createFakeHostBinaryDir,
+  createFakeMemoryCliDir
+} from "../../../helpers/fake-host-binary.js";
 
 let tempDir: string;
 let originalPath: string | undefined;
@@ -60,10 +67,12 @@ async function runSetup(): Promise<string> {
   return lines.join("\n");
 }
 
-/** Whether a `visp-memory` command really exists on PATH — the test's own oracle. */
-async function memoryCliOnPath(): Promise<boolean> {
-  const { findExecutableOnPath } = await import("../../../../src/core/executable-resolver.js");
-  return (await findExecutableOnPath("visp-memory")) !== null;
+/**
+ * Put `dir` first on PATH, keeping the rest so the fake — which runs under
+ * node — can still find one.
+ */
+function prependToPath(dir: string): void {
+  process.env.PATH = `${dir}${delimiter}${originalPath ?? ""}`;
 }
 
 async function exists(candidate: string): Promise<boolean> {
@@ -103,41 +112,84 @@ describe("setup leaves the project genuinely set up", () => {
     ).toBe("keep me");
   });
 
+  // THE MACHINE IS ARRANGED, NOT CONSULTED.
+  //
+  // Both cases below used to compute their expectation from a helper that
+  // called `findExecutableOnPath("visp-memory")` — the same predicate the code
+  // under test uses to make the very decision being asserted:
+  //
+  //     const memoryInstalled = await memoryCliOnPath();
+  //     expect(config.memoryMode).toBe(memoryInstalled ? "llm-memory" : "file");
+  //
+  // Oracle and subject agreed by construction, so the assertion held whatever
+  // the predicate did. Regressing `findExecutableOnPath` to `return null` — a
+  // total failure of the fact these branches turn on — left this file reporting
+  // `9 passed (9)`. Nine green against a completely broken predicate.
+  //
+  // The verdict also depended on whatever the developer happened to have
+  // installed, which is the same defect the PATH isolation exists to remove.
+  // So each case now puts the machine it is describing on PATH and states the
+  // outcome outright, the way doctor-command.test.ts does.
+
   it("enables llm-memory when visp-memory is installed AND initialised here", async () => {
-    // Both conditions matter. Installed-but-not-initialised would make
-    // `visp recall` fail in a new way rather than the old one.
-    await writeFile(join(tempDir, "visp-memory.yaml"), "repo_id: demo\n", "utf8");
+    prependToPath(await createFakeMemoryCliDir());
+    await writeFile(join(tempDir, MEMORY_STORE_MANIFEST), "repo_id: demo\n", "utf8");
 
     await runSetup();
 
     const config = JSON.parse(
       await readFile(join(tempDir, ".visp", "hyper", "config.json"), "utf8")
     );
-    // visp-memory is a real dependency of this repo's test environment; when it
-    // is genuinely absent the honest answer is to leave the mode alone.
-    //
-    // `findExecutableOnPath`, because `resolveExecutable` answers a different
-    // question and on POSIX never returns null — this oracle used to read
-    // "installed" on every Linux and macOS host, so the branch it is meant to
-    // discriminate was never exercised.
-    const memoryInstalled = await memoryCliOnPath();
-    expect(config.memoryMode).toBe(memoryInstalled ? "llm-memory" : "file");
+    expect(config.memoryMode).toBe("llm-memory");
+  });
+
+  it("leaves the mode alone when visp-memory is installed but no store was created", async () => {
+    // The second of the two conditions, on its own. This fake answers every
+    // argument with a version string, so `visp-memory init` exits 0 and creates
+    // nothing — the installed-but-not-initialised machine, which would make
+    // `visp recall` fail at the contract instead of at the configuration.
+    prependToPath(await createFakeHostBinaryDir("visp-memory", "0.5.0"));
+
+    const output = await runSetup();
+
+    // "file" is ALSO what the absent-CLI case produces, so without this the
+    // assertion below would be satisfied by setup never finding the arranged
+    // fake at all — passing while exercising the wrong branch entirely, which
+    // is the defect the rest of this block is about.
+    expect(
+      output,
+      "setup did not find the visp-memory this case arranged, so it proved the absent-CLI " +
+        "branch instead of the installed-but-storeless one it is named for"
+    ).not.toContain("visp-memory is not on PATH");
+
+    const config = JSON.parse(
+      await readFile(join(tempDir, ".visp", "hyper", "config.json"), "utf8")
+    );
+    expect(
+      config.memoryMode,
+      "setup certified llm-memory for a project with no store, which is the certification " +
+        "`visp recall` then contradicts"
+    ).toBe("file");
   });
 
   it("creates the memory store on a fresh project, so recall works after setup", async () => {
     // The final round of the fresh-project drive: setup certified
     // "recall/learn available" while nothing had ever created a store here, so
-    // `visp recall` still said "not configured" seconds later. When the binary
-    // is installed, setup now initialises the store itself; when it is not,
-    // the honest answer remains to leave the mode alone.
+    // `visp recall` still said "not configured" seconds later. With the CLI
+    // installed, setup has to create the store itself.
+    prependToPath(await createFakeMemoryCliDir());
+
     await runSetup();
 
     const config = JSON.parse(
       await readFile(join(tempDir, ".visp", "hyper", "config.json"), "utf8")
     );
-    const memoryInstalled = await memoryCliOnPath();
-    expect(await exists(join(tempDir, "visp-memory.yaml"))).toBe(memoryInstalled);
-    expect(config.memoryMode).toBe(memoryInstalled ? "llm-memory" : "file");
+    expect(
+      await exists(join(tempDir, MEMORY_STORE_MANIFEST)),
+      "setup left the project storeless, so `visp recall` refuses seconds after setup said " +
+        "recall was available"
+    ).toBe(true);
+    expect(config.memoryMode).toBe("llm-memory");
   });
 
   it("says visp-memory is missing rather than leaving the project quietly storeless", async () => {
