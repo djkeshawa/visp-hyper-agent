@@ -150,7 +150,17 @@ describe("setup leaves the project genuinely set up", () => {
     // `visp recall` fail at the contract instead of at the configuration.
     prependToPath(await createFakeHostBinaryDir("visp-memory", "0.5.0"));
 
-    await runSetup();
+    const output = await runSetup();
+
+    // "file" is ALSO what the absent-CLI case produces, so without this the
+    // assertion below would be satisfied by setup never finding the arranged
+    // fake at all — passing while exercising the wrong branch entirely, which
+    // is the defect the rest of this block is about.
+    expect(
+      output,
+      "setup did not find the visp-memory this case arranged, so it proved the absent-CLI " +
+        "branch instead of the installed-but-storeless one it is named for"
+    ).not.toContain("visp-memory is not on PATH");
 
     const config = JSON.parse(
       await readFile(join(tempDir, ".visp", "hyper", "config.json"), "utf8")

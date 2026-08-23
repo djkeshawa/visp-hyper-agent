@@ -36,9 +36,9 @@
 // that accepts a stale artifact. Here it takes three parts:
 //
 //   1. The twin is named after a digest of its RECEIPT — the absolute source
-//      directory, the mtime that changes whenever that directory's entry set
-//      changes, and the set of binaries being shadowed. Position in PATH is not
-//      an input, so no amount of reordering can collide.
+//      directory, a digest of that directory's entry names, and the set of
+//      binaries being shadowed. Position in PATH is not an input, so no amount
+//      of reordering can collide.
 //   2. A twin is reused only when the receipt written inside it MATCHES. The
 //      digest separates the cache; the receipt verifies the hit. An empty
 //      directory carries no receipt and is therefore never mistaken for a twin.
@@ -69,6 +69,15 @@ import { delimiter, join, resolve } from "node:path";
  *
  * `visp-memory` is deliberately NOT here: the memory contract test drives the
  * real binary on purpose.
+ *
+ * KNOWN GAP, CARRIED OVER UNCHANGED AND OUT OF SCOPE FOR LC-35. These are bare
+ * names, and entries are matched by exact name. On Windows `npm install -g`
+ * writes `visp-kit`, `visp-kit.cmd` and `visp-kit.ps1`, and only the `.cmd` is
+ * something the host can start (`src/core/executable-resolver.ts` owns that
+ * fact). So a Windows twin drops the inert extensionless shim and keeps the
+ * `.cmd` — the isolation is a no-op there. Shadowing has to become
+ * PATHEXT-aware, at this boundary, and that is its own ticket rather than a
+ * change smuggled into a cache-correctness fix.
  */
 export const SHADOWED_BINARIES: ReadonlySet<string> = new Set(["visp", "visp-kit", "visp-hyper"]);
 
@@ -87,27 +96,46 @@ interface TwinReceipt {
   /** The absolute directory this twin stands in for. */
   readonly source: string;
   /**
-   * The source directory's mtime. A directory's mtime moves when an entry is
-   * added or removed, which is exactly the change that would make a twin's set
-   * of symlinks wrong — the contents of the files it links to are irrelevant,
-   * because the twin links rather than copies.
+   * A digest of the source directory's sorted entry names — precisely what a
+   * twin mirrors, and therefore precisely what makes one stale.
+   *
+   * The ticket suggested the directory's mtime, which is cheaper and would
+   * catch the same change on most machines. This keys on the thing itself
+   * instead, for two reasons. Directory-mtime granularity is filesystem
+   * dependent (1s on HFS+, 2s on FAT/exFAT), so an entry added inside the
+   * recorded tick would leave the digest unchanged and the stale twin
+   * reusable — the very failure being repaired, surviving on some hosts and
+   * not others. And the listing is already in hand: it is the same
+   * `readdirSync` that decides whether this directory provides a shadowed
+   * binary at all, so keying on it costs nothing.
+   *
+   * File CONTENTS are deliberately not part of this. The twin links rather
+   * than copies, so a binary replaced in place is followed through the link
+   * and cannot go stale.
    */
-  readonly entriesChangedAt: number;
+  readonly entriesDigest: string;
   /** Sorted, so two equal sets always produce one digest. */
   readonly shadowed: readonly string[];
 }
 
-function receiptFor(directory: string, shadowed: ReadonlySet<string>): TwinReceipt {
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function receiptFor(
+  directory: string,
+  entries: readonly string[],
+  shadowed: ReadonlySet<string>
+): TwinReceipt {
   return {
     source: directory,
-    entriesChangedAt: statSync(directory).mtimeMs,
+    entriesDigest: sha256([...entries].sort().join("\n")),
     shadowed: [...shadowed].sort()
   };
 }
 
 function twinPathFor(farmRoot: string, receipt: TwinReceipt): string {
-  const digest = createHash("sha256").update(JSON.stringify(receipt)).digest("hex").slice(0, 16);
-  return join(farmRoot, `dir-${digest}`);
+  return join(farmRoot, `dir-${sha256(JSON.stringify(receipt)).slice(0, 16)}`);
 }
 
 /**
@@ -124,7 +152,7 @@ function matchesReceipt(twin: string, expected: TwinReceipt): boolean {
     const actual = JSON.parse(readFileSync(join(twin, TWIN_RECEIPT), "utf8")) as TwinReceipt;
     return (
       actual.source === expected.source &&
-      actual.entriesChangedAt === expected.entriesChangedAt &&
+      actual.entriesDigest === expected.entriesDigest &&
       Array.isArray(actual.shadowed) &&
       JSON.stringify(actual.shadowed) === JSON.stringify(expected.shadowed)
     );
@@ -175,12 +203,17 @@ function publish(staging: string, twin: string, receipt: TwinReceipt): void {
   throw new Error(`could not publish the sanitised twin at ${twin}`);
 }
 
-function buildTwin(directory: string, twin: string, receipt: TwinReceipt): void {
+function buildTwin(
+  directory: string,
+  entries: readonly string[],
+  twin: string,
+  receipt: TwinReceipt
+): void {
   const staging = `${twin}.building-${process.pid}-${randomBytes(6).toString("hex")}`;
   mkdirSync(staging, { recursive: true });
   try {
     const shadowed = new Set(receipt.shadowed);
-    for (const entry of readdirSync(directory)) {
+    for (const entry of entries) {
       if (shadowed.has(entry)) continue;
       try {
         symlinkSync(join(directory, entry), join(staging, entry));
@@ -200,31 +233,65 @@ function buildTwin(directory: string, twin: string, receipt: TwinReceipt): void 
   }
 }
 
-function providesShadowedBinary(directory: string, shadowed: ReadonlySet<string>): boolean {
+/**
+ * The source directory's entries, or `null` when there is no directory there
+ * to provide anything.
+ *
+ * Only `ENOENT` and `ENOTDIR` mean "nothing here". Every other failure —
+ * `EACCES` on a searchable-but-unlistable directory being the realistic one —
+ * means the question could not be answered, and answering "no ambient
+ * toolchain here" without evidence is the defect this whole file exists to
+ * remove. So it is escalated rather than swallowed.
+ */
+function listEntries(directory: string): readonly string[] | null {
   try {
-    return readdirSync(directory).some((entry) => shadowed.has(entry));
-  } catch {
-    return false;
+    return readdirSync(directory);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw error;
   }
 }
 
-function sanitisedTwin(entry: string, farmRoot: string, shadowed: ReadonlySet<string>): string {
-  try {
-    const directory = resolve(entry);
-    const receipt = receiptFor(directory, shadowed);
-    const twin = twinPathFor(farmRoot, receipt);
-    if (matchesReceipt(twin, receipt)) return twin;
+function buildOrReuseTwin(
+  directory: string,
+  entries: readonly string[],
+  farmRoot: string,
+  shadowed: ReadonlySet<string>
+): string {
+  const receipt = receiptFor(directory, entries, shadowed);
+  const twin = twinPathFor(farmRoot, receipt);
+  if (matchesReceipt(twin, receipt)) return twin;
 
-    mkdirSync(farmRoot, { recursive: true });
-    buildTwin(directory, twin, receipt);
-    return twin;
+  mkdirSync(farmRoot, { recursive: true });
+  buildTwin(directory, entries, twin, receipt);
+  return twin;
+}
+
+/**
+ * One PATH entry, sanitised — or returned untouched when it provides no
+ * shadowed binary.
+ *
+ * Deliberately a scalpel: replacing whole directories would take `node`, `npm`
+ * and `visp-memory` with them, and the memory contract test requires the real
+ * `visp-memory` and fails rather than skipping when it is missing.
+ */
+function sanitiseEntry(entry: string, farmRoot: string, shadowed: ReadonlySet<string>): string {
+  try {
+    const entries = listEntries(entry);
+    if (entries === null || !entries.some((name) => shadowed.has(name))) return entry;
+    return buildOrReuseTwin(resolve(entry), entries, farmRoot, shadowed);
   } catch (error) {
     throw new Error(
       `The test suite could not remove the installed Visp toolchain from the PATH entry ` +
         `"${entry}". Every test would then be driven by whatever Kit that directory ` +
         `provides instead of this repository's own build, so the run is aborted rather ` +
         `than reporting results measured against the wrong engine.\n` +
-        `${error instanceof Error ? error.message : String(error)}`
+        `${error instanceof Error ? error.message : String(error)}` +
+        (process.platform === "win32"
+          ? `\nOn Windows, creating a symbolic link needs Developer Mode or an elevated ` +
+            `shell; without one this cannot be done at all.`
+          : "")
     );
   }
 }
@@ -241,11 +308,6 @@ export interface SanitisePathOptions {
 /**
  * `path`, with every directory that provides a shadowed binary replaced by a
  * twin that provides everything else it held.
- *
- * Deliberately a scalpel: directories that provide none of the shadowed
- * binaries are passed through untouched, so `node`, `npm` and `visp-memory`
- * survive — the memory contract test requires the real `visp-memory` and fails
- * rather than skipping when it is missing.
  */
 export function sanitisePath(options: SanitisePathOptions): string {
   const farmRoot = options.farmRoot ?? DEFAULT_FARM_ROOT;
@@ -254,8 +316,6 @@ export function sanitisePath(options: SanitisePathOptions): string {
   return options.path
     .split(delimiter)
     .filter(Boolean)
-    .map((entry) =>
-      providesShadowedBinary(entry, shadowed) ? sanitisedTwin(entry, farmRoot, shadowed) : entry
-    )
+    .map((entry) => sanitiseEntry(entry, farmRoot, shadowed))
     .join(delimiter);
 }

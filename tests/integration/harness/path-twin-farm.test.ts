@@ -8,8 +8,15 @@
 //
 // So the farm is driven directly here, against a scratch farm root, with the
 // stale and half-built twins a real machine accumulates constructed by hand.
-// Every case below was confirmed to FAIL against the version that keyed twins
-// by PATH position and accepted any twin that merely existed (LC-35).
+//
+// WHICH OF THESE ACTUALLY DISCRIMINATE. Four do: "gives two directories
+// different twins", "ignores a twin an earlier run left behind", "rebuilds a
+// twin a crashed run left half-built" and "rebuilds when the source directory
+// has gained an entry" were each confirmed red against the version that keyed
+// twins by PATH position and accepted any twin that merely existed (LC-35).
+// The rest state the base behaviour that must survive the change — they pass
+// against the old implementation too, and are here to stop the fix trading one
+// silent wrongness for another, not as evidence for it.
 
 import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -126,23 +133,31 @@ describe("the PATH twin farm", () => {
       await rm(join(twin, entry), { recursive: true, force: true });
     }
 
-    const reachable = await reachableIn(twinOf(directory));
+    const rebuilt = twinOf(directory);
+    const reachable = await reachableIn(rebuilt);
 
     expect(
       reachable,
       "an empty directory left by an interrupted run was accepted as a finished twin"
     ).toContain("only-in-source");
+    // Without this the case is satisfied by an implementation that gave up and
+    // returned the source directory — which reaches `only-in-source` and the
+    // ambient Kit alike.
+    expect(rebuilt).not.toBe(directory);
+    expect(reachable).not.toContain("visp-kit");
   });
 
   it("rebuilds when the source directory has gained an entry since the twin was built", async () => {
-    // A twin keyed only on the source PATH would never notice this: the
-    // directory's mtime is what moves when its entry set changes, so it is part
-    // of the twin's identity.
+    // A twin keyed only on the source path would never notice this. The entry
+    // listing is what the twin mirrors, so it is part of the twin's identity —
+    // and unlike the directory's mtime it does not depend on the filesystem's
+    // timestamp granularity, so this case decides the same way everywhere.
     const directory = await binDirectory("bin-e", ["visp-kit", "only-in-source"]);
     twinOf(directory);
 
     await writeFile(join(directory, "installed-later"), "", "utf8");
-    const reachable = await reachableIn(twinOf(directory));
+    const rebuilt = twinOf(directory);
+    const reachable = await reachableIn(rebuilt);
 
     expect(
       reachable,
@@ -150,6 +165,23 @@ describe("the PATH twin farm", () => {
         "needs is missing from PATH"
     ).toContain("installed-later");
     expect(reachable).toContain("only-in-source");
+    expect(rebuilt).not.toBe(directory);
+    expect(reachable).not.toContain("visp-kit");
+  });
+
+  it("aborts the run rather than passing a directory through unsanitised", async () => {
+    // The failure mode this whole file exists to prevent is a run that looks
+    // normal while measuring the wrong toolchain. So a twin that cannot be
+    // built is loud: `tests/setup/build-dist.ts` sets the same precedent for
+    // `dist/`, because no test result is more trustworthy than the artifact it
+    // ran against.
+    const directory = await binDirectory("bin-f", ["visp-kit", "only-in-source"]);
+    const blocked = join(scratch, "not-a-directory");
+    await writeFile(blocked, "", "utf8");
+
+    expect(() => sanitisePath({ path: directory, farmRoot: join(blocked, "farm") })).toThrow(
+      /could not remove the installed Visp toolchain/u
+    );
   });
 
   it("still shadows the toolchain after a symlinked entry is followed", async () => {
