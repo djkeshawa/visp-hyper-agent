@@ -152,15 +152,25 @@ visp-hyper report
 
 The server advertises seven tools: `hyper_quick`, `hyper_run`, `hyper_next`, `hyper_checkpoint`, `hyper_guard`, `hyper_remember`, and `hyper_report`. Each runs the matching CLI command in-process and returns its output block as text.
 
-## Team memory (optional)
+## Memory (optional)
 
-Point a project at a shared [llm-memory](https://github.com/djkeshawa/llm-memory) server so recall and decisions are shared across the team:
+Memory is optional and off unless this project can actually reach a store. `visp init` records `memoryMode: "llm-memory"` on its own only when the `visp-memory` CLI is on `PATH` **and** the project holds a `visp-memory.yaml`; otherwise it records `"file"`. To set that up:
+
+```bash
+pip install 'visp-memory[mcp,capture]'   # quoted — zsh globs the bare [...]
+visp-memory init                         # in the project; writes visp-memory.yaml
+visp-hyper init --memory-mode llm-memory # if the config already said file
+```
+
+`visp recall` and `visp learn` then answer through the `visp-memory` CLI — **no memory server is involved, and none needs to be running.** Recalled records are untrusted context; Memory never grants permission or certifies anything.
+
+To additionally share memory over HTTP across a team, point the project at a server:
 
 ```bash
 visp-hyper init --memory-endpoint https://memory.yourteam.example:8000 --memory-repo-id your-project
 ```
 
-Authenticate with the `VISP_HYPER_MEMORY_API_KEY` environment variable (sent as `X-API-KEY`); keys never live in config files. If the server is unreachable, commands warn and fall back to file memory — it is never a hard error.
+That sets the endpoint and implies `memoryMode: "llm-memory"`. It does **not** replace the CLI: `recall` and `learn` still refuse when the `visp-memory` binary is absent, whatever the endpoint says. The endpoint is read by `start`/`run` and by `remember`'s write-back. Authenticate with the `VISP_HYPER_MEMORY_API_KEY` environment variable (sent as `X-API-KEY`); keys never live in config files. An unreachable server is never a hard error — commands warn and degrade. See [configuration](configuration.md#memory-memorymode-and-memoryendpoint) for which surface uses which half.
 
 ## Going strict
 
