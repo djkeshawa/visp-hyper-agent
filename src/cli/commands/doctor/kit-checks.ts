@@ -12,6 +12,7 @@ import { readTextIfExists, vispPath } from "../../../core/fs-utils.js";
 import { provenanceFreshnessContractWarning } from "../../../kit/kit-contract-compat.js";
 import { PINNED_PAIR_GUIDANCE } from "../../../kit/workflow-action-protocol.js";
 import { KitCommandBridge, detectVisp } from "../../../kit/kit-command-bridge.js";
+import type { KitBridgeDiagnosticReasonCode } from "../../../kit/kit-command-bridge.js";
 import type { KitIntegrationContract } from "../../../kit/kit-schemas.js";
 import { contextPackPathIfExists } from "../shared.js";
 import { activeHandoffExists } from "./active-handoff.js";
@@ -102,7 +103,7 @@ export async function checkKitBackend(projectPath: string, checks: DoctorCheck[]
         label: "Kit WorkflowAction protocol",
         status: "fail",
         detail: `${action.reasonCode}: ${action.reason}`,
-        recovery: "Link a Kit/Hyper pair with matching WorkflowAction advertisement, schema, and action identity."
+        recovery: workflowActionCheckRecovery(action.reasonCode)
       });
     } else {
       const { source } = action.value;
@@ -355,6 +356,24 @@ function formatContractCapabilities(contract: {
   ].filter((label): label is string => label !== null);
 
   return labels.length > 0 ? `capabilities: ${labels.join(", ")}` : "no strict capabilities advertised";
+}
+
+/**
+ * What to tell someone whose WorkflowAction check failed.
+ *
+ * A Kit that never answered inside its budget told `doctor` nothing about the
+ * pair, so sending the reader off to re-link Kit and Hyper is advice for a
+ * problem that has not been shown to exist — and the pair is the expensive
+ * thing to go and check. LC-27.
+ */
+export function workflowActionCheckRecovery(reasonCode: KitBridgeDiagnosticReasonCode): string {
+  if (reasonCode === "kit_command_timeout") {
+    return (
+      "Kit did not answer within its budget, so nothing here is known about the pair. " +
+      "Re-run on a less busy machine; if it repeats, run the Kit command directly to see where it stalls."
+    );
+  }
+  return "Link a Kit/Hyper pair with matching WorkflowAction advertisement, schema, and action identity.";
 }
 
 function addWarnings(checks: DoctorCheck[], warnings: readonly string[], prefix: string): void {

@@ -23,6 +23,27 @@ export type OutputSchema<T> = ZodType<T, ZodTypeDef, unknown>;
 export const KIT_DEFAULT_TIMEOUT_MS = 10_000;
 export const KIT_LONG_COMMAND_TIMEOUT_MS = 600_000;
 
+// No per-spawn deadline: the caller owns the clock. Node reads `timeout: 0` as
+// "do not arm one", so nothing here kills the child and the caller's own outer
+// bound is the only limit.
+//
+// This is the absence of a budget, not a bigger one, and it exists because the
+// default above is answering a question some callers are not asking. 10s is
+// calibrated for artifact reads on the `guard` PreToolUse hot path, where a hung
+// Kit must surface before it stalls an edit. The live-Kit contract test has no
+// such need — it wants a correct answer about the CLI contract, and inheriting a
+// hot-path deadline made its verdict a function of machine load. Worse, a lost
+// race arrived as `available: false` / `null`, indistinguishable from a Kit that
+// broke the contract.
+//
+// Measured before choosing this (LC-27): 15 live-Kit spawns across three full
+// parallel suite runs on 16 cores ran 726–2492ms against the 10s budget — a 4x
+// margin, so NO number needed raising and none was. What changed is that the
+// test no longer carries a second clock it never needed. Its outer bound is the
+// suite's existing `testTimeout`, which is where the other ~60 real-process
+// spawns in these tests already live, and which fails as a timeout by name.
+export const KIT_NO_SPAWN_DEADLINE_MS = 0;
+
 /**
  * Which budget a Kit command gets.
  *

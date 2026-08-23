@@ -36,11 +36,12 @@ import {
   tokenizeCommand,
   withTask
 } from "./kit-command-exec.js";
-import type { OutputSchema, RunResult } from "./kit-command-exec.js";
+import type { CommandFailureCode, OutputSchema, RunResult } from "./kit-command-exec.js";
 
 export type { KitAvailability } from "./kit-availability.js";
 export {
   KIT_DEFAULT_TIMEOUT_MS,
+  KIT_NO_SPAWN_DEADLINE_MS,
   KIT_LONG_COMMAND_TIMEOUT_MS,
   resolveKitCommandTimeout
 } from "./kit-command-exec.js";
@@ -51,6 +52,11 @@ export type KitBridgeDiagnosticReasonCode =
   | "unsupported_integration_contract"
   | "strict_next_unavailable"
   | "unsupported_workflow_action"
+  // A Kit that never answered inside its budget said nothing about the
+  // contract. Folding it into the codes above reported "no supported Kit
+  // contract" for a machine that was merely busy, which sends the reader to
+  // debug a contract that was never in question (LC-27).
+  | "kit_command_timeout"
   | Exclude<WorkflowActionProtocolReasonCode, "unsupported_integration_contract" | "unsupported_workflow_action">
   | WorkflowActionAdapterReasonCode;
 
@@ -99,6 +105,26 @@ const mechanicalResultSchema = z
   })
   .passthrough();
 
+/**
+ * Why the last Kit spawn produced nothing.
+ *
+ * Most bridge methods answer `null` for every unhappy path, because Kit being
+ * absent, slow or older than expected is an ordinary state. That collapses two
+ * findings a reader needs to keep apart: a Kit that answered something the
+ * contract does not allow, and a Kit that never answered at all. The first is a
+ * defect in the pair; the second is a busy machine. This carries the
+ * distinction alongside the `null` so a caller — a test above all — can name
+ * which one it hit instead of guessing from an absent value (LC-27).
+ */
+export type KitCommandFailure = Readonly<{
+  /** The Kit command as invoked, without the `--json` the bridge always adds. */
+  command: string;
+  reasonCode: CommandFailureCode;
+  reason: string;
+  /** The budget that was actually applied to this spawn. */
+  timeoutMs: number;
+}>;
+
 export type MechanicalCommandResult = {
   readonly success: boolean;
   /** Empty when the command failed for a reason other than validation. */
@@ -116,12 +142,28 @@ export class KitCommandBridge {
   private binaryResolution: Promise<KitBinaryResolution> | undefined;
   private readonly timeoutMs: number;
   private readonly configuredTimeoutMs: number | undefined;
+  private commandFailure: KitCommandFailure | undefined;
 
   constructor(input: { projectPath: string; binary?: string; timeoutMs?: number }) {
     this.projectPath = input.projectPath;
     this.explicitBinary = input.binary;
     this.timeoutMs = input.timeoutMs ?? KIT_DEFAULT_TIMEOUT_MS;
     this.configuredTimeoutMs = input.timeoutMs;
+  }
+
+  /**
+   * How the most recent Kit spawn failed, or undefined when it ran — whatever
+   * the command then said. Cleared at the start of every spawn.
+   *
+   * One slot per bridge, so it describes the attempt a caller is holding the
+   * result of only while that bridge is driven one command at a time, which is
+   * how every caller drives it. Two commands overlapped on one bridge would
+   * have the second clear the first's failure; read this after the call whose
+   * result you are about to interpret, and give a concurrent caller its own
+   * bridge.
+   */
+  get lastCommandFailure(): KitCommandFailure | undefined {
+    return this.commandFailure;
   }
 
   /**
@@ -540,9 +582,9 @@ export class KitCommandBridge {
         : ["next", "--format", "json", "--protocol", selection.protocolVersion];
     const result = await this.run(args);
     if (!result) {
-      return diagnosticFailure(
+      return this.unavailableDiagnostic(
         "strict_next_unavailable",
-        this.warnings[this.warnings.length - 1] ?? "Kit strict next action is unavailable."
+        "Kit strict next action is unavailable."
       );
     }
 
@@ -583,9 +625,9 @@ export class KitCommandBridge {
     const args = ["integration", "contract"];
     const result = await this.run(args);
     if (!result) {
-      return diagnosticFailure(
+      return this.unavailableDiagnostic(
         "integration_contract_unavailable",
-        this.warnings[this.warnings.length - 1] ?? "Kit integration contract is unavailable."
+        "Kit integration contract is unavailable."
       );
     }
     if (result.exitCode !== 0) {
@@ -672,19 +714,44 @@ export class KitCommandBridge {
     args: string[],
     options: { timeoutMs?: number } = {}
   ): Promise<RunResult | null> {
+    // Cleared before the attempt, never after it: a failure recorded by an
+    // earlier command must not be read as this one's, and a binary that never
+    // resolved is not a spawn failure of this command either.
+    this.commandFailure = undefined;
     const binary = await this.resolvedBinary();
     if (binary === null) return null;
-    const result = await runCommand(
-      binary,
-      [...args, "--json"],
-      this.projectPath,
-      options.timeoutMs ?? this.timeoutMs
-    );
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
+    const result = await runCommand(binary, [...args, "--json"], this.projectPath, timeoutMs);
     if (!result.ok) {
+      this.commandFailure = {
+        command: `visp ${args.join(" ")}`,
+        reasonCode: result.reasonCode,
+        reason: result.reason,
+        timeoutMs
+      };
       this.warnings.push(result.reason);
       return null;
     }
     return result.value;
+  }
+
+  /**
+   * Turn "the spawn produced nothing" into a diagnostic that names the real
+   * cause. A timeout gets its own reason code; anything else keeps the caller's
+   * own vocabulary, since a Kit that answered badly is the caller's concern.
+   */
+  private unavailableDiagnostic(
+    fallbackReasonCode: KitBridgeDiagnosticReasonCode,
+    fallbackReason: string
+  ): KitBridgeDiagnostic<never> {
+    const failure = this.commandFailure;
+    if (failure?.reasonCode === "command_timeout") {
+      return diagnosticFailure("kit_command_timeout", failure.reason);
+    }
+    return diagnosticFailure(
+      fallbackReasonCode,
+      failure?.reason ?? this.warnings[this.warnings.length - 1] ?? fallbackReason
+    );
   }
 
   private async contextPackPaths(
