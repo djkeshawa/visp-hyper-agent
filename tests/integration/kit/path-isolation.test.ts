@@ -46,7 +46,9 @@ describe("the suite does not see an installed Visp toolchain", () => {
 
   it("resolves Kit as not-found rather than to an installed binary", async () => {
     // The resolver is what actually decides, so assert on it and not only on
-    // the shell. `found: false` is the state the fixtures are written against.
+    // the shell. `found: false` is the state the fixtures are written against —
+    // and since LC-60 it means "nothing this host can start", not merely
+    // "nothing with an execute bit".
     const resolution = await resolveKitBinary({});
 
     expect(resolution.ok).toBe(true);
@@ -70,14 +72,18 @@ describe("the suite does not see an installed Visp toolchain", () => {
   it("still lets a test supply its own Kit", async () => {
     // The whole point is to remove the AMBIENT one, not to make stubbing
     // impossible — sixteen test files stub Kit by prepending a shim.
-    const { chmod, mkdtemp, writeFile } = await import("node:fs/promises");
+    //
+    // The shim goes through tests/helpers/fake-executable.ts rather than being
+    // hand-rolled as an extensionless `#!/bin/sh` file: that shape is not an
+    // executable on Windows at all, so this assertion would have been checking
+    // that a fake which was never written could not be found (LC-56, LC-60).
+    const { mkdtemp } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
+    const { writeNodeExecutable } = await import("../../helpers/fake-executable.js");
 
     const binDir = await mkdtemp(join(tmpdir(), "visp-isolation-stub-"));
-    const shim = join(binDir, "visp-kit");
-    await writeFile(shim, "#!/bin/sh\necho stub\n", "utf8");
-    await chmod(shim, 0o755);
+    await writeNodeExecutable(binDir, "visp-kit", 'console.log("stub");');
 
     const original = process.env.PATH;
     process.env.PATH = `${binDir}${delimiter}${original}`;

@@ -1,4 +1,4 @@
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 
 const WINDOWS = process.platform === "win32";
@@ -49,6 +49,91 @@ export async function writeNodeExecutable(
   await writeFile(script, `#!/usr/bin/env node\n${body}\n`, "utf8");
   await chmod(script, 0o755);
   return script;
+}
+
+/**
+ * The three writers below are deliberately NOT platform-adaptive, unlike
+ * {@link writeNodeExecutable}. They exist to reproduce the ambiguity a real
+ * `npm install -g` creates — two files, same stem, only one of them startable
+ * on Windows — so a resolver can be asked which one it picks (LC-60). A test
+ * that wants "a fake that works here" wants `writeNodeExecutable` instead.
+ */
+
+/**
+ * The extensionless `#!/bin/sh` half, which npm writes for Git Bash. On win32
+ * it is inert: no shebang support, `chmod` a no-op, and the name is not on
+ * PATHEXT, so nothing can start it.
+ */
+export async function writePosixShim(dir: string, name: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const shim = join(dir, name);
+  await writeFile(shim, "#!/bin/sh\nexit 0\n", "utf8");
+  await chmod(shim, 0o755);
+  return shim;
+}
+
+/** The `.cmd` half — the only one `cmd.exe`/`CreateProcess` resolves. */
+export async function writeCmdShim(dir: string, name: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const shim = join(dir, `${name}.cmd`);
+  await writeFile(shim, "@echo off\r\nexit /b 0\r\n", "utf8");
+  return shim;
+}
+
+/** What a real `npm install -g` leaves in a global bin directory. */
+export interface GlobalInstallShims {
+  readonly posixShim: string;
+  readonly cmdShim: string;
+}
+
+/** Both halves at once, as installed. */
+export async function writeGlobalInstallShims(
+  dir: string,
+  name: string
+): Promise<GlobalInstallShims> {
+  return {
+    posixShim: await writePosixShim(dir, name),
+    cmdShim: await writeCmdShim(dir, name)
+  };
+}
+
+/** A fake whose resolved path lives inside a package, plus the dir to put on PATH. */
+export interface PackageResidentExecutable {
+  /** The path the host will actually start. */
+  readonly executable: string;
+  /** The directory to place on PATH so the bare name resolves to it. */
+  readonly pathDir: string;
+}
+
+/**
+ * Put `name` where resolving it yields a path whose `realpath` lands inside
+ * `packageDir` — the shape the self-invocation guard exists to detect.
+ *
+ * POSIX gets the symlink `npm install -g` really writes, so the guard's
+ * `realpath` call is exercised against an actual link. Windows cannot have
+ * that: an extensionless PATH entry is not resolvable there at all, and a
+ * symlink is neither executable nor privilege-free (see tool-path.ts). So the
+ * executable is written inside the package and that directory goes on PATH.
+ *
+ * Both arms establish the same property, and the CALLER'S ASSERTION IS
+ * IDENTICAL on both — only the arrangement differs, which is this helper's
+ * whole reason to exist. A test using it is not platform-skipped.
+ */
+export async function writePackageResidentExecutable(
+  packageDir: string,
+  binDir: string,
+  name: string
+): Promise<PackageResidentExecutable> {
+  if (WINDOWS) {
+    const executable = await writeNodeExecutable(packageDir, name, "process.exit(0);");
+    return { executable, pathDir: packageDir };
+  }
+
+  const real = await writeNodeExecutable(packageDir, `${name}-real`, "process.exit(0);");
+  await mkdir(binDir, { recursive: true });
+  const link = join(binDir, name);
+  await symlink(real, link);
+  return { executable: link, pathDir: binDir };
 }
 
 /**

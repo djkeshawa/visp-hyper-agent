@@ -1,12 +1,14 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { constants, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildBatchExecArgs,
   execFileResolved,
   resolveExecutable
 } from "../../../src/core/executable-resolver.js";
+import { writeGlobalInstallShims, writePosixShim } from "../../helpers/fake-executable.js";
+import { withPlatform } from "../../helpers/platform-override.js";
 
 const WINDOWS = process.platform === "win32";
 const originalPath = process.env.PATH;
@@ -45,6 +47,124 @@ describe("resolveExecutable", () => {
     expect(resolved).not.toBeNull();
     expect(resolved!.batchPath).toBe(shim);
     expect(resolved!.file.toLowerCase()).toContain("cmd.exe");
+  });
+});
+
+// LC-60: the question `resolveExecutable` cannot answer ("is it there?") and
+// `findExecutableOnPath` cannot answer for an explicit path (joining a PATH
+// directory to an absolute path yields nonsense). Windows resolution is asserted
+// with the platform injected — see tests/helpers/platform-override.ts for why
+// `it.runIf(WINDOWS)` is not an option for a decision this load-bearing.
+describe("findRunnableCommand", () => {
+  let binDir: string;
+  const originalPathExt = process.env.PATHEXT;
+
+  beforeEach(async () => {
+    binDir = await mkdtemp(join(tmpdir(), "visp-runnable-"));
+    // The shape `npm install -g` leaves: an extensionless `#!/bin/sh` script
+    // for Git Bash, and the `.cmd` wrapper Windows actually starts.
+    await writeGlobalInstallShims(binDir, "visp-kit");
+    process.env.PATH = binDir;
+  });
+
+  afterEach(() => {
+    if (originalPathExt === undefined) {
+      delete process.env.PATHEXT;
+    } else {
+      process.env.PATHEXT = originalPathExt;
+    }
+  });
+
+  it("picks the .cmd shim over the extensionless sibling on win32", async () => {
+    await withPlatform("win32", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand("visp-kit")).toBe(join(binDir, "visp-kit.cmd"));
+    });
+  });
+
+  it("PATHEXT-completes an explicit path with no extension on win32", async () => {
+    await withPlatform("win32", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand(join(binDir, "visp-kit"))).toBe(
+        join(binDir, "visp-kit.cmd")
+      );
+    });
+  });
+
+  it("returns null on win32 when only the unstartable extensionless file exists", async () => {
+    const shOnly = await mkdtemp(join(tmpdir(), "visp-shonly-"));
+    await writePosixShim(shOnly, "visp-kit");
+    process.env.PATH = shOnly;
+
+    await withPlatform("win32", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand("visp-kit")).toBeNull();
+      expect(await findRunnableCommand(join(shOnly, "visp-kit"))).toBeNull();
+    });
+  });
+
+  it("obeys the host PATHEXT rather than a list of its own", async () => {
+    process.env.PATHEXT = ".COM;.EXE";
+    await withPlatform("win32", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand("visp-kit")).toBeNull();
+    });
+  });
+
+  it("takes the extensionless executable on POSIX, where that is the real one", async () => {
+    await withPlatform("linux", async () => {
+      const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+      expect(await findRunnableCommand("visp-kit")).toBe(join(binDir, "visp-kit"));
+      expect(await findRunnableCommand(join(binDir, "visp-kit"))).toBe(join(binDir, "visp-kit"));
+    });
+  });
+
+  // `fs.access(X_OK)` is a POSIX kernel semantic. On Windows `chmod` is a no-op
+  // and `access` answers yes for every existing file, so "no execute bit"
+  // cannot be induced there at all — a fixture asserting it unconditionally
+  // would be asserting a fact the platform does not have. So the access result
+  // is INJECTED rather than asked of the OS, which keeps both assertions live
+  // on every platform and makes them about this module's decision instead.
+  describe("with X_OK denied by the filesystem", () => {
+    afterEach(() => {
+      vi.doUnmock("node:fs/promises");
+      vi.resetModules();
+    });
+
+    function denyExecutePermission(): void {
+      vi.doMock("node:fs/promises", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("node:fs/promises")>();
+        return {
+          ...actual,
+          access: async (path: Parameters<typeof actual.access>[0], mode?: number) => {
+            if (mode === constants.X_OK) {
+              throw Object.assign(new Error(`EACCES: ${String(path)}`), { code: "EACCES" });
+            }
+            return await actual.access(path, mode);
+          }
+        };
+      });
+    }
+
+    it("returns null on POSIX, where the execute bit is the whole question", async () => {
+      denyExecutePermission();
+      await withPlatform("linux", async () => {
+        const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+        expect(await findRunnableCommand("visp-kit")).toBeNull();
+        expect(await findRunnableCommand(join(binDir, "visp-kit"))).toBeNull();
+      });
+    });
+
+    it("never consults X_OK on win32, so the .cmd still resolves", async () => {
+      denyExecutePermission();
+      await withPlatform("win32", async () => {
+        const { findRunnableCommand } = await import("../../../src/core/executable-resolver.js");
+        // Unchanged by the denial: win32 asks F_OK, because execute permission
+        // is not a concept there. If this ever went null, the module would be
+        // asking a question Windows cannot answer — the LC-60 defect itself.
+        expect(await findRunnableCommand("visp-kit")).toBe(join(binDir, "visp-kit.cmd"));
+      });
+    });
   });
 });
 
