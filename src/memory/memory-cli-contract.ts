@@ -10,9 +10,15 @@
 import { z } from "zod";
 
 import { execFileResolved } from "../core/executable-resolver.js";
+import {
+  MEMORY_CONTRACT_VERSION,
+  contractFailureReason,
+  parseContractJson,
+  sanitizeMemoryReason
+} from "./memory-contract-envelope.js";
 import { MEMORY_INSTALL_COMMAND } from "./visp-memory-install.js";
 
-export const MEMORY_CONTRACT_VERSION = "1.0";
+export { MEMORY_CONTRACT_VERSION };
 const CONTRACT_TIMEOUT_MS = 20_000;
 
 const recallEnvelopeSchema = z.object({
@@ -111,10 +117,16 @@ async function runContract(projectPath: string, args: readonly string[]): Promis
           `Install it with: ${MEMORY_INSTALL_COMMAND}`
       };
     }
+    // A contract command that fails still answers on stdout, and its reason
+    // names the cause and usually the remedy; the exec error names neither.
+    const refusal = contractFailureReason(failure.stdout ?? "");
     return {
       ok: false,
       usageError: isUsageError(failure),
-      reason: `visp-memory did not answer: ${failure.message ?? String(error)}`
+      reason:
+        refusal === undefined
+          ? `visp-memory did not answer: ${failure.message ?? String(error)}`
+          : `visp-memory refused: ${refusal}`
     };
   }
 }
@@ -234,7 +246,7 @@ export async function memoryContractRecall(input: {
   }
   if (!run.ok) return { ok: false, reason: run.reason };
 
-  const parsed = recallEnvelopeSchema.safeParse(safeJson(run.stdout));
+  const parsed = recallEnvelopeSchema.safeParse(parseContractJson(run.stdout));
   if (!parsed.success) {
     return {
       ok: false,
@@ -242,7 +254,7 @@ export async function memoryContractRecall(input: {
     };
   }
   if (!parsed.data.success) {
-    return { ok: false, reason: parsed.data.reason ?? "Memory refused the recall." };
+    return { ok: false, reason: refusedReason(parsed.data.reason, "Memory refused the recall.") };
   }
   return {
     ok: true,
@@ -266,7 +278,7 @@ export async function memoryContractPropose(input: {
     "--json"
   ]);
   if (!run.ok) return { ok: false, reason: run.reason };
-  const parsed = proposeEnvelopeSchema.safeParse(safeJson(run.stdout));
+  const parsed = proposeEnvelopeSchema.safeParse(parseContractJson(run.stdout));
   if (!parsed.success) {
     return {
       ok: false,
@@ -274,15 +286,15 @@ export async function memoryContractPropose(input: {
     };
   }
   if (!parsed.data.success || parsed.data.proposalId === undefined) {
-    return { ok: false, reason: parsed.data.reason ?? "Memory refused the proposal." };
+    return {
+      ok: false,
+      reason: refusedReason(parsed.data.reason, "Memory refused the proposal.")
+    };
   }
   return { ok: true, proposalId: parsed.data.proposalId };
 }
 
-function safeJson(text: string): unknown {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return null;
-  }
+function refusedReason(reason: string | undefined, fallback: string): string {
+  const cleaned = reason === undefined ? "" : sanitizeMemoryReason(reason);
+  return cleaned.length > 0 ? cleaned : fallback;
 }

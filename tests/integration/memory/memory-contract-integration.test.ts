@@ -194,7 +194,22 @@ describe("Hyper ↔ Memory contract, against the real binary", () => {
       // silently returned nothing.
       expect(Array.isArray(result.entries)).toBe(true);
     } else {
-      expect(result.reason.length).toBeGreaterThan(0);
+      // LC-179: Memory's own failure envelope, read — not "did not answer".
+      expect(result.reason).toMatch(/^visp-memory refused: recall failed: \S/u);
+    }
+  });
+
+  it("Hyper reads Memory's real failure envelope", async () => {
+    // A directory with no store and no configured scope: Memory refuses the
+    // recall in its contract envelope and exits non-zero.
+    const unscoped = await mkdtemp(join(tmpdir(), "visp-memory-unscoped-"));
+    try {
+      const result = await memoryContractRecall({ projectPath: unscoped, query: "anything" });
+
+      expect(result.ok).toBe(false);
+      expect(result.ok ? "" : result.reason).toMatch(/^visp-memory refused: recall failed: \S/u);
+    } finally {
+      await rm(unscoped, { recursive: true, force: true });
     }
   });
 });
